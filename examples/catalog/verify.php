@@ -51,8 +51,8 @@ final class CatalogContracts
             'CATALOG_WRITE_ENABLED' => $writes ? 'true' : 'false',
             'STRANGLER_TOKEN'       => 'catalog-contract-token',
             'CATALOG_TENANT'        => 'alpha',
-            'CATALOG_TIMEOUT'       => '0.2',
-            'CATALOG_FAULT_DELAY'   => '0.4',
+            'CATALOG_TIMEOUT'       => '2',
+            'CATALOG_FAULT_DELAY'   => '2',
         ]);
         $this->directory = $directory;
         $this->backendAddress = $backendAddress;

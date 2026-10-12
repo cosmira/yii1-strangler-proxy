@@ -167,14 +167,14 @@ return static function (CatalogContracts $verify, Client $client, string $backen
         $verify->check(count(array_filter($hook[2], static fn (array $event): bool => ($event['event'] ?? '') === 'write')) === 1
             && count(array_filter($hook[2], static fn (array $event): bool => ($event['event'] ?? '') === 'legacy')) === 0, 'mandatory hook does not replay successful write');
         $verify->configure(['CATALOG_HOOK_FAIL' => '0']);
-        $verify->configure(['CATALOG_BACKEND_MODE' => 'lost_response']);
+        $verify->configure(['CATALOG_BACKEND_MODE' => 'lost_response', 'CATALOG_TIMEOUT' => '1']);
         $keyedHeaders = $headers + ['Idempotency-Key' => 'explicit-client-retry'];
         $lost = $request('POST', 'catalog/create', ['json' => $item, 'headers' => $keyedHeaders]);
         $status(503, $lost, 'lost response after committed write');
         $verify->check(count(array_filter($lost[2], static fn (array $event): bool => ($event['event'] ?? '') === 'write')) === 1
             && count(array_filter($lost[2], static fn (array $event): bool => ($event['event'] ?? '') === 'backend')) === 1
             && count(array_filter($lost[2], static fn (array $event): bool => ($event['event'] ?? '') === 'legacy')) === 0, 'timeout commits once without automatic retry or fallback');
-        $verify->configure(['CATALOG_BACKEND_MODE' => 'normal']);
+        $verify->configure(['CATALOG_BACKEND_MODE' => 'normal', 'CATALOG_TIMEOUT' => '2']);
         $repeat = $request('POST', 'catalog/create', ['json' => $item, 'headers' => $keyedHeaders]);
         $status(201, $repeat, 'explicit same-key retry returns stored outcome');
         $verify->check(count(array_filter($repeat[2], static fn (array $event): bool => ($event['event'] ?? '') === 'write')) === 0, 'same-key retry creates no second record');

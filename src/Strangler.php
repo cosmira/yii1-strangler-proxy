@@ -24,16 +24,22 @@ use InvalidArgumentException;
 final class Strangler
 {
     /**
+     * Feature settings and callbacks collected by the builder.
+     *
      * @var Config
      */
     private array $config;
 
     /**
+     * Upstream routes indexed by normalized legacy action names.
+     *
      * @var array<string, array{method: string, path: string}>
      */
     private array $routes = [];
 
     /**
+     * Payload fields that keep each action on the legacy implementation.
+     *
      * @var array<string, list<string>>
      */
     private array $bypassPayloadFields = [];
@@ -55,6 +61,8 @@ final class Strangler
     }
 
     /**
+     * Configure the adapter that translates the API contract.
+     *
      * @param StranglerAdapterInterface|string|array<string, mixed> $adapter
      */
     public function usingAdapter(StranglerAdapterInterface|string|array $adapter): self
@@ -65,6 +73,8 @@ final class Strangler
     }
 
     /**
+     * Read the legacy payload through an application callback.
+     *
      * @param callable(CController): array<array-key, mixed> $reader
      */
     public function payloadUsing(callable $reader): self
@@ -75,6 +85,8 @@ final class Strangler
     }
 
     /**
+     * Keep matching requests on the legacy implementation.
+     *
      * @param callable(CController, string, array<array-key, mixed>): bool $bypass
      */
     public function bypassUsing(callable $bypass): self
@@ -107,6 +119,8 @@ final class Strangler
     }
 
     /**
+     * Keep an action on the legacy implementation when any listed field is present.
+     *
      * @param list<string> $fields
      */
     public function bypassWhenPayloadHas(string $action, array $fields): self
@@ -165,6 +179,8 @@ final class Strangler
     }
 
     /**
+     * Export the Yii filter definition with its routes and bypass fields.
+     *
      * @return array{0: class-string<StranglerFilter>, config: Config}
      */
     public function build(): array

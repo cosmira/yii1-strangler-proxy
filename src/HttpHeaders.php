@@ -12,6 +12,8 @@ use InvalidArgumentException;
 final class HttpHeaders
 {
     /**
+     * Transport headers that must not cross the proxy boundary.
+     *
      * @var list<string>
      */
     private const TRANSPORT_HEADERS = [

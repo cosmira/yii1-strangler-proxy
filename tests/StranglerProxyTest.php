@@ -1052,6 +1052,80 @@ final class StranglerProxyTest extends TestCase
         $proxy->handle($this->controller, $config, 'get');
     }
 
+    public function testAdaptedErrorStopsAfterANonTerminatingOutputBoundary(): void
+    {
+        $application = $this->createMock(\CWebApplication::class);
+        $application->expects(self::once())->method('end');
+        Yii::setApplication(null);
+        Yii::setApplication($application);
+        $headers = [];
+        $status = null;
+        $emitter = new ResponseEmitter(
+            static function (string $header, bool $replace) use (&$headers): void {
+                $headers[] = $header;
+            },
+            static function (int $code) use (&$status): void {
+                $status = $code;
+            },
+        );
+        $adapter = new class extends AbstractStranglerAdapter
+        {
+            public function transformResponse(string $actionId, int $status, string $body, array $headers): array
+            {
+                return ['status' => 409, 'body' => 'adapted error', 'headers' => ['X-Adapted' => ['yes']]];
+            }
+        };
+
+        ob_start();
+
+        try {
+            $emitter->error(500, 'original_error', $adapter, 'get');
+            $body = ob_get_contents();
+        } finally {
+            ob_end_clean();
+        }
+
+        self::assertSame('adapted error', $body);
+        self::assertSame(409, $status);
+        self::assertSame(['X-Adapted: yes', 'X-Strangler: 1'], $headers);
+    }
+
+    #[DataProvider('requestAdapterSteps')]
+    public function testRequestAdapterExceptionsPropagate(string $step): void
+    {
+        $adapter = new class($step) extends AbstractStranglerAdapter
+        {
+            public function __construct(private readonly string $step) {}
+
+            public function transformQuery(string $actionId, array $query): array
+            {
+                if ($this->step === 'query') {
+                    throw new InvalidArgumentException('Broken query adapter');
+                }
+
+                return $query;
+            }
+
+            public function transformPayload(string $actionId, array $payload): array
+            {
+                throw new InvalidArgumentException('Broken payload adapter');
+            }
+        };
+        $config = Strangler::proxy('example')->usingAdapter($adapter)->get('get', '/api/items')->build();
+        $proxy = $this->proxy($this->client([]));
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('Broken '.$step.' adapter');
+        $proxy->handle($this->controller, $config['config'], 'get');
+    }
+
+    /** @return iterable<string, array{string}> */
+    public static function requestAdapterSteps(): iterable
+    {
+        yield 'query translation' => ['query'];
+        yield 'payload translation' => ['payload'];
+    }
+
     public function testOriginalQueryStillSuppliesRoutesAfterAdapterWhitelisting(): void
     {
         $_GET = ['ORIGINAL_ID' => 'a/b'];

@@ -19,6 +19,8 @@ final class StranglerFilter extends CFilter
     public ?ClientInterface $client = null;
 
     /**
+     * Feature settings, routes and callbacks for this Yii filter.
+     *
      * @var Config
      */
     public array $config = [];

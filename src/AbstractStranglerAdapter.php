@@ -10,6 +10,8 @@ namespace Cosmira\Strangler;
 abstract class AbstractStranglerAdapter implements StranglerAdapterInterface
 {
     /**
+     * Preserve query parameters unless an adapter overrides their translation.
+     *
      * @param array<array-key, mixed> $query
      *
      * @return array<array-key, mixed>
@@ -20,6 +22,8 @@ abstract class AbstractStranglerAdapter implements StranglerAdapterInterface
     }
 
     /**
+     * Preserve the request payload unless an adapter overrides its translation.
+     *
      * @param array<array-key, mixed> $payload
      *
      * @return array<array-key, mixed>
@@ -30,6 +34,8 @@ abstract class AbstractStranglerAdapter implements StranglerAdapterInterface
     }
 
     /**
+     * Preserve the upstream response unless an adapter overrides its translation.
+     *
      * @param array<string, array<string>> $headers
      *
      * @return array{status: int, body: string, headers: array<string, array<string>>}

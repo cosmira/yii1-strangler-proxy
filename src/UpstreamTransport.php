@@ -227,14 +227,12 @@ final readonly class UpstreamTransport
         array $response,
         ?StranglerAdapterInterface $adapter,
     ): void {
-        $legacyResponse = $adapter === null
-            ? $response
-            : $adapter->transformResponse(
-                $actionKey,
-                $response[self::STATUS],
-                $response[self::BODY],
-                $response[self::HEADERS],
-            );
+        $legacyResponse = $adapter?->transformResponse(
+            $actionKey,
+            $response[self::STATUS],
+            $response[self::BODY],
+            $response[self::HEADERS],
+        ) ?? $response;
 
         $timeMs = (int) round((($this->clock)() - $startedAt) * 1000);
 

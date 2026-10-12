@@ -65,7 +65,8 @@
         "test:rector": [
             "@php vendor/bin/rector validate-config",
             "@php vendor/bin/rector process --dry-run --no-progress-bar"
-        ]
+        ],
+        "example:verify": "@php examples/catalog/verify.php"
     },
     "config": {
         "sort-packages": true,

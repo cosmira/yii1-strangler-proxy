@@ -54,7 +54,7 @@ HTTPS certificates are verified by default. Protect the backend with a trusted
 channel before enabling the feature; the [integration guide](docs/integration.md)
 includes a server-owned token example.
 
-Add Strangler **last** to the controller's filters, starting with one existing
+Add the Strangler filter block **after all security checks**, starting with one existing
 read-only action:
 
 ```php
@@ -68,7 +68,7 @@ class CatalogController extends CController
             'initLanguage',
             'validateOpenAPI',
             'accessControl',
-            Strangler::proxy('catalog') // Must be last.
+            Strangler::proxy('catalog') // After all security checks.
                 ->get('view', '/api/items/{id}')
                 ->build(),
         ];
@@ -102,6 +102,23 @@ Configure `base_uri` as a trusted HTTP(S) origin with no path, query or credenti
 put the complete backend path in each route. Redirects are returned without following
 them. GET and HEAD send query parameters; POST, PUT, PATCH and DELETE also send JSON.
 Missing URL parameters or invalid JSON return `400` before contacting the backend.
+
+## Run the complete example
+
+The [catalog example](examples/catalog/README.md) supplies a real Yii application,
+backend, JSON/form input, security checks and independent read/write flags.
+It uses a shared SQLite dataset to demonstrate one concrete migration model.
+The example additionally requires `pdo_sqlite`; the library does not require SQLite.
+From this repository, after `composer install`, run:
+
+```shell
+composer example:verify
+```
+
+The verifier starts isolated local servers, checks the published example and removes
+its temporary data. It compares the legacy and proxied client contracts, denied
+requests, read-after-write, tenant isolation and backend idempotency.
+Use its case table as a starting point for your own application's contract checks.
 
 ## When the APIs differ
 
@@ -142,8 +159,9 @@ reach the application's Yii error handler.
 Handled responses include `X-Strangler: 1`. In `YII_DEBUG`, backend responses also
 include `X-Strangler-Time` in milliseconds. Enable `log_requests` to record forwarding
 in the Yii `strangler` category with the feature and incoming `X-Request-Id`.
-If a request stays in Yii, check the feature flag,
-action mapping and bypass rule; see [logging and callbacks](docs/integration.md#logging-and-callbacks).
+With request logging enabled, candidate decisions explain disabled flags, unmapped
+actions and bypass rules. With several Strangler filters, a skipped candidate can
+continue to the next filter; it does not yet imply legacy execution. See [logging and callbacks](docs/integration.md#logging-and-callbacks).
 
 ## Quality checks
 

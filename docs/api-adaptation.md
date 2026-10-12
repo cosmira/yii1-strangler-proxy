@@ -112,7 +112,7 @@ final class CatalogApiAdapter extends AbstractStranglerAdapter
                 'success' => false,
                 'error' => [
                     'code' => $response['code'] ?? $response['error'] ?? 'request_failed',
-                    'fields' => $response['errors'] ?? [],
+                    'fields' => $this->legacyErrors($response['errors'] ?? []),
                 ],
             ];
         } elseif ($actionId === 'get') {
@@ -139,6 +139,22 @@ final class CatalogApiAdapter extends AbstractStranglerAdapter
             'body' => json_encode($legacy, JSON_THROW_ON_ERROR),
             'headers' => $headers,
         ];
+    }
+
+    private function legacyErrors(array $errors): array
+    {
+        $names = [
+            'title' => 'NAME', 'product.title' => 'NAME',
+            'category.id' => 'CATEGORY_ID', 'product.enabled' => 'ACTIVE',
+        ];
+        $fields = [];
+        foreach ($errors as $name => $messages) {
+            // Unknown fields become general messages rather than invisible form errors.
+            $field = $names[$name] ?? '_general';
+            $fields[$field] = array_merge($fields[$field] ?? [], $messages);
+        }
+
+        return $fields;
     }
 
     private function legacyItem(array $item): array
@@ -192,8 +208,16 @@ The same method maps backend errors and package-generated errors. For example:
 
 | Failure | Response passed to the adapter | Legacy response |
 | --- | --- | --- |
-| Validation | `422 {"code":"validation_failed","errors":{"title":["Required"]}}` | `422 {"success":false,"error":{"code":"validation_failed","fields":{"title":["Required"]}}}` |
+| Validation | `422 {"code":"validation_failed","errors":{"title":["Required"]}}` | `422 {"success":false,"error":{"code":"validation_failed","fields":{"NAME":["Required"]}}}` |
 | Timeout | `503 {"state":"error","error":"service_temporarily_unavailable"}` | `503 {"success":false,"error":{"code":"service_temporarily_unavailable","fields":[]}}` |
+
+Field errors use the old form's names: `product.title` and `title` become `NAME`,
+`category.id` becomes `CATEGORY_ID`, and `product.enabled` becomes `ACTIVE`.
+Unknown fields retain their messages under `_general`; the old client must show that
+entry as a general error. Known aliases merge their messages. This example expects
+an error map whose values are arrays of strings; validate the backend schema in your
+application if it can return other shapes. Adapt this explicit table to your own
+client contract rather than inferring field names automatically.
 
 The status remains an error. Invalid JSON or missing path parameters produce a `400`
 through this response adapter too. If the configured adapter cannot be created,
@@ -210,7 +234,7 @@ client error format. Do not report failures as success or replay failed writes.
 
 Make the adapter available through your application's autoloading. In the controller
 from [Getting started](../README.md#getting-started), replace the Strangler filter entry
-with this configuration, keeping it **last**, after the existing security checks:
+with this configuration, keeping it after the existing security checks:
 
 ```php
 Strangler::proxy('catalog')
@@ -268,6 +292,12 @@ By default, Strangler reads a JSON body. If the old client sends form fields suc
 ```php
 ->payloadUsing(static fn(CController $controller): array => $_POST['item'] ?? [])
 ```
+
+This reader alone is insufficient if your validation filter still decodes raw JSON.
+Use a shared application-owned validated-input reader in both the preceding filter
+and `payloadUsing()`. The [runnable catalog](../examples/catalog/README.md) includes
+complete JSON and `item[...]` variants, structure checks, CSRF, and conflicting IDs.
+Do not combine the JSON validation snippet with the form reader unchanged.
 
 Add this to the same builder chain, retaining its adapter and bypass rule. For flat
 form fields, read `$_POST` instead of `$_POST['item']`. The reader must return an array;

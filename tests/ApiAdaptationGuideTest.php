@@ -55,12 +55,36 @@ final class ApiAdaptationGuideTest extends TestCase
         $adapter = $this->adapter();
         $response = $adapter->transformResponse('create', 422, '{"code":"validation_failed","errors":{"title":["Required"]}}', []);
         self::assertSame(422, $response['status']);
-        self::assertSame(['success' => false, 'error' => ['code' => 'validation_failed', 'fields' => ['title' => ['Required']]]],
+        self::assertSame(['success' => false, 'error' => ['code' => 'validation_failed', 'fields' => ['NAME' => ['Required']]]],
             json_decode($response['body'], true, 512, JSON_THROW_ON_ERROR));
         $response = $adapter->transformResponse('create', 503, '{"state":"error","error":"service_temporarily_unavailable"}', []);
         self::assertSame(503, $response['status']);
         self::assertSame(['success' => false, 'error' => ['code' => 'service_temporarily_unavailable', 'fields' => []]],
             json_decode($response['body'], true, 512, JSON_THROW_ON_ERROR));
+    }
+
+    public function testPublishedValidationErrorsUseLegacyFieldsAndRetainUnknownMessages(): void
+    {
+        $response = $this->adapter()->transformResponse('create', 422, json_encode([
+            'code'   => 'validation_failed',
+            'errors' => [
+                'title'           => ['Required'],
+                'product.title'   => ['Too short'],
+                'category.id'     => ['Unknown category'],
+                'product.enabled' => ['Invalid value'],
+                'internal.only'   => ['Cannot save item'],
+            ],
+        ], JSON_THROW_ON_ERROR), []);
+        self::assertSame(422, $response['status']);
+        self::assertSame([
+            'success' => false,
+            'error'   => ['code' => 'validation_failed', 'fields' => [
+                'NAME'        => ['Required', 'Too short'],
+                'CATEGORY_ID' => ['Unknown category'],
+                'ACTIVE'      => ['Invalid value'],
+                '_general'    => ['Cannot save item'],
+            ]],
+        ], json_decode($response['body'], true, 512, JSON_THROW_ON_ERROR));
     }
 
     public function testPublishedExamplePreservesUsefulHeadersAndLargeIdentifiers(): void
@@ -99,6 +123,16 @@ final class ApiAdaptationGuideTest extends TestCase
 
     public function testPublishedPaginationBypassNeverRoundsLegacyOffsets(): void
     {
+        $_SERVER['HTTP_HOST'] = 'legacy.test';
+        $_SERVER['SCRIPT_FILENAME'] = __DIR__.'/bootstrap.php';
+        $_SERVER['SCRIPT_NAME'] = '/index.php';
+        $_SERVER['REQUEST_URI'] = '/index.php';
+        Yii::setApplication(null);
+        new WebApplication([
+            'basePath'   => __DIR__, 'runtimePath' => __DIR__,
+            'components' => ['request' => ['class' => Request::class], 'user' => ['class' => User::class]],
+            'params'     => ['strangler' => ['features' => ['catalog' => true]]],
+        ]);
         $guide = file_get_contents(dirname(__DIR__).'/docs/api-adaptation.md');
         self::assertIsString($guide);
         if (preg_match('/```php\r?\n(Strangler::proxy.*?)\r?\n```/s', $guide, $matches) !== 1) {

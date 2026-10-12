@@ -7,7 +7,9 @@ namespace Cosmira\Strangler;
 use CException;
 use CLogger;
 use CWebApplication;
+use InvalidArgumentException;
 use LogicException;
+use Throwable;
 use Yii;
 
 /**
@@ -28,6 +30,11 @@ final class YiiRuntime
      * Application parameter name and logging category for the proxy.
      */
     private const CATEGORY = 'strangler';
+
+    /**
+     * Filter configuration key identifying the migration feature.
+     */
+    private const FEATURE = 'feature';
 
     /**
      * Require the web application used by this Yii controller adapter.
@@ -79,7 +86,7 @@ final class YiiRuntime
     /**
      * Read the named feature flag from application settings.
      */
-    public static function isEnabled(?string $feature): bool
+    private static function isEnabled(?string $feature): bool
     {
         if ($feature === null || $feature === '') {
             return false;
@@ -92,6 +99,22 @@ final class YiiRuntime
         }
 
         return ($features[$feature] ?? false) === true;
+    }
+
+    /**
+     * Check and explain the feature gate for this filter candidate.
+     *
+     * @param Config $config
+     */
+    public static function allowsFeature(array $config, string $actionKey): bool
+    {
+        if (! self::isEnabled($config[self::FEATURE] ?? null)) {
+            self::logDecision($config, $actionKey, 'feature_disabled');
+
+            return false;
+        }
+
+        return true;
     }
 
     /**
@@ -143,12 +166,11 @@ final class YiiRuntime
     {
         try {
             $adapter = Yii::createComponent($adapterConfig);
-        } catch (CException $exception) {
+        } catch (CException) {
             Yii::log(
                 sprintf(
-                    'Strangler adapter could not be created: %s | error: %s',
+                    'Strangler adapter could not be created: %s',
                     $adapterConfig[self::COMPONENT_CLASS],
-                    $exception->getMessage(),
                 ),
                 CLogger::LEVEL_WARNING,
                 self::CATEGORY,
@@ -174,9 +196,40 @@ final class YiiRuntime
     }
 
     /**
+     * Map application request fields while preserving safe diagnostics and original exceptions.
+     *
+     * @param Config                  $config
+     * @param array<array-key, mixed> $query
+     * @param array<array-key, mixed> $payload
+     *
+     * @return array{query: array<array-key, mixed>, payload: array<array-key, mixed>}
+     */
+    public static function mapRequest(
+        array $config,
+        string $actionKey,
+        string $path,
+        StranglerAdapterInterface $adapter,
+        array $query,
+        array $payload,
+    ): array {
+        $rejection = [$config, $actionKey, $path];
+
+        try {
+            return [
+                'query'   => $adapter->transformQuery($actionKey, $query),
+                'payload' => $adapter->transformPayload($actionKey, $payload),
+            ];
+        } catch (Throwable $exception) {
+            self::logRejection(...[...$rejection, 'request_adaptation_failure']);
+
+            throw $exception;
+        }
+    }
+
+    /**
      * Log request details when debugging or request logging is enabled.
      */
-    public static function debugLog(string $message): void
+    private static function debugLog(string $message): void
     {
         $settings = self::settings();
 
@@ -203,18 +256,63 @@ final class YiiRuntime
         Yii::log(sprintf(
             'Strangler request rejected | feature: %s | action: %s | path: %s'
                 .' | error: %s | request_id: %s',
-            (string) ($config['feature'] ?? ''),
+            (string) ($config[self::FEATURE] ?? ''),
             $actionKey,
-            $path,
+            self::logPath($path),
             $error,
             self::requestId(),
         ), CLogger::LEVEL_WARNING, self::CATEGORY);
     }
 
     /**
+     * Describe this filter candidate without assuming the remaining chain's executor.
+     *
+     * @param Config $config
+     */
+    public static function logDecision(array $config, string $actionKey, string $reason): void
+    {
+        self::debugLog(sprintf(
+            'Strangler candidate | feature: %s | action: %s | reason: %s'
+                .' | selected: false | request_id: %s',
+            (string) ($config[self::FEATURE] ?? ''), $actionKey, $reason, self::requestId(),
+        ));
+    }
+
+    /**
+     * Record safe attempt metadata; error records remain visible without request logging.
+     *
+     * @param Config $config
+     * @param array{reason: string, method: string, upstream_status?: int,
+     *     client_status?: int, time_ms: int} $result
+     */
+    public static function logResult(
+        array $config,
+        string $actionKey,
+        string $path,
+        array $result,
+    ): void {
+        $message = sprintf(
+            'Strangler attempt | feature: %s | action: %s | method: %s | path: %s'
+                .' | reason: %s | selected: true | upstream_status: %s'
+                .' | client_status: %s | time_ms: %s | request_id: %s',
+            (string) ($config[self::FEATURE] ?? ''), $actionKey,
+            $result['method'], self::logPath($path),
+            $result['reason'], $result['upstream_status'] ?? '', $result['client_status'] ?? '',
+            $result['time_ms'], self::requestId(),
+        );
+        if ($result['reason'] !== 'forwarded') {
+            Yii::log($message, CLogger::LEVEL_ERROR, self::CATEGORY);
+
+            return;
+        }
+
+        self::debugLog($message);
+    }
+
+    /**
      * Reuse the validated, forwarded correlation ID, including server overrides.
      */
-    public static function requestId(): string
+    private static function requestId(): string
     {
         $headers = HttpHeaders::request(self::settings());
 
@@ -245,24 +343,28 @@ final class YiiRuntime
     }
 
     /**
-     * Record an upstream transport failure without exposing request payloads.
+     * Verify HTTPS by default, allowing an explicit development opt-out or CA bundle.
      *
-     * @param Config $config
+     * @param array<array-key, mixed> $settings
      */
-    public static function logFailure(
-        array $config,
-        string $actionKey,
-        string $path,
-        string $error,
-    ): void {
-        Yii::log(sprintf(
-            'Strangler request failed | feature: %s | request_id: %s'
-                .' | action: %s | path: %s | error: %s',
-            (string) ($config['feature'] ?? ''),
-            self::requestId(),
-            $actionKey,
-            $path,
-            $error,
-        ), CLogger::LEVEL_ERROR, self::CATEGORY);
+    public static function tlsVerification(array $settings): bool|string
+    {
+        $value = $settings['verify_ssl'] ?? true;
+        if (is_bool($value)) {
+            return $value;
+        }
+        if (is_string($value) && $value !== '') {
+            return $value;
+        }
+
+        throw new InvalidArgumentException('verify_ssl must be a boolean or a CA bundle path.');
+    }
+
+    /**
+     * Omit route query strings and fragments from diagnostic templates.
+     */
+    private static function logPath(string $path): string
+    {
+        return explode('#', explode('?', $path)[0])[0];
     }
 }

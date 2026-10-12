@@ -389,7 +389,8 @@ final class StranglerProxyTest extends TestCase
         $logs = $logger->getLogs('info', 'strangler');
         self::assertIsArray($logs[0]);
         self::assertIsString($logs[0][0]);
-        self::assertStringContainsString('base_uri: https://backend.test |', $logs[0][0]);
+        self::assertStringContainsString('path: /api/items | reason: forwarded', $logs[0][0]);
+        self::assertSame('https://backend.test', $this->history[0]['options']['base_uri']);
     }
 
     public function testBuilderExportsAllHttpMethodsAndIndependentActions(): void
@@ -801,7 +802,7 @@ final class StranglerProxyTest extends TestCase
         if ($debug || $logRequests) {
             self::assertCount(1, $logs);
             self::assertIsArray($logs[0]);
-            self::assertSame('Strangler request proxied | feature: example | action: get | method: GET | base_uri: https://backend.test | path: /get | status: 201 | time_ms: '.$expectedMs.' | request_id: ', $logs[0][0]);
+            self::assertSame('Strangler attempt | feature: example | action: get | method: GET | path: /get | reason: forwarded | selected: true | upstream_status: 201 | client_status: 201 | time_ms: '.$expectedMs.' | request_id: ', $logs[0][0]);
         } else {
             self::assertSame([], $logs);
         }
@@ -1187,6 +1188,16 @@ final class StranglerProxyTest extends TestCase
             $this->capture(fn () => $proxy->handle($this->controller, $config, 'get')));
         self::assertContains('Content-Type: application/json; charset=utf-8', $headers);
         self::assertContains('X-Strangler-Time: 0', $headers);
+        $headers = [];
+        $config = Strangler::proxy('example')->usingAdapter(new class extends AbstractStranglerAdapter {})
+            ->get('get', '/items/{id}')->build()['config'];
+        $proxy = $this->proxy($this->client([]), $emitter);
+        self::assertSame('{"state":"error","error":"strangler_route_parameter_missing"}',
+            $this->capture(fn () => $proxy->handle($this->controller, $config, 'get')));
+        self::assertSame(400, http_response_code());
+        self::assertContains('Content-Type: application/json; charset=utf-8', $headers);
+        self::assertContains('X-Strangler-Time: 0', $headers);
+        self::assertCount(1, $this->history);
     }
 
     public function testTransportErrorsUseTheSameResponseAdapter(): void

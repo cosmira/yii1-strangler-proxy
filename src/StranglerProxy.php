@@ -69,14 +69,20 @@ final readonly class StranglerProxy
      */
     public static function shouldHandle(array $config, string $actionId): bool
     {
-        if (! YiiRuntime::isEnabled($config['feature'] ?? null)) {
+        $actionKey = self::normalizeActionKey($actionId);
+        if (! YiiRuntime::allowsFeature($config, $actionKey)) {
+
             return false;
         }
 
         $routes = $config['routes'] ?? [];
-        $actionKey = self::normalizeActionKey($actionId);
+        if (! isset($routes[$actionKey])) {
+            YiiRuntime::logDecision($config, $actionKey, 'route_unmapped');
 
-        return isset($routes[$actionKey]);
+            return false;
+        }
+
+        return true;
     }
 
     /**
@@ -126,11 +132,15 @@ final readonly class StranglerProxy
         $route = $routes[$actionKey] ?? null;
 
         if ($route === null) {
+            YiiRuntime::logDecision($config, $actionKey, 'route_unmapped');
+
             return false;
         }
 
         $bypass = $config[self::BYPASS_CALLBACK] ?? null;
         if ($bypass !== null && $bypass($controller, $actionKey, $_GET)) {
+            YiiRuntime::logDecision($config, $actionKey, 'bypass_callback');
+
             return false;
         }
         unset($config[self::BYPASS_CALLBACK]);
@@ -172,6 +182,8 @@ final readonly class StranglerProxy
         }
 
         if (self::shouldBypass($controller, $config, $actionKey, $payload)) {
+            YiiRuntime::logDecision($config, $actionKey, 'bypass_payload');
+
             return false;
         }
 
@@ -193,7 +205,7 @@ final readonly class StranglerProxy
 
             return true;
         }
-        $this->transport->send($config, $actionKey, $outgoing, $adapter);
+        $this->transport->send($config, $actionKey, $outgoing, $adapter, $route[self::PATH]);
 
         return true;
     }
@@ -329,8 +341,11 @@ final readonly class StranglerProxy
         $forwardQuery = $query;
 
         if ($adapter !== null) {
-            $forwardQuery = $adapter->transformQuery($actionKey, $forwardQuery);
-            $forwardPayload = $adapter->transformPayload($actionKey, $forwardPayload);
+            $mapped = YiiRuntime::mapRequest(
+                $config, $actionKey, $route[self::PATH], $adapter, $forwardQuery, $forwardPayload,
+            );
+            $forwardQuery = $mapped['query'];
+            $forwardPayload = $mapped[self::PAYLOAD];
         }
 
         $pathQuery = array_replace(

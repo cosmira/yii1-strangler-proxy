@@ -20,6 +20,16 @@ Strangler does not infer resource permissions from `X-User-Id`. Decide which che
 remain in Yii and which business invariants the new backend must enforce. A public
 Yii action may forward a guest request; its user identifier is an empty string.
 
+The complete [catalog example](../examples/catalog/README.md) implements these
+checks in a real host application. Use it to verify the order, not just copy names.
+
+| Existing location | Integration change | Proof before enabling |
+| --- | --- | --- |
+| Access/validation inside an action or `beforeAction()` | Complete the checks in a preceding filter before calling its chain. | Denied request reaches neither executor with the flag off or on. |
+| Cleanup in `afterAction()` or a previous `postFilter()` | Use a tested host request-end handler for required cleanup. | Exactly one cleanup for legacy, proxied and rejected requests. |
+| Incoming verb/CSRF checks | Keep them before the complete Strangler filter block. | Incorrect verb/token has the same rejection with either executor. |
+| Form validation plus `payloadUsing()` | Read one application-owned validated input representation. | Invalid form shape and conflicting IDs are rejected before forwarding. |
+
 ## Write-action validation
 
 For the catalog contract, the incoming update is POST even though its outgoing
@@ -211,6 +221,35 @@ The controller builder configures behavior for one feature:
 | `afterAttempt($callback)` | Observe outgoing method/path after a transport attempt, before response adaptation. |
 | `build()` | Return the native Yii filter configuration. |
 
+## Independent read and write flags
+
+Use two existing builders with distinct feature names and disjoint action maps.
+Keep **both filters after all preceding security checks**; the final part of the
+filter list is the Strangler block. No route-level flag API is required.
+For an adapter accepting the catalog contract:
+
+```php
+$readFilter = Strangler::proxy('catalog_read')
+    ->usingAdapter(CatalogApiAdapter::class)
+    ->get('get', '/api/items')
+    ->build();
+$writeFilter = Strangler::proxy('catalog_write')
+    ->usingAdapter(CatalogApiAdapter::class)
+    ->bodyIdentifier('ID')
+    ->post('create', '/api/items')
+    ->put('update', '/api/items/{id}')
+    ->build();
+// Append $readFilter and $writeFilter after the host's security filters.
+```
+
+This short recipe assumes supported page-aligned list offsets. The complete example
+adds the documented pagination bypass and shared input reader.
+Set `features.catalog_read` and `features.catalog_write` to independent booleans.
+All four combinations are checked by `composer example:verify`.
+A skipped first filter continues to the next; it does not necessarily select Yii.
+Do not map the same action in both filters: a bypass in the first could then select
+the second upstream route rather than the intended legacy action.
+
 ## Headers, TLS and payloads
 
 By default, only `Accept-Language`, `X-Request-Id` and `Idempotency-Key` are forwarded
@@ -270,9 +309,11 @@ For repeatable deployments, retain the application's `composer.lock` and run
 ## Logging and callbacks
 
 Set `params.strangler.log_requests` to `true`. Add a Yii log route if the application
-does not already collect the category:
+does not already collect the category, and include `log` in the application's
+existing `preload` list so its request-end handler is registered:
 
 ```php
+'preload' => ['log'], // Merge with any existing preload components.
 'components' => [
     'log' => [
         'class' => 'CLogRouter',
@@ -286,17 +327,52 @@ does not already collect the category:
 ],
 ```
 
-If a request stays in Yii, check the feature's boolean value, its mapped action and
-configured bypass conditions. Use your existing `X-Request-Id` to correlate systems;
+With request diagnostics enabled, each candidate records its feature/action,
+selection and reason. Reasons distinguish a disabled flag, unmapped action,
+callback bypass and payload bypass. `selected=false` refers to this candidate;
+another Strangler filter may still forward the request. Use your existing `X-Request-Id` to correlate systems;
 Strangler forwards a valid single-line value and includes it with the feature in
-its logs. It does not create a new correlation service. Configuration and path
-failures are logged as warnings; payloads and tokens are not logged.
+its logs. It does not create a new correlation service. Attempt logs record backend
+and client statuses separately, so an adapter's status change remains visible.
+Ordinary logs use route templates and safe error categories rather than resolved
+identifiers or raw transport exception messages. Payloads and tokens are not logged.
+See [operations](operations.md) for troubleshooting and recovery.
 
 The optional `afterAttempt($method, $path)` callback runs after a transport attempt,
 including failure, **before response mapping**. It does not receive the final client
 response. Keep it small: a thrown callback or adapter exception reaches Yii's error
 handler and can prevent delivery of a response even after a successful backend
 write. Test these hooks and never replay writes to compensate for their errors.
+
+For an optional metrics sink, catch failures inside your application callback so
+that a successful backend write can still return its confirmation:
+
+```php
+->afterAttempt(static function (string $method, string $path) use ($metrics): void {
+    try {
+        $metrics->record($method); // Avoid high-cardinality resolved IDs in metric labels.
+    } catch (Throwable) {
+        Yii::log('Optional metrics sink unavailable', CLogger::LEVEL_WARNING, 'strangler');
+    }
+})
+```
+
+The callback receives the resolved path for compatibility; keep it out of ordinary
+logs and metric labels. Mandatory hooks retain the existing exception contract.
+Do not put an essential business write in this hook: the backend transaction owns
+business invariants. The runnable example verifies both callback failure policies.
+There is no new observer API or silent exception suppression in Strangler.
+
+## Before deployment
+
+The [example deployment check](../examples/catalog/README.md) examines the example's
+actual configuration even when its feature flags are off. It performs no business
+HTTP call and does not create an adapter or execute its callbacks. It cannot prove
+that a future adapter constructor or backend operation will succeed.
+Application bootstrap, secrets and configuration reload remain host-specific.
+Availability checks use a separately declared safe read-only endpoint; never probe
+a write route. Follow the [operations runbook](operations.md) for data ownership,
+flag reload and an uncertain write result after timeout.
 
 ## Local development
 

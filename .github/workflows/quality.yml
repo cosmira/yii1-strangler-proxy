@@ -15,6 +15,34 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  catalog:
+    name: Published catalog example
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      CATALOG_REQUIRE_NODE: '1'
+      STRANGLER_TOKEN: ci-example-token
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.4'
+          extensions: mbstring, dom, fileinfo, pdo_sqlite
+          coverage: none
+          tools: composer:v2
+
+      - name: Install dependencies
+        run: composer install --prefer-dist --no-interaction --no-progress
+
+      - name: Check configuration without contacting backend
+        run: php examples/catalog/check.php
+
+      - name: Verify published HTTP and JavaScript contracts
+        run: composer example:verify
+
   composer:
     name: Composer
     runs-on: ubuntu-24.04

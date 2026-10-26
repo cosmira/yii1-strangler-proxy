@@ -2,7 +2,11 @@
 
 declare(strict_types=1);
 
+use Cosmira\Strangler\InvalidUpstreamResponse;
+use Cosmira\Strangler\Json;
+use Cosmira\Strangler\Mapping;
 use Cosmira\Strangler\Strangler;
+use Psr\Http\Message\ResponseInterface;
 
 /** Pure configuration also consumed by the deployment check. */
 function catalogSettings(): array
@@ -23,8 +27,38 @@ function catalogSettings(): array
 /** No callback is invoked and no business adapter is constructed here. */
 function catalogProxyFilters(): array
 {
-    $decorate = static function (Strangler $builder): Strangler {
-        return $builder->usingAdapter(CatalogApiAdapter::class)
+    $item = static function (mixed $record): object {
+        if (! $record instanceof stdClass || ! isset($record->id, $record->product->title, $record->product->enabled, $record->category->id)) {
+            throw new InvalidUpstreamResponse('Backend item is incomplete.');
+        }
+
+        return (object) ['ID' => (string) $record->id, 'NAME' => $record->product->title,
+            'ACTIVE'          => (bool) $record->product->enabled, 'CATEGORY_ID' => (string) $record->category->id];
+    };
+    $decorate = static function (Strangler $builder) use ($item): Strangler {
+        return $builder
+            ->mapQuery(static fn (array $query): array|false => Mapping::legacyQuery($query), ['get'])
+            ->mapQuery(static fn (): array => [], ['view', 'create', 'update'])
+            ->mapPayload(static fn (array $payload): array => [
+                'product'  => ['title' => $payload['NAME'], 'enabled' => $payload['ACTIVE']],
+                'category' => ['id' => $payload['CATEGORY_ID']],
+            ], ['create', 'update'])
+            ->mapJsonResponse(static fn (mixed $json, ResponseInterface $response): ResponseInterface => Json::response(
+                $response,
+                Mapping::collection($json, $item, ['success' => true], to: ['items'], totalFrom: ['total'], totalTo: ['total']),
+            ), ['get'])
+            ->mapJsonResponse(static fn (mixed $json, ResponseInterface $response): ResponseInterface => Json::response(
+                $response, Mapping::item($json, $item, ['success' => true], to: ['item']),
+            ), ['view', 'create', 'update'])
+            ->mapJsonErrors(static function (mixed $json, ResponseInterface $response): ResponseInterface {
+                $code = $json->code ?? $json->error ?? 'backend_error';
+                $invalid = $code === 'invalid_upstream_response';
+                $fields = Mapping::validationErrors($json->errors ?? new stdClass(), [
+                    'title' => 'NAME', 'product.title' => 'NAME', 'category.id' => 'CATEGORY_ID', 'product.enabled' => 'ACTIVE',
+                ]);
+
+                return Json::response($response, catalogErrorBody($invalid ? 'internal_error' : $code, (array) $fields), $invalid ? 500 : null);
+            })
             ->payloadUsing(static fn (CController $controller): array => $controller->validatedInput)
             ->bodyIdentifier('ID')
             ->afterAttempt(static function (string $method, string $path): void {

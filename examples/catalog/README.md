@@ -114,7 +114,8 @@ The host runs authentication, input/method validation, CSRF, resource access and
 trusted-context filters before the entire Strangler block. Unauthenticated requests
 return `401`; wrong CSRF and another owner's or tenant's item return `403`. The
 seed includes inaccessible items `43` and `44` for those checks. The JSON error
-handler also covers adapter failures and malformed backend responses with `500`
+handler also covers callback failures with `500`; the error mapping retains the
+legacy `500` envelope for malformed backend responses
 and no internal details.
 
 | Existing application code | Integration location |
@@ -132,7 +133,7 @@ an open database transaction across the HTTP call.
 
 `proxy.php` contains reusable, side-effect-free builder definitions and settings;
 `controllers.php` contains application-owned security and input handling;
-`CatalogApiAdapter.php` translates the client contract; `backend.php` owns the new
+the inline mappings in `proxy.php` translate the client contract; `backend.php` owns the new
 API and idempotency; `common.php` describes the shared demonstration schema.
 
 ## Rollout, data and bypass
@@ -185,8 +186,8 @@ php examples/catalog/check.php
 ```
 
 The configuration check uses the host's actual declarations, including with both
-flags off. It checks origin, routes, adapter class/interface, callback declarations,
-headers, TLS and timeouts without constructing the adapter, invoking callbacks,
+flags off. It checks origin, routes, an optional adapter class, inline mapping
+declarations, headers, TLS and timeouts without constructing an adapter, invoking callbacks,
 creating storage or contacting the backend. Missing `STRANGLER_TOKEN` fails the
 check even though the local runtime has a demo fallback. Invalid timeouts report
 the runtime fallback as warnings. It does not validate business adapter constructors.

@@ -10,10 +10,16 @@ use InvalidArgumentException;
 /**
  * Build the Yii filter configuration for migrated actions.
  *
+ * @phpstan-import-type Settings from InlineMapping
+ * @phpstan-import-type QueryMapper from InlineMapping
+ * @phpstan-import-type PayloadMapper from InlineMapping
+ * @phpstan-import-type ResponseMapper from InlineMapping
+ *
  * @phpstan-type Config array{
  *     feature?: string,
  *     routes?: array<string, array{method: string, path: string}>,
  *     adapter?: StranglerAdapterInterface|string|array<string, mixed>,
+ *     mappings?: Settings,
  *     bodyIdentifier?: string,
  *     payloadReader?: callable(CController): array<array-key, mixed>,
  *     bypass?: callable(CController, string, array<array-key, mixed>): bool,
@@ -69,6 +75,70 @@ final class Strangler
     public function usingAdapter(StranglerAdapterInterface|string|array $adapter): self
     {
         $this->config['adapter'] = $adapter;
+
+        return $this;
+    }
+
+    /**
+     * Configure the query mapping for selected actions or all actions.
+     *
+     * @param QueryMapper  $mapper
+     * @param list<string> $actions
+     */
+    public function mapQuery(array|callable $mapper, array $actions = []): self
+    {
+        self::validateFieldMap($mapper);
+        $mappings = $this->config['mappings'] ?? [];
+        $mappings['query'] = self::registerMapping($mappings['query'] ?? [], $mapper, $actions);
+        $this->config['mappings'] = $mappings;
+
+        return $this;
+    }
+
+    /**
+     * Configure the payload mapping for selected actions or all actions.
+     *
+     * @param PayloadMapper $mapper
+     * @param list<string>  $actions
+     */
+    public function mapPayload(array|callable $mapper, array $actions = []): self
+    {
+        self::validateFieldMap($mapper);
+        $mappings = $this->config['mappings'] ?? [];
+        $mappings['payload'] = self::registerMapping($mappings['payload'] ?? [], $mapper, $actions);
+        $this->config['mappings'] = $mappings;
+
+        return $this;
+    }
+
+    /**
+     * Configure the response mapping for selected actions or all actions.
+     *
+     * @param ResponseMapper $mapper
+     * @param list<string>   $actions
+     */
+    public function mapJsonResponse(callable $mapper, array $actions = []): self
+    {
+        $mappings = $this->config['mappings'] ?? [];
+        $mappings['response'] = self::registerMapping(
+            $mappings['response'] ?? [], $mapper, $actions,
+        );
+        $this->config['mappings'] = $mappings;
+
+        return $this;
+    }
+
+    /**
+     * Configure the errors mapping for selected actions or all actions.
+     *
+     * @param ResponseMapper $mapper
+     * @param list<string>   $actions
+     */
+    public function mapJsonErrors(callable $mapper, array $actions = []): self
+    {
+        $mappings = $this->config['mappings'] ?? [];
+        $mappings['errors'] = self::registerMapping($mappings['errors'] ?? [], $mapper, $actions);
+        $this->config['mappings'] = $mappings;
 
         return $this;
     }
@@ -198,10 +268,51 @@ final class Strangler
      */
     public function build(): array
     {
+        if (isset($this->config['mappings']) && array_key_exists('adapter', $this->config)) {
+            throw new InvalidArgumentException(
+                'Inline mappings cannot be combined with usingAdapter().',
+            );
+        }
+
         return [StranglerFilter::class, 'config' => array_merge($this->config, [
             'routes'              => $this->routes,
             'bypassPayloadFields' => $this->bypassPayloadFields,
         ])];
+    }
+
+    /**
+     * Validate field maps without invoking application callbacks.
+     *
+     * @param array<array-key, mixed>|callable $mapper
+     */
+    private static function validateFieldMap(array|callable $mapper): void
+    {
+        if (is_array($mapper) && ! is_callable($mapper)) {
+            Mapping::fields([], $mapper);
+        }
+    }
+
+    /**
+     * Replace shared or action-specific registrations for one mapping stage.
+     *
+     * @template T
+     *
+     * @param array<string, T> $registered
+     * @param T                $mapper
+     * @param list<string>     $actions
+     *
+     * @return array<string, T>
+     */
+    private static function registerMapping(array $registered, mixed $mapper, array $actions): array
+    {
+        foreach ($actions ?: ['*'] as $action) {
+            if ($action === '') {
+                throw new InvalidArgumentException('Mapping actions must not be empty.');
+            }
+            $registered[strtolower($action)] = $mapper;
+        }
+
+        return $registered;
     }
 
     /**

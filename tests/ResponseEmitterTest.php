@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Cosmira\Strangler\Tests;
 
+use Cosmira\Strangler\InlineMapping;
 use Cosmira\Strangler\ResponseEmitter;
 use Cosmira\Strangler\Tests\Fixtures\ApplicationEnded;
 use Cosmira\Strangler\Tests\Fixtures\Request;
@@ -12,6 +13,7 @@ use Cosmira\Strangler\Tests\Fixtures\WebApplication;
 use PHPUnit\Framework\Attributes\PreserveGlobalState;
 use PHPUnit\Framework\Attributes\RunTestsInSeparateProcesses;
 use PHPUnit\Framework\TestCase;
+use Psr\Http\Message\ResponseInterface;
 use Yii;
 
 #[RunTestsInSeparateProcesses]
@@ -20,7 +22,9 @@ final class ResponseEmitterTest extends TestCase
 {
     protected function setUp(): void
     {
-        define('YII_DEBUG', $this->name() === 'testDebugResponsesExposeElapsedTime');
+        define('YII_DEBUG', in_array($this->name(), [
+            'testDebugResponsesExposeElapsedTime', 'testInlineGeneratedErrorsKeepTheirEnvelopeAndZeroAttemptTime',
+        ], true));
         $_GET = [];
         $_POST = [];
         $_SERVER['HTTP_HOST'] = 'legacy.test';
@@ -93,6 +97,21 @@ final class ResponseEmitterTest extends TestCase
             ['header', 'Content-Type: application/json; charset=utf-8', true],
             ['header', 'X-Strangler: 1', true],
         ], $events);
+    }
+
+    public function testInlineGeneratedErrorsKeepTheirEnvelopeAndZeroAttemptTime(): void
+    {
+        $events = [];
+        $emitter = $this->observedEmitter($events);
+        $inline = new InlineMapping([
+            'errors' => ['*' => static fn (mixed $json, ResponseInterface $response): ResponseInterface => $response],
+        ], ['action' => 'update', 'query' => [], 'payload' => null]);
+
+        self::assertSame('{"state":"error","error":"invalid_payload"}',
+            $this->capture(static fn () => $emitter->error(400, 'invalid_payload', inline: $inline)));
+        self::assertContains(['header', 'Content-Type: application/json; charset=utf-8', true], $events);
+        self::assertContains(['header', 'X-Strangler-Time: 0', true], $events);
+        self::assertContains(['status', 400, null], $events);
     }
 
     public function testDefaultWritersApplyTheStatusAndOutputBeforeEndingYii(): void

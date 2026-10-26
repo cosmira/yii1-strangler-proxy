@@ -7,7 +7,6 @@ define('CATALOG_EXECUTOR', 'legacy');
 require dirname(__DIR__, 2).'/vendor/autoload.php';
 require dirname(__DIR__, 2).'/vendor/yiisoft/yii/framework/yii.php';
 require __DIR__.'/common.php';
-require __DIR__.'/CatalogApiAdapter.php';
 require __DIR__.'/proxy.php';
 require __DIR__.'/controllers.php';
 

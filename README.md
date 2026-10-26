@@ -7,7 +7,7 @@
 Migrate a Yii 1.1 application to a new monolith one feature at a time.
 Keep authentication, sessions and access checks in Yii; Strangler forwards enabled
 actions and leaves the remaining actions in the legacy application. When the APIs
-differ, an application-owned adapter preserves the existing client's contract.
+differ, inline maps preserve the existing client's contract inside Yii.
 
 Requires **PHP 8.2+ and Yii 1.1.31+**; upgrade older runtimes first.
 Use it for JSON API actions. Legacy form fields can be translated to JSON; file
@@ -29,7 +29,7 @@ Install the tagged release directly from its Git repository in your Yii applicat
 
 ```shell
 composer config repositories.yii1-strangler-proxy vcs https://github.com/cosmira/yii1-strangler-proxy
-composer require cosmira/yii1-strangler-proxy:^1.1
+composer require cosmira/yii1-strangler-proxy:^1.2
 ```
 
 The VCS entry is needed until the package is registered on Packagist.
@@ -122,8 +122,10 @@ Use its case table as a starting point for your own application's contract check
 
 ## When the APIs differ
 
-Attach an **API contract adapter** with `usingAdapter()`. It translates fields,
-nesting, types and responses; `payloadUsing()` reads legacy form fields.
+Use `mapQuery()`, `mapPayload()`, `mapJsonResponse()`, and `mapJsonErrors()` in the existing builder.
+`Mapping` handles fields, collections, pagination, and validation errors. `Json::response()`
+serializes the result and keeps safe headers. No application adapter class is required.
+`payloadUsing()` still reads legacy form fields. Existing `usingAdapter()` integrations remain supported.
 Follow the [API adaptation guide](docs/api-adaptation.md) for a complete example
 with pagination, body identifiers and both backend and transport errors.
 

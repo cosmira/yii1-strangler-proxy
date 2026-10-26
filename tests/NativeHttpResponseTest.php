@@ -103,6 +103,65 @@ final class NativeHttpResponseTest extends TestCase
         }
     }
 
+    public function testInlineMappingPreservesRawRequestsAndNeverReplaysWrites(): void
+    {
+        $attemptsFile = tempnam(sys_get_temp_dir(), 'strangler-inline-');
+        self::assertIsString($attemptsFile);
+
+        try {
+            $environment = ['INLINE_ATTEMPTS' => $attemptsFile];
+            $this->withServer('inline-mapping.php', function (Client $backend) use ($environment, $attemptsFile): void {
+                $uri = $backend->getConfig('base_uri');
+                self::assertInstanceOf(UriInterface::class, $uri);
+                $this->withServer('inline-mapping.php', static function (Client $proxy) use ($attemptsFile): void {
+                    $raw = '{ "NAME": "Desk", "empty": {}, "list": [], "id": 9223372036854775808 }';
+                    foreach (['raw' => 1, 'remap' => 2, 'bypass' => 2] as $mode => $attempts) {
+                        $response = $proxy->post('/?r=inline/get&mode='.$mode, ['body' => $raw]);
+                        self::assertSame(200, $response->getStatusCode(), (string) $response->getBody());
+                        $json = json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR);
+                        self::assertIsArray($json);
+                        self::assertSame($attempts, $json['attempts']);
+                        if ($mode === 'bypass') {
+                            self::assertSame('legacy', $json['executor']);
+                        } else {
+                            self::assertSame('upstream', $json['executor']);
+                            self::assertSame($mode === 'raw' ? $raw : '{"name":"Desk"}', $json['body']);
+                            $context = $json['context'];
+                            self::assertIsArray($context);
+                            $payload = $context['payload'];
+                            self::assertIsArray($payload);
+                            self::assertSame('9223372036854775808', $payload['id']);
+                            self::assertSame(['r' => 'inline/get', 'mode' => $mode], $context['query']);
+                        }
+                    }
+                    foreach (['malformed' => 3, 'bad-shape' => 4] as $mode => $attempts) {
+                        $response = $proxy->post('/?r=inline/get&mode='.$mode, ['json' => ['ID' => 42]]);
+                        self::assertSame(502, $response->getStatusCode(), (string) $response->getBody());
+                        self::assertSame('1', $response->getHeaderLine('X-Error-Handler'));
+                        self::assertSame(['executor' => 'error', 'payload' => ['ID' => 42], 'status' => 502],
+                            json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR));
+                        self::assertCount($attempts, file($attemptsFile) ?: []);
+                    }
+                    $response = $proxy->post('/?r=inline/get&mode=empty');
+                    self::assertSame(200, $response->getStatusCode());
+                    self::assertSame(['executor' => 'upstream', 'empty' => true],
+                        json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR));
+                    $response = $proxy->post('/?r=inline/get&mode=redirect', ['allow_redirects' => false]);
+                    self::assertSame(302, $response->getStatusCode());
+                    self::assertSame('redirect body', (string) $response->getBody());
+                    self::assertFalse($response->hasHeader('X-Success-Handler'));
+                    $response = $proxy->post('/?r=inline/get', ['body' => 'null']);
+                    self::assertSame(400, $response->getStatusCode());
+                    self::assertSame(['executor' => 'error', 'payload' => null, 'status' => 400],
+                        json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR));
+                    self::assertCount(6, file($attemptsFile) ?: []);
+                }, environmentOverrides: $environment + ['INLINE_BACKEND' => (string) $uri]);
+            }, environmentOverrides: $environment);
+        } finally {
+            unlink($attemptsFile);
+        }
+    }
+
     /**
      * @param callable(Client): void $check
      * @param array<string, string>  $environmentOverrides

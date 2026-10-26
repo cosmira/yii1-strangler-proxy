@@ -1,377 +1,187 @@
-# Adapting different API contracts
+# Adapt different API contracts inside Yii
 
-Changing the destination URL is enough only when both APIs accept the same requests
-and return the same responses. When their contracts differ, provide an adapter that
-translates between them. The existing client continues using the legacy API.
+Keep the old client contract in Yii. The backend can keep its new API.
+Use inline mappings for ordinary translations and retain `usingAdapter()` for an
+existing or unusually complex adapter. Do not combine both approaches in one filter.
 
-```text
-legacy client → Yii checks → request mapping → new API
-legacy client ← legacy response format ← response mapping ← new API
-```
+## Define and connect one feature
 
-## 1. Define the mapping for one feature
+This example translates `start/limit` to `page/per_page`, nests write fields, and
+restores the legacy item, list, and error envelopes. It needs no adapter class.
+Place the resulting filter after the existing access, method, CSRF, and input checks.
 
-For example, the legacy catalog API and its replacement have these contracts:
-
-| Operation | Legacy API | New API |
-| --- | --- | --- |
-| List items | `GET /index.php?r=catalog/get&start=20&limit=10` | `GET /api/items?page=3&per_page=10` |
-| Create an item | `POST /index.php?r=catalog/create` | `POST /api/items` |
-| Update an item | `POST /index.php?r=catalog/update`, with `ID` in the body | `PUT /api/items/42` |
-
-The update request sent by the existing client is:
-
-```json
-{"ID":42,"NAME":"Desk","ACTIVE":1,"CATEGORY_ID":7}
-```
-
-The new API expects the identifier in the URL and a different body structure:
-
-```json
-{"product":{"title":"Desk","enabled":true},"category":{"id":7}}
-```
-
-It responds with:
-
-```json
-{"data":{"id":42,"title":"Desk","enabled":true,"category":{"id":7}}}
-```
-
-The existing client still expects:
-
-```json
-{"success":true,"data":{"ID":42,"NAME":"Desk","ACTIVE":1,"CATEGORY_ID":7}}
-```
-
-Agree on field names, nesting, types, pagination, statuses and error formats before
-enabling the feature. The examples below implement this specific catalog contract;
-adapt them to your application's validated input and backend response schema.
-
-## 2. Implement the translations
-
-Create an application-owned **API contract adapter**. `AbstractStranglerAdapter`
-implements unchanged query, payload and response behavior; override the methods
-your contract needs. It implements `StranglerAdapterInterface`:
+The old write body is `{"ID":42,"NAME":"Desk","ACTIVE":1,"CATEGORY_ID":7}`.
+The backend accepts `{"product":{"title":"Desk","enabled":true},"category":{"id":7}}`.
+It returns `{"data":{"id":42,"title":"Desk","enabled":true,"category":{"id":7}}}`.
+Lists use `{"data":[...],"meta":{"total":50}}`.
 
 ```php
-use Cosmira\Strangler\AbstractStranglerAdapter;
+use Cosmira\Strangler\InvalidUpstreamResponse;
+use Cosmira\Strangler\Json;
+use Cosmira\Strangler\Mapping;
+use Cosmira\Strangler\Strangler;
+use Psr\Http\Message\ResponseInterface;
 
-final class CatalogApiAdapter extends AbstractStranglerAdapter
-{
-    public function __construct(private readonly array $query = []) {}
-
-    public function transformQuery(string $actionId, array $query): array
-    {
-        self::responseRelations($this->query);
-        if ($actionId !== 'get') {
-            return [];
-        }
-
-        $limit = max(1, (int) ($query['limit'] ?? 20));
-        $start = max(0, (int) ($query['start'] ?? 0));
-
-        return [
-            'page' => intdiv($start, $limit) + 1,
-            'per_page' => $limit,
-        ];
+$fields = ['id' => 'ID', 'title' => 'NAME'];
+$errorFields = ['title' => 'NAME', 'product.title' => 'NAME',
+    'category.id' => 'CATEGORY_ID', 'product.enabled' => 'ACTIVE'];
+$relations = static function (array $query): array {
+    $with = $query['with'] ?? [];
+    if (!is_array($with) || !array_is_list($with)
+        || array_filter($with, static fn ($name): bool => $name !== 'category')) {
+        throw new InvalidArgumentException('Only with[]=category is supported.');
     }
 
-    public function transformPayload(string $actionId, array $payload): array
-    {
-        if (!in_array($actionId, ['create', 'update'], true)) {
-            return [];
-        }
-
-        return [
-            'product' => [
-                'title' => $payload['NAME'],
-                'enabled' => (bool) $payload['ACTIVE'],
-            ],
-            'category' => ['id' => $payload['CATEGORY_ID']],
-        ];
+    return $with;
+};
+$record = static function (mixed $item, array $request) use ($fields, $relations): object {
+    if (!$item instanceof stdClass || !isset($item->id, $item->title, $item->enabled, $item->category->id)) {
+        throw new InvalidUpstreamResponse('The catalog API returned an incomplete item.');
+    }
+    $legacy = Mapping::fields($item, $fields);
+    $legacy->ACTIVE = $item->enabled ? 1 : 0;
+    $legacy->CATEGORY_ID = $item->category->id;
+    if (in_array('category', $relations($request['query']), true)) {
+        $legacy->CATEGORY = Mapping::fields($item->category, ['id' => 'ID']);
     }
 
-    public function transformResponse(
-        string $actionId,
-        int $status,
-        string $body,
-        array $headers,
-    ): array {
-        // Preserve redirects and empty responses.
-        if ($status < 200 || ($status >= 300 && $status < 400) || $body === '') {
-            return ['status' => $status, 'body' => $body, 'headers' => $headers];
-        }
+    return $legacy;
+};
 
-        $response = json_decode($body, true, 512, JSON_THROW_ON_ERROR | JSON_BIGINT_AS_STRING);
-        if (!is_array($response)) {
-            throw new UnexpectedValueException('The catalog API must return a JSON object.');
-        }
-        if ($status < 400 && (!isset($response['data']) || !is_array($response['data'])
-            || ($actionId === 'get' && !isset($response['meta']['total'])))) {
-            throw new UnexpectedValueException('The catalog API returned an unexpected schema.');
-        }
-        if ($status >= 400) {
-            $legacy = [
-                'success' => false,
-                'error' => [
-                    'code' => $response['code'] ?? $response['error'] ?? 'request_failed',
-                    'fields' => $this->legacyErrors($response['errors'] ?? []),
-                ],
-            ];
-        } elseif ($actionId === 'get') {
-            $legacy = [
-                'success' => true,
-                'total' => $response['meta']['total'],
-                'rows' => array_map($this->legacyItem(...), $response['data']),
-            ];
-        } else {
-            $legacy = ['success' => true, 'data' => $this->legacyItem($response['data'])];
-        }
-
-        // Keep only metadata that remains valid after rewriting the body.
-        $preserved = [];
-        foreach ($headers as $name => $values) {
-            if (in_array(strtolower($name), ['x-request-id', 'retry-after', 'x-ratelimit-remaining'], true)) {
-                $preserved[$name] = $values;
-            }
-        }
-        $headers = ['Content-Type' => ['application/json; charset=utf-8']] + $preserved;
-
-        return [
-            'status' => $status,
-            'body' => json_encode($legacy, JSON_THROW_ON_ERROR),
-            'headers' => $headers,
-        ];
-    }
-
-    private function legacyErrors(array $errors): array
-    {
-        $names = [
-            'title' => 'NAME', 'product.title' => 'NAME',
-            'category.id' => 'CATEGORY_ID', 'product.enabled' => 'ACTIVE',
-        ];
-        $fields = [];
-        foreach ($errors as $name => $messages) {
-            // Unknown fields become general messages rather than invisible form errors.
-            $field = $names[$name] ?? '_general';
-            $fields[$field] = array_merge($fields[$field] ?? [], $messages);
-        }
-
-        return $fields;
-    }
-
-    private function legacyItem(array $item): array
-    {
-        if (!isset($item['id'], $item['title'], $item['enabled'], $item['category']['id'])) {
-            throw new UnexpectedValueException('The catalog API returned an incomplete item.');
-        }
-
-        $legacy = [
-            'ID' => $item['id'],
-            'NAME' => $item['title'],
-            'ACTIVE' => $item['enabled'] ? 1 : 0,
-            'CATEGORY_ID' => $item['category']['id'],
-        ];
-        if (in_array('category', self::responseRelations($this->query), true)) {
-            $legacy['CATEGORY'] = ['ID' => $item['category']['id']];
-        }
-
-        return $legacy;
-    }
-
-    private static function responseRelations(array $query): array
-    {
-        $relations = $query['with'] ?? [];
-        if (!is_array($relations) || !array_is_list($relations)
-            || array_filter($relations, static fn ($relation): bool => $relation !== 'category')) {
-            throw new InvalidArgumentException('Only with[]=category is supported.');
-        }
-
-        return $relations;
-    }
-}
-```
-
-For a smaller change, extend the same base class and override only the relevant
-method; the other two remain unchanged. No new configuration layer is required.
-
-The constructor captures the original query without validation or side effects.
-Create one adapter per request with `new CatalogApiAdapter($_GET)` to support
-`with[]=category`. The response then adds `CATEGORY: {"ID":7}` and keeps `CATEGORY_ID`.
-Without `with`, the response stays unchanged. The backend already supplies the category ID.
-
-`responseRelations()` is a pure projection rule. It rejects unsupported relations when
-mapping runs after the preceding Yii checks. `transformQuery()` does not save state
-for `transformResponse()`, so response mapping also works on its own.
-Do not validate query parameters in the constructor when `filters()` creates the adapter
-before the security filters run.
-
-Each method has a distinct purpose:
-
-- `transformQuery()` returns the query parameters the new API accepts. Here it replaces
-  offset pagination with page pagination and omits the old parameters.
-- `transformPayload()` returns the new JSON body. Here it renames fields, creates nested
-  objects and converts legacy integer flags to booleans. `ID` is deliberately left out.
-- `transformResponse()` returns the status, a **serialized response body**, and headers
-  for the existing client. Here it maps both individual items and paginated lists.
-
-For the list action, the example expects the backend to return
-`{"data":[...],"meta":{"total":123}}` and returns
-`{"success":true,"rows":[...],"total":123}` to the legacy client.
-Action names passed to the adapter are lowercase: `get`, `create`, `update`.
-Without an adapter or custom payload reader, write bodies retain their original JSON
-bytes, including empty objects and large integers. With an adapter, payloads are PHP
-arrays: empty objects become arrays and integers beyond PHP's range become strings.
-Your adapter owns the new JSON shape; use string identifiers in both contracts when
-numeric precision matters. The example also reads large backend integers as strings.
-
-The pagination conversion is exact when `start` is a multiple of `limit`. The bypass
-rule below keeps other offsets in Yii **before any upstream request**, so the example
-never silently rounds to a different set of items. Alternatively, retain offset
-support in the new backend.
-
-The example emits JSON with a Content-Type header. Add any other headers required by
-the legacy contract deliberately; upstream cache validators such as ETag describe the
-original body and should not be reused unchanged after rewriting it.
-
-The same method maps backend errors and package-generated errors. For example:
-
-| Failure | Response passed to the adapter | Legacy response |
-| --- | --- | --- |
-| Validation | `422 {"code":"validation_failed","errors":{"title":["Required"]}}` | `422 {"success":false,"error":{"code":"validation_failed","fields":{"NAME":["Required"]}}}` |
-| Timeout | `503 {"state":"error","error":"service_temporarily_unavailable"}` | `503 {"success":false,"error":{"code":"service_temporarily_unavailable","fields":[]}}` |
-
-Field errors use the old form's names: `product.title` and `title` become `NAME`,
-`category.id` becomes `CATEGORY_ID`, and `product.enabled` becomes `ACTIVE`.
-Unknown fields retain their messages under `_general`; the old client must show that
-entry as a general error. Known aliases merge their messages. This example expects
-an error map whose values are arrays of strings; validate the backend schema in your
-application if it can return other shapes. Adapt this explicit table to your own
-client contract rather than inferring field names automatically.
-
-The status remains an error. Invalid JSON or missing path parameters produce a `400`
-through this response adapter too. If the configured adapter cannot be created,
-Strangler returns its own configuration error because there is no adapter to call.
-Malformed backend JSON, the unexpected schema rejected above, or a bug in your
-adapter reaches Yii's application error handler. Configure that handler to emit the
-legacy JSON error envelope, a `500` status and `Content-Type: application/json` for
-API requests; it must not render Yii's HTML error page or expose exception details.
-Exercise this through the real API with HTML, scalar JSON, missing `data` and a
-throwing adapter. The catalog example rejects invalid responses; the host owns the
-client error format. Do not report failures as success or replay failed writes.
-
-## 3. Connect the adapter and routes
-
-Make the adapter available through your application's autoloading. In the controller
-from [Getting started](../README.md#getting-started), replace the Strangler filter entry
-with this configuration, keeping it after the existing security checks:
-
-```php
-Strangler::proxy('catalog')
-    ->usingAdapter(new CatalogApiAdapter($_GET))
+return Strangler::proxy('catalog')
     ->bodyIdentifier('ID')
-    ->bypassUsing(static function (CController $controller, string $actionId, array $query): bool {
-        $limit = max(1, (int) ($query['limit'] ?? 20));
-        $start = max(0, (int) ($query['start'] ?? 0));
+    ->mapQuery(static fn (): array => [])
+    ->mapQuery(static function (array $query) use ($relations): array|false {
+        $relations($query);
+        unset($query['with']);
 
-        return $actionId === 'get' && $start % $limit !== 0;
+        return Mapping::legacyQuery($query);
+    }, ['get'])
+    ->mapPayload(static fn (array $payload): array => [
+        'product' => ['title' => $payload['NAME'], 'enabled' => (bool) $payload['ACTIVE']],
+        'category' => ['id' => $payload['CATEGORY_ID']],
+    ], ['create', 'update'])
+    ->mapJsonResponse(static function (mixed $json, ResponseInterface $response, array $request) use ($record): ResponseInterface {
+        if ($response->getStatusCode() === 204) {
+            return $response;
+        }
+        $map = static fn (mixed $item): object => $record($item, $request);
+        $body = $request['action'] === 'get'
+            ? Mapping::collection($json, $map, ['success' => true], to: ['rows'],
+                totalFrom: ['meta', 'total'], totalTo: ['total'])
+            : Mapping::item($json, $map, ['success' => true]);
+
+        return Json::response($response, $body);
     })
-    ->bypassPayloadUsing(static function (array $payload, string $actionId, array $query): bool {
-        return $actionId === 'update' && ($payload['OPTIONS']['MODE'] ?? null) === 'legacy';
-    })
+    ->mapJsonErrors(static fn (mixed $json, ResponseInterface $response): ResponseInterface => Json::response($response, [
+        'success' => false,
+        'error' => ['code' => $json->code ?? $json->error ?? 'request_failed',
+            'fields' => (array) Mapping::validationErrors($json->errors ?? new stdClass(), $errorFields)],
+    ]))
+    ->bypassPayloadUsing(static fn (array $payload, string $action): bool =>
+        $action === 'update' && ($payload['OPTIONS']['MODE'] ?? null) === 'legacy')
     ->get('get', '/api/items')
+    ->get('view', '/api/items/{id}')
     ->post('create', '/api/items')
     ->put('update', '/api/items/{id}')
-    ->build()
+    ->build();
 ```
 
-An instance is simplest when dependencies are already constructed. Yii can also
-create a no-argument adapter class or apply public property configuration:
+Without `with`, the item response stays
+`{"success":true,"data":{"ID":42,"NAME":"Desk","ACTIVE":1,"CATEGORY_ID":7}}`.
+`with[]=category` also adds `CATEGORY: {"ID":7}` while preserving `CATEGORY_ID`.
+The callback uses the request snapshot directly. It does not rely on a previous
+request mapper or read global Yii state. Constructing this configuration does not
+validate request data before the security filters run.
+
+For a list, the legacy client gets `{"success":true,"rows":[...],"total":50}`.
+A 204 response stays empty in this example. To restore a legacy success envelope
+instead, return `Json::response($response, ['state' => 'data'], 200)`.
+
+## Use maps for ordinary fields
+
+All field maps use `SOURCE => TARGET`. A flat `mapPayload(['NAME' => 'title'])`
+produces an object containing only the mapped fields. An empty result is `{}`.
+A callback can explicitly return `[]` for an array. Use a short PHP callback when
+nesting, combining fields, or converting a value requires application knowledge.
+
+Keys such as `status.IDENTITY_STATUS_ID` are literal keys. They are not paths.
+Only helper `from`, `to`, `totalFrom`, and `totalTo` arguments accept paths, expressed
+as arrays of segments. Missing fields stay absent, existing `null` stays `null`, and
+JSON `{}` and `[]` remain distinct. Big integers decode as strings without rounding.
+
+`Mapping::legacyQuery()` translates allowed filters, sort directions, includes, and
+exact offset pagination. Unsupported fields or an offset not divisible by the limit
+return `false`, keeping Yii before any upstream request. No records are skipped by
+rounding. Add filters, sorts, and includes as explicit name maps.
+
+## Preserve errors and headers
+
+`mapJsonErrors()` receives backend errors and synthetic package errors. Validation
+messages keep the old form names through `Mapping::validationErrors()`. Unknown
+fields collect under `_general`; aliases merge their messages. The application
+continues to choose business error codes and any status translation.
+
+Malformed backend JSON and helper-detected invalid response structure produce one
+502 `invalid_upstream_response`, then run the error mapper. A programming exception
+in a callback reaches the host error handler unchanged. Neither path retries a write
+or runs the old Yii action after forwarding. Configure the JSON error action from
+[the integration guide](integration.md#json-api-error-handler) for application bugs.
+
+`Json::response()` serializes the body and retains `X-Request-Id`, `Retry-After`, and
+`X-RateLimit-Remaining`. It removes stale compression, length, validators, and digest
+metadata. Set extra headers deliberately with the standard PSR response methods.
+
+If no response mapper is selected, the original response passes through. Query-only
+or response-only mappings preserve raw request JSON bytes when no payload mapper is
+selected. `payloadUsing()` retains its existing custom-reader behavior.
+
+## Keep routing and security explicit
+
+The first argument of `Strangler::proxy()` is a feature key. In
+`put('update', '/api/items/{id}')`, the action name belongs to Yii and the path and
+HTTP method belong to the backend. Keep incoming method and CSRF rules in preceding
+Yii filters. A route must start with one `/`; it cannot change the upstream origin.
+
+`bodyIdentifier('ID')` captures the original body identifier before mapping. Removing
+`ID` from the outgoing body still resolves `/api/items/42`. The request `id` wins.
+Reject conflicting identifiers in the preceding validation filter before its
+resource-access check. Unresolved placeholders return 400 without contacting the backend.
+
+For legacy form fields, read the same validated input as the preceding filter:
 
 ```php
-->usingAdapter(CatalogApiAdapter::class)
-// For your own configurable adapter with a public $apiVersion property:
-->usingAdapter(['class' => VersionedCatalogAdapter::class, 'apiVersion' => 'v2'])
+->payloadUsing(static fn (CController $controller): array => $controller->validatedInput)
 ```
 
-Choose one form. Make each class autoloadable and ensure it implements
-`StranglerAdapterInterface`; Yii configuration is not a dependency container.
+This turns validated form values into upstream JSON. It does not forward files.
+The [runnable catalog](../examples/catalog/README.md) includes JSON and form variants,
+ACL, CSRF, tenant isolation, idempotency, and a real HTTP contract verifier.
 
-The first route argument names the **Yii action**; the second is the **new API path**.
-The builder method chooses the outgoing HTTP method. For example, `put('update', ...)`
-turns a legacy POST to `actionUpdate` into an upstream PUT.
+## Retain existing adapters where needed
 
-`bodyIdentifier('ID')` supplies `{id}` from the original payload when the Yii request
-has no `id` parameter. Strangler captures it before calling the adapter, so removing
-`ID` from the outgoing body still produces `/api/items/42`. The request's `id` takes
-precedence. Other placeholders use the translated body, then translated query, then
-original query, accepting lowercase or uppercase keys. Values are URL-encoded;
-unresolved parameters and `.`/`..` values return `400` before contacting the backend.
-Paths must start with one `/`; absolute URLs and `//other-host` are rejected.
-Keep prefixes such as `/v2` in the route, not in `base_uri`.
+Existing `StranglerAdapterInterface` implementations remain supported. Extend
+`AbstractStranglerAdapter` and override `transformQuery()`, `transformPayload()`, or
+`transformResponse()` for a complex existing integration. Connect it with
+`usingAdapter($instance)`, an autoloadable class name, or Yii component configuration.
+Do not combine that option with inline mappings in the same filter.
 
-If both request `id` and body `ID` are provided, reject any mismatch in the
-preceding validation filter, **before its resource-access check**. Otherwise the
-access check and backend could refer to different items. See the
-[write-action validation example](integration.md#write-action-validation).
+## Enable the feature after checking compatibility
 
-Each Yii action can have one route; duplicate declarations are rejected. The builder
-also provides `patch()` and `head()`. These methods set the outgoing HTTP method,
-while the preceding Yii filters enforce permitted incoming methods and CSRF rules.
+Keep the feature off until the client's requests and responses match through both
+executors. Verify list, item, writes, errors, permissions, relations, and timeouts.
+Unmapped actions and deliberate bypasses stay in Yii before forwarding.
 
-By default, Strangler reads a JSON body. If the old client sends form fields such as
-`item[ID]=42&item[NAME]=Desk&item[ACTIVE]=1&item[CATEGORY_ID]=7`, add a payload reader:
-
-```php
-->payloadUsing(static fn(CController $controller): array => $_POST['item'] ?? [])
-```
-
-This reader alone is insufficient if your validation filter still decodes raw JSON.
-Use a shared application-owned validated-input reader in both the preceding filter
-and `payloadUsing()`. The [runnable catalog](../examples/catalog/README.md) includes
-complete JSON and `item[...]` variants, structure checks, CSRF, and conflicting IDs.
-Do not combine the JSON validation snippet with the form reader unchanged.
-
-Add this to the same builder chain, retaining its adapter and bypass rule. For flat
-form fields, read `$_POST` instead of `$_POST['item']`. The reader must return an array;
-validate the submitted structure in the preceding Yii filters. Form fields become
-JSON upstream; this does not forward uploaded files.
-
-## 4. Enable the feature after checking compatibility
-
-Keep `features.catalog` disabled until the existing client works with the translated
-requests and responses. Check the outgoing URL, method, query and body, then verify
-success, validation errors, permissions and timeouts from the client's perspective.
-
-The package tests execute this catalog adapter with mock HTTP responses. Before
-rollout, repeat these contract checks against your application's actual client and
-backend; source coverage does not prove feature compatibility.
-
-Only add routes whose contracts you have adapted. Unmapped actions continue in Yii.
-If an action has a legacy-only payload variant, keep that variant in Yii explicitly:
+A simple payload-field bypass remains available:
 
 ```php
 ->bypassWhenPayloadHas('update', ['LEGACY_ONLY'])
 ```
 
-For a decision based on a nested value, use the original payload snapshot:
+For a nested value, use `bypassPayloadUsing()` as in the complete example. Both use
+the original payload snapshot. An early `bypassUsing()` match does not read the body.
+The payload rules run after one read and before mapping. A matching field bypass
+short-circuits the predicate. Exceptions do not select the old handler.
 
-```php
-->bypassPayloadUsing(static function (array $payload, string $actionId, array $query): bool {
-    return $actionId === 'update' && ($payload['OPTIONS']['MODE'] ?? null) === 'legacy';
-})
-```
-
-The callback receives the original payload, lowercase action, and original query.
-It does not need to read the controller or request body. Use query data for compatibility
-choices only. Reject conflicting identifiers in the preceding validation filter before
-its resource-access check.
-
-Strangler first checks the early `bypassUsing()` callback without reading the body.
-It then resolves the adapter and reads one payload snapshot. A matching
-`bypassWhenPayloadHas()` field skips the new callback. Otherwise `bypassPayloadUsing()`
-runs once before request mapping. Returning `true` keeps the legacy executor and sends
-no upstream request. Exceptions reach the host error handler and do not select Yii.
-
-Turning off the feature also keeps subsequent requests in Yii. None of these mechanisms
-retries an operation already sent upstream.
+Roll back by disabling the feature for subsequent requests. Neither disabling a flag
+nor returning `false` from a request mapper replays an operation already sent upstream.

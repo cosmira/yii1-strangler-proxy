@@ -213,6 +213,10 @@ The controller builder configures behavior for one feature:
 | Method | Purpose |
 | --- | --- |
 | `get/post/put/patch/delete/head($action, $path)` | Map one Yii action to an outgoing method/path. Each action may appear once. |
+| `mapQuery($mapper, $actions = [])` | Translate query fields or return `false` to keep Yii before forwarding. |
+| `mapPayload($mapper, $actions = [])` | Translate the payload using a field map or callback. |
+| `mapJsonResponse($mapper, $actions = [])` | Map decoded success JSON and return a PSR response. |
+| `mapJsonErrors($mapper, $actions = [])` | Map upstream and package-generated errors. |
 | `usingAdapter($adapter)` | Supply a `StranglerAdapterInterface` instance, autoloadable class name, or Yii `['class' => ..., ...]` configuration. |
 | `payloadUsing($reader)` | Read a validated legacy body as an array, once per handled request. |
 | `bodyIdentifier($field)` | Set the original-body fallback field for `{id}`; disabled by default. Request `id` takes precedence. |
@@ -232,24 +236,80 @@ Payload decisions run in this order after the feature and route checks:
 
 A predicate exception reaches the application error handler unchanged. It does not
 select the legacy action. Both payload rules use the `bypass_payload` diagnostic reason.
-The [adaptation guide](api-adaptation.md#4-enable-the-feature-after-checking-compatibility)
+The [adaptation guide](api-adaptation.md#enable-the-feature-after-checking-compatibility)
 includes a nested-value example. Without the new predicate, existing configurations
 keep their behavior. Calling `bypassPayloadUsing()` again replaces its previous callback.
+
+## Inline mappings
+
+For typical integrations, use the [complete inline mapping example](api-adaptation.md).
+No application adapter class is required. `Mapping` handles field maps, lists, item
+and collection envelopes, validation error fields, and exact offset pagination.
+`Json::response()` handles serialization, status, and safe response metadata.
+
+Empty action lists define defaults. An action-specific mapping replaces its default
+for that stage. Re-registering the same action replaces its previous mapping.
+Action names are lowercase. `usingAdapter()` and inline mappings in one filter are
+rejected at `build()`, regardless of their registration order.
+
+Request callbacks receive `($value, $request)`. The snapshot has original `action`,
+`query`, and `payload`; errors before body reading have `payload=null`. Query mapping
+receives query parameters without `r`. Query callbacks return an array or `false`.
+Payload callbacks return an array, a `stdClass`, or `false`. A flat payload map creates
+an object, including `{}` when empty. `false` keeps Yii before any HTTP attempt.
+Exceptions do not select the old handler. Query bypass skips payload mapping.
+
+For raw JSON, the payload snapshot has an array at the root and keeps nested objects
+as `stdClass`. Existing bypass callbacks still receive their associative arrays.
+Custom `payloadUsing()` readers keep the representation they return.
+Treat mapper inputs and snapshot objects as read-only. Return mapped values instead
+of changing nested objects in place. The mapping helpers do not mutate their inputs.
+
+JSON callbacks receive `($json, $response, $request)` and return `ResponseInterface`.
+Objects decode as `stdClass`, lists as arrays, and large integers as strings.
+Response handlers are selected using the original HTTP status. Redirects bypass
+JSON mapping. Empty bodies arrive as `null`. Without a matching handler, the original
+response passes through. Response-only and query-only maps do not reserialize raw
+request JSON. Custom `payloadUsing()` behavior is unchanged.
+
+Malformed JSON and `InvalidUpstreamResponse` from structural helpers produce one
+502 error before error mapping. Other callback exceptions propagate unchanged.
+Neither path replays a request after forwarding. Logs distinguish upstream and
+client statuses even when mapping changes the status.
+
+`Json::response()` preserves `X-Request-Id`, `Retry-After`, and `X-RateLimit-Remaining`
+and sets JSON Content-Type. It drops old compression, length, validators, and digest
+metadata. Add other headers explicitly with PSR response methods. For informational statuses, 204, 205, and
+304, use a null body or explicitly select a body-permitting status such as 200.
+
+`Mapping::fields()` uses literal `SOURCE => TARGET` names. Missing fields are omitted,
+null remains null, unknown fields are excluded, and duplicate destinations are errors.
+Helper paths are arrays of segments, not dotted expressions. `Mapping::many()` accepts
+a record callback for exceptional nested structures without a recursive schema.
+`Mapping::item()` and `collection()` use `from=['data']`, `to=['data']`, and an optional
+envelope. Configured total paths must exist and hold a nonnegative integer or its
+correct string form. `Mapping::validationErrors()` collects unknown fields under
+`_general` while keeping messages and merging aliases.
+
+`Mapping::legacyQuery()` takes explicit filter, sort, and include maps. Its defaults
+are `defaultLimit=20` and `maxLimit=100`. It returns `filter`, CSV `sort/include`, and
+`page/per_page`. Unsupported query shapes or unaligned offsets return `false`.
+It never rounds an offset into a different page.
 
 ## Independent read and write flags
 
 Use two existing builders with distinct feature names and disjoint action maps.
 Keep **both filters after all preceding security checks**; the final part of the
 filter list is the Strangler block. No route-level flag API is required.
-For an adapter accepting the catalog contract:
+For an existing custom adapter implementing your catalog contract:
 
 ```php
 $readFilter = Strangler::proxy('catalog_read')
-    ->usingAdapter(CatalogApiAdapter::class)
+    ->usingAdapter(ExistingCatalogAdapter::class)
     ->get('get', '/api/items')
     ->build();
 $writeFilter = Strangler::proxy('catalog_write')
-    ->usingAdapter(CatalogApiAdapter::class)
+    ->usingAdapter(ExistingCatalogAdapter::class)
     ->bodyIdentifier('ID')
     ->post('create', '/api/items')
     ->put('update', '/api/items/{id}')
@@ -257,8 +317,9 @@ $writeFilter = Strangler::proxy('catalog_write')
 // Append $readFilter and $writeFilter after the host's security filters.
 ```
 
-This short recipe assumes supported page-aligned list offsets. The complete example
-adds the documented pagination bypass and shared input reader.
+This adapter recipe assumes supported page-aligned list offsets. The inline
+configuration in [the runnable catalog](../examples/catalog/proxy.php) uses the same
+read and write split with shared mappings and a validated input reader.
 Set `features.catalog_read` and `features.catalog_write` to independent booleans.
 All four combinations are checked by `composer example:verify`.
 A skipped first filter continues to the next; it does not necessarily select Yii.
@@ -290,7 +351,7 @@ The default payload reader accepts a JSON object or array. An empty body means n
 payload; malformed JSON, `null` and scalar JSON return `400` before forwarding.
 This validation applies to every mapped action, including GET and HEAD: their bodies
 can supply route or bypass fields but are not sent upstream. Do not send irrelevant
-bodies on read requests. Without an adapter or custom reader, write JSON bytes are
+bodies on read requests. Without an adapter, payload mapper, or custom reader, write JSON bytes are
 preserved. Adapters receive PHP arrays with large integers represented as strings;
 they own the re-encoded object's shape, including empty objects.
 `payloadUsing()` reads form fields explicitly and must return an array; validate its

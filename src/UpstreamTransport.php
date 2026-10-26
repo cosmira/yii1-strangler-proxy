@@ -8,6 +8,7 @@ use Closure;
 use GuzzleHttp\Client;
 use GuzzleHttp\ClientInterface;
 use GuzzleHttp\Exception\GuzzleException;
+use GuzzleHttp\Psr7\Response;
 use GuzzleHttp\RequestOptions;
 use Throwable;
 
@@ -90,6 +91,7 @@ final readonly class UpstreamTransport
         array $outgoing,
         ?StranglerAdapterInterface $adapter,
         string $routeTemplate,
+        ?InlineMapping $inline = null,
     ): void {
         $settings = YiiRuntime::settings();
         $baseUri = YiiRuntime::baseUri($settings);
@@ -97,12 +99,14 @@ final readonly class UpstreamTransport
             YiiRuntime::logRejection(
                 $config, $actionKey, $routeTemplate, 'strangler_not_configured',
             );
-            $this->emitter->error(500, 'strangler_not_configured', $adapter, $actionKey);
+            $this->emitter->error(500, 'strangler_not_configured', $adapter, $actionKey, $inline);
 
             return;
         }
 
-        $this->dispatch($settings, $config, $actionKey, $outgoing, $adapter, $routeTemplate);
+        $this->dispatch(
+            $settings, $config, $actionKey, $outgoing, $adapter, $routeTemplate, $inline,
+        );
     }
 
     /**
@@ -120,6 +124,7 @@ final readonly class UpstreamTransport
         array $outgoing,
         ?StranglerAdapterInterface $adapter,
         string $routeTemplate,
+        ?InlineMapping $inline,
     ): void {
         $method = $outgoing[self::METHOD];
         $path = $outgoing[self::PATH];
@@ -140,7 +145,9 @@ final readonly class UpstreamTransport
             $this->notifyAttempt(
                 $config, $actionKey, $outgoing, $routeTemplate, [self::TIME_MS => $timeMs],
             );
-            $this->emitFailure($config, $actionKey, $routeTemplate, $timeMs, $method, $adapter);
+            $this->emitFailure(
+                $config, $actionKey, $routeTemplate, $timeMs, $method, $adapter, $inline,
+            );
 
             return;
         }
@@ -155,7 +162,8 @@ final readonly class UpstreamTransport
             'upstream_status' => $responseSnapshot[self::STATUS], self::TIME_MS => $timeMs,
         ]);
         $this->emitResponse(
-            $config, $actionKey, $routeTemplate, $timeMs, $responseSnapshot, $method, $adapter,
+            $config, $actionKey, $routeTemplate, $timeMs, $responseSnapshot,
+            $method, $adapter, inline: $inline,
         );
     }
 
@@ -306,12 +314,13 @@ final readonly class UpstreamTransport
         int $timeMs,
         string $method,
         ?StranglerAdapterInterface $adapter,
+        ?InlineMapping $inline,
     ): void {
         $this->emitResponse($config, $actionKey, $routeTemplate, $timeMs, [
             self::STATUS  => 503,
             self::BODY    => '{"state":"error","error":"service_temporarily_unavailable"}',
             self::HEADERS => ['Content-Type' => ['application/json; charset=utf-8']],
-        ], $method, $adapter, false);
+        ], $method, $adapter, false, $inline);
     }
 
     /**
@@ -329,6 +338,7 @@ final readonly class UpstreamTransport
         string $method,
         ?StranglerAdapterInterface $adapter,
         bool $hasResponse = true,
+        ?InlineMapping $inline = null,
     ): void {
         $result = [self::TIME_MS => $timeMs, self::METHOD => $method];
         if ($hasResponse) {
@@ -336,10 +346,21 @@ final readonly class UpstreamTransport
         }
 
         try {
-            $legacyResponse = $adapter?->transformResponse(
-                $actionKey, $response[self::STATUS],
-                $response[self::BODY], $response[self::HEADERS],
-            ) ?? $response;
+            if ($inline !== null) {
+                $mapped = $inline->response(new Response(
+                    $response[self::STATUS], $response[self::HEADERS], $response[self::BODY],
+                ));
+                $legacyResponse = [
+                    self::STATUS  => $mapped->getStatusCode(),
+                    self::BODY    => (string) $mapped->getBody(),
+                    self::HEADERS => $mapped->getHeaders(),
+                ];
+            } else {
+                $legacyResponse = $adapter?->transformResponse(
+                    $actionKey, $response[self::STATUS],
+                    $response[self::BODY], $response[self::HEADERS],
+                ) ?? $response;
+            }
         } catch (Throwable $exception) {
             YiiRuntime::logResult(
                 $config, $actionKey, $routeTemplate,

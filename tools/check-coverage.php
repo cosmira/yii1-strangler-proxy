@@ -23,9 +23,17 @@ $metric = static function (SimpleXMLElement $metrics, string $name): int {
 $metrics = $xml->project->metrics;
 $classes = $xml->xpath('/coverage/project//file/class') ?: [];
 $coveredClasses = 0;
+$measurableClasses = 0;
 foreach ($classes as $class) {
-    if ($metric($class->metrics, 'methods') === $metric($class->metrics, 'coveredmethods')
-        && $metric($class->metrics, 'statements') === $metric($class->metrics, 'coveredstatements')) {
+    $methods = $metric($class->metrics, 'methods');
+    $coveredMethods = $metric($class->metrics, 'coveredmethods');
+    $statements = $metric($class->metrics, 'statements');
+    $coveredStatements = $metric($class->metrics, 'coveredstatements');
+    if ($methods === 0 && $statements === 0) {
+        continue;
+    }
+    $measurableClasses++;
+    if ($methods === $coveredMethods && $statements === $coveredStatements) {
         $coveredClasses++;
     }
 }
@@ -35,7 +43,7 @@ $counts = [
     'Methods' => [$metric($metrics, 'methods'), $metric($metrics, 'coveredmethods')],
     'Lines'   => [$metric($metrics, 'statements'), $metric($metrics, 'coveredstatements')],
 ];
-$passed = count($classes) === $counts['Classes'][0];
+$passed = $measurableClasses === $counts['Classes'][0];
 $summary = "## Code coverage\n\nRequired coverage: **100%** for classes, methods and lines.\n\n";
 foreach ($counts as $label => [$total, $covered]) {
     $percent = $total > 0 ? 100 * $covered / $total : 0;

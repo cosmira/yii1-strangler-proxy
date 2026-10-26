@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Cosmira\Strangler;
 
 use Closure;
+use GuzzleHttp\Psr7\Response;
 
 /**
  * Yii's HTTP output boundary; injectable writers make header effects observable.
@@ -77,7 +78,23 @@ final readonly class ResponseEmitter
         string $code,
         ?StranglerAdapterInterface $adapter = null,
         string $actionId = '',
+        ?InlineMapping $inline = null,
     ): void {
+        if ($inline !== null) {
+            $response = $inline->response(new Response(
+                $status, ['Content-Type' => ['application/json; charset=utf-8']],
+                json_encode(['state' => self::ERROR_STATE, 'error' => $code], JSON_THROW_ON_ERROR),
+            ));
+            $this->send(
+                $response->getStatusCode(),
+                (string) $response->getBody(),
+                $response->getHeaders(),
+                0,
+            );
+
+            return;
+        }
+
         if ($adapter !== null) {
             $body = json_encode(
                 ['state' => self::ERROR_STATE, 'error' => $code], JSON_THROW_ON_ERROR,

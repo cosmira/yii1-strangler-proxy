@@ -73,7 +73,7 @@ foreach ($filters as $filter) {
     } elseif ((new ReflectionClass($adapter))->isAbstract()) {
         $errors[] = "{$feature}.adapter: cannot use an abstract class.";
     }
-    foreach (['payloadReader', 'bypass', 'afterAttempt'] as $field) {
+    foreach (['payloadReader', 'bypass', 'bypassPayload', 'afterAttempt'] as $field) {
         if (isset($config[$field]) && ! is_callable($config[$field])) {
             $errors[] = "{$feature}.{$field}: expected a callable.";
         }

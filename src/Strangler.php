@@ -17,6 +17,7 @@ use InvalidArgumentException;
  *     bodyIdentifier?: string,
  *     payloadReader?: callable(CController): array<array-key, mixed>,
  *     bypass?: callable(CController, string, array<array-key, mixed>): bool,
+ *     bypassPayload?: callable(array<array-key, mixed>, string, array<array-key, mixed>): bool,
  *     afterAttempt?: callable(string, string): void,
  *     bypassPayloadFields?: array<string, list<string>>
  * }
@@ -92,6 +93,18 @@ final class Strangler
     public function bypassUsing(callable $bypass): self
     {
         $this->config['bypass'] = $bypass;
+
+        return $this;
+    }
+
+    /**
+     * Keep matching original payloads on the legacy implementation.
+     *
+     * @param callable(array<array-key, mixed>, string, array<array-key, mixed>): bool $predicate
+     */
+    public function bypassPayloadUsing(callable $predicate): self
+    {
+        $this->config['bypassPayload'] = $predicate;
 
         return $this;
     }

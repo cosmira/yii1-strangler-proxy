@@ -218,8 +218,23 @@ The controller builder configures behavior for one feature:
 | `bodyIdentifier($field)` | Set the original-body fallback field for `{id}`; disabled by default. Request `id` takes precedence. |
 | `bypassUsing($callback)` | Decide before reading/forwarding payload, from controller, lowercase action and original query. `true` keeps Yii. |
 | `bypassWhenPayloadHas($action, $fields)` | Keep Yii if any named original-payload field is present, including `null`. |
+| `bypassPayloadUsing($predicate)` | Decide from the original payload snapshot, lowercase action, and original query before mapping. `true` keeps Yii. |
 | `afterAttempt($callback)` | Observe outgoing method/path after a transport attempt, before response adaptation. |
 | `build()` | Return the native Yii filter configuration. |
+
+Payload decisions run in this order after the feature and route checks:
+
+1. Run the existing early `bypassUsing()` callback. A match does not read the body.
+2. Resolve the adapter and read the payload once.
+3. Check `bypassWhenPayloadHas()`. A match skips the payload predicate.
+4. Call the payload predicate once with the original `($payload, $actionId, $query)` values.
+5. Map the request and attempt forwarding if no bypass matched.
+
+A predicate exception reaches the application error handler unchanged. It does not
+select the legacy action. Both payload rules use the `bypass_payload` diagnostic reason.
+The [adaptation guide](api-adaptation.md#4-enable-the-feature-after-checking-compatibility)
+includes a nested-value example. Without the new predicate, existing configurations
+keep their behavior. Calling `bypassPayloadUsing()` again replaces its previous callback.
 
 ## Independent read and write flags
 

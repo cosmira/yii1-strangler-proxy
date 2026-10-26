@@ -58,8 +58,11 @@ use Cosmira\Strangler\AbstractStranglerAdapter;
 
 final class CatalogApiAdapter extends AbstractStranglerAdapter
 {
+    public function __construct(private readonly array $query = []) {}
+
     public function transformQuery(string $actionId, array $query): array
     {
+        self::responseRelations($this->query);
         if ($actionId !== 'get') {
             return [];
         }
@@ -163,18 +166,45 @@ final class CatalogApiAdapter extends AbstractStranglerAdapter
             throw new UnexpectedValueException('The catalog API returned an incomplete item.');
         }
 
-        return [
+        $legacy = [
             'ID' => $item['id'],
             'NAME' => $item['title'],
             'ACTIVE' => $item['enabled'] ? 1 : 0,
             'CATEGORY_ID' => $item['category']['id'],
         ];
+        if (in_array('category', self::responseRelations($this->query), true)) {
+            $legacy['CATEGORY'] = ['ID' => $item['category']['id']];
+        }
+
+        return $legacy;
+    }
+
+    private static function responseRelations(array $query): array
+    {
+        $relations = $query['with'] ?? [];
+        if (!is_array($relations) || !array_is_list($relations)
+            || array_filter($relations, static fn ($relation): bool => $relation !== 'category')) {
+            throw new InvalidArgumentException('Only with[]=category is supported.');
+        }
+
+        return $relations;
     }
 }
 ```
 
 For a smaller change, extend the same base class and override only the relevant
 method; the other two remain unchanged. No new configuration layer is required.
+
+The constructor captures the original query without validation or side effects.
+Create one adapter per request with `new CatalogApiAdapter($_GET)` to support
+`with[]=category`. The response then adds `CATEGORY: {"ID":7}` and keeps `CATEGORY_ID`.
+Without `with`, the response stays unchanged. The backend already supplies the category ID.
+
+`responseRelations()` is a pure projection rule. It rejects unsupported relations when
+mapping runs after the preceding Yii checks. `transformQuery()` does not save state
+for `transformResponse()`, so response mapping also works on its own.
+Do not validate query parameters in the constructor when `filters()` creates the adapter
+before the security filters run.
 
 Each method has a distinct purpose:
 
@@ -238,13 +268,16 @@ with this configuration, keeping it after the existing security checks:
 
 ```php
 Strangler::proxy('catalog')
-    ->usingAdapter(new CatalogApiAdapter())
+    ->usingAdapter(new CatalogApiAdapter($_GET))
     ->bodyIdentifier('ID')
     ->bypassUsing(static function (CController $controller, string $actionId, array $query): bool {
         $limit = max(1, (int) ($query['limit'] ?? 20));
         $start = max(0, (int) ($query['start'] ?? 0));
 
         return $actionId === 'get' && $start % $limit !== 0;
+    })
+    ->bypassPayloadUsing(static function (array $payload, string $actionId, array $query): bool {
+        return $actionId === 'update' && ($payload['OPTIONS']['MODE'] ?? null) === 'legacy';
     })
     ->get('get', '/api/items')
     ->post('create', '/api/items')
@@ -321,5 +354,24 @@ If an action has a legacy-only payload variant, keep that variant in Yii explici
 ->bypassWhenPayloadHas('update', ['LEGACY_ONLY'])
 ```
 
-This decision happens before any upstream request. Turning off the feature also keeps
-subsequent requests in Yii; neither mechanism retries an operation already sent upstream.
+For a decision based on a nested value, use the original payload snapshot:
+
+```php
+->bypassPayloadUsing(static function (array $payload, string $actionId, array $query): bool {
+    return $actionId === 'update' && ($payload['OPTIONS']['MODE'] ?? null) === 'legacy';
+})
+```
+
+The callback receives the original payload, lowercase action, and original query.
+It does not need to read the controller or request body. Use query data for compatibility
+choices only. Reject conflicting identifiers in the preceding validation filter before
+its resource-access check.
+
+Strangler first checks the early `bypassUsing()` callback without reading the body.
+It then resolves the adapter and reads one payload snapshot. A matching
+`bypassWhenPayloadHas()` field skips the new callback. Otherwise `bypassPayloadUsing()`
+runs once before request mapping. Returning `true` keeps the legacy executor and sends
+no upstream request. Exceptions reach the host error handler and do not select Yii.
+
+Turning off the feature also keeps subsequent requests in Yii. None of these mechanisms
+retries an operation already sent upstream.

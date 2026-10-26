@@ -50,6 +50,42 @@ final class ApiAdaptationGuideTest extends TestCase
         self::assertSame(['status' => 204, 'body' => '', 'headers' => []], $adapter->transformResponse('update', 204, '', []));
     }
 
+    public function testResponseProjectionUsesOnlyTheCapturedQuery(): void
+    {
+        $query = ['with' => ['category']];
+        $expanded = $this->adapter($query);
+        $plain = $this->adapter();
+        $query['with'] = [];
+        $body = '{"data":{"id":42,"title":"Desk","enabled":true,"category":{"id":7}}}';
+        $item = ['ID' => 42, 'NAME' => 'Desk', 'ACTIVE' => 1, 'CATEGORY_ID' => 7];
+
+        $response = $expanded->transformResponse('update', 200, $body, []);
+        self::assertSame(['success' => true, 'data' => $item + ['CATEGORY' => ['ID' => 7]]],
+            json_decode($response['body'], true, 512, JSON_THROW_ON_ERROR));
+        $plain->transformQuery('get', ['start' => 0, 'limit' => 10]);
+        $response = $plain->transformResponse('update', 200, $body, []);
+        self::assertSame(['success' => true, 'data' => $item],
+            json_decode($response['body'], true, 512, JSON_THROW_ON_ERROR));
+        $expanded->transformQuery('get', ['start' => 0, 'limit' => 10]);
+        $response = $expanded->transformResponse('update', 200, $body, []);
+        self::assertSame(['success' => true, 'data' => $item + ['CATEGORY' => ['ID' => 7]]],
+            json_decode($response['body'], true, 512, JSON_THROW_ON_ERROR));
+    }
+
+    public function testProjectionValidationRunsAfterConstruction(): void
+    {
+        foreach (['category', ['unsupported'], [['category']], ['category' => true]] as $relations) {
+            $adapter = $this->adapter(['with' => $relations]);
+
+            try {
+                $adapter->transformQuery('get', []);
+                self::fail('Unsupported relations must be rejected during mapping.');
+            } catch (\InvalidArgumentException $exception) {
+                self::assertSame('Only with[]=category is supported.', $exception->getMessage());
+            }
+        }
+    }
+
     public function testPublishedExampleMapsValidationAndTransportErrors(): void
     {
         $adapter = $this->adapter();
@@ -158,6 +194,12 @@ final class ApiAdaptationGuideTest extends TestCase
         $controller = new Controller('catalog');
         self::assertTrue($bypass($controller, 'get', ['start' => 21, 'limit' => 10]));
         self::assertFalse($bypass($controller, 'get', ['start' => 20, 'limit' => 10]));
+        $payloadBypass = $config['bypassPayload'] ?? null;
+        self::assertNotNull($payloadBypass);
+        self::assertTrue($payloadBypass(['OPTIONS' => ['MODE' => 'legacy']], 'update', []));
+        self::assertFalse($payloadBypass(['OPTIONS' => ['MODE' => 'modern']], 'update', []));
+        self::assertFalse($payloadBypass(['OPTIONS' => ['MODE' => 'legacy']], 'create', []));
+        self::assertFalse($payloadBypass([], 'update', []));
         $_GET = ['start' => 21, 'limit' => 10];
         $proxy = new StranglerProxy(new Client(['handler' => HandlerStack::create(new MockHandler([]))]));
         // Any backend call would fail the empty handler; bypass must keep the legacy executor.
@@ -206,7 +248,8 @@ final class ApiAdaptationGuideTest extends TestCase
         self::assertSame('{"product":{"title":"Desk","enabled":true},"category":{"id":7}}', (string) $request->getBody());
     }
 
-    private function adapter(): StranglerAdapterInterface
+    /** @param array<array-key, mixed> $query */
+    private function adapter(array $query = []): StranglerAdapterInterface
     {
         if (! class_exists('CatalogApiAdapter', false)) {
             $guide = file_get_contents(dirname(__DIR__).'/docs/api-adaptation.md');
@@ -228,7 +271,7 @@ final class ApiAdaptationGuideTest extends TestCase
         if (! class_exists($className)) {
             throw new RuntimeException('The published adapter example must declare its class.');
         }
-        $adapter = new $className();
+        $adapter = new $className($query);
         self::assertInstanceOf(StranglerAdapterInterface::class, $adapter);
 
         return $adapter;

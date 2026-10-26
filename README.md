@@ -29,7 +29,7 @@ Install the tagged release directly from its Git repository in your Yii applicat
 
 ```shell
 composer config repositories.yii1-strangler-proxy vcs https://github.com/cosmira/yii1-strangler-proxy
-composer require cosmira/yii1-strangler-proxy:^0.1
+composer require cosmira/yii1-strangler-proxy:^1.1
 ```
 
 The VCS entry is needed until the package is registered on Packagist.

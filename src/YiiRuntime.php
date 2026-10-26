@@ -350,10 +350,7 @@ final class YiiRuntime
     public static function tlsVerification(array $settings): bool|string
     {
         $value = $settings['verify_ssl'] ?? true;
-        if (is_bool($value)) {
-            return $value;
-        }
-        if (is_string($value) && $value !== '') {
+        if (is_bool($value) || (is_string($value) && $value !== '')) {
             return $value;
         }
 

@@ -104,8 +104,9 @@ final readonly class StranglerProxy
         }
         $bypassFields = $config['bypassPayloadFields'] ?? [];
         $fields = $bypassFields[$actionKey] ?? [];
+        $predicate = $config['bypassPayload'] ?? null;
 
-        if ($fields === []) {
+        if ($fields === [] && $predicate === null) {
             return false;
         }
 
@@ -117,7 +118,7 @@ final readonly class StranglerProxy
             }
         }
 
-        return false;
+        return $predicate !== null && $predicate($bypassPayload, $actionKey, $_GET);
     }
 
     /**

@@ -63,12 +63,13 @@ final class HttpHeaders
         foreach ($headers as $name => $values) {
             $headerName = strtolower($name);
             $isBlocked = $blocked[$headerName] ?? false;
-            if (! $isBlocked) {
-                foreach ($values as $value) {
-                    self::validate($name, $value);
-                }
-                $result[$name] = $values;
+            if ($isBlocked) {
+                continue;
             }
+            foreach ($values as $value) {
+                self::validate($name, $value);
+            }
+            $result[$name] = $values;
         }
 
         return $result;

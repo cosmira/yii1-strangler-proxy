@@ -6,6 +6,7 @@ namespace Cosmira\Strangler\Tests;
 
 use GuzzleHttp\Client;
 use PHPUnit\Framework\TestCase;
+use Psr\Http\Message\UriInterface;
 
 final class NativeHttpResponseTest extends TestCase
 {
@@ -75,8 +76,38 @@ final class NativeHttpResponseTest extends TestCase
         });
     }
 
-    /** @param callable(Client): void $check */
-    private function withServer(string $router, callable $check, ?string $token = null): void
+    public function testPayloadPredicateSelectsLegacyWithoutContactingTheRealBackend(): void
+    {
+        $attemptsFile = tempnam(sys_get_temp_dir(), 'strangler-payload-');
+        self::assertIsString($attemptsFile);
+
+        try {
+            $environment = ['PAYLOAD_BYPASS_ATTEMPTS' => $attemptsFile];
+            $this->withServer('payload-bypass.php', function (Client $backend) use ($environment): void {
+                $backendUri = $backend->getConfig('base_uri');
+                self::assertInstanceOf(UriInterface::class, $backendUri);
+                $this->withServer('payload-bypass.php', static function (Client $proxy): void {
+                    foreach (['legacy' => 0, 'upstream' => 1, 'legacy-again' => 1] as $executor => $attempts) {
+                        $selected = $executor === 'upstream' ? 'upstream' : 'legacy';
+                        $response = $proxy->post('/index.php?r=payload/get', ['json' => ['routing' => ['executor' => $selected]]]);
+
+                        self::assertSame(200, $response->getStatusCode());
+                        self::assertSame(['executor' => $selected, 'attempts' => $attempts], json_decode((string) $response->getBody(), true, flags: JSON_THROW_ON_ERROR));
+                        self::assertSame('1', $response->getHeaderLine('X-Payload-Reads'));
+                        self::assertSame('1', $response->getHeaderLine('X-Payload-Predicates'));
+                    }
+                }, environmentOverrides: $environment + ['PAYLOAD_BYPASS_BACKEND' => (string) $backendUri]);
+            }, environmentOverrides: $environment);
+        } finally {
+            unlink($attemptsFile);
+        }
+    }
+
+    /**
+     * @param callable(Client): void $check
+     * @param array<string, string>  $environmentOverrides
+     */
+    private function withServer(string $router, callable $check, ?string $token = null, array $environmentOverrides = []): void
     {
         $socket = stream_socket_server('tcp://127.0.0.1:0');
         self::assertIsResource($socket);
@@ -89,6 +120,7 @@ final class NativeHttpResponseTest extends TestCase
         if ($token !== null) {
             $environment['STRANGLER_TOKEN'] = $token;
         }
+        $environment = array_replace($environment, $environmentOverrides);
         $pipes = [];
         $server = proc_open([
             PHP_BINARY, '-S', $address, __DIR__.'/Fixtures/http/'.$router,

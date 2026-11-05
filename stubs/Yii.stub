@@ -1,5 +1,15 @@
 <?php
 
+class CUploadedFile
+{
+    /**
+     * @param string $name
+     *
+     * @return CUploadedFile|null
+     */
+    public static function getInstanceByName($name) {}
+}
+
 // Yii 1.1's untyped magic-access methods used by this web-only adapter.
 class CModule
 {

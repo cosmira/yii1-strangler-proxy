@@ -237,6 +237,134 @@ final class StranglerProxyTest extends TestCase
         self::assertCount(1, $this->history);
     }
 
+    public function testMappedUploadAndFormFieldsReachOneMultipartRequest(): void
+    {
+        $this->application->getParams()->add('strangler', [
+            'base_uri' => 'https://backend.test', 'headers' => ['Content-Type' => 'application/json'],
+        ]);
+        $file = tempnam(sys_get_temp_dir(), 'strangler-upload-');
+        self::assertIsString($file);
+        file_put_contents($file, "photo\x00bytes");
+        $_POST = ['caption' => 'Profile photo', 'enabled' => false];
+        $_FILES = ['files' => [
+            'name'  => ['profile.png'], 'type' => ['image/png'], 'tmp_name' => [$file],
+            'error' => [UPLOAD_ERR_OK], 'size' => [11],
+        ]];
+        \CUploadedFile::reset();
+        $config = Strangler::proxy('example')->mapFiles(['files[0]' => 'photo'], ['upload'])
+            ->mapPayload(['caption' => 'note', 'enabled' => 'enabled'])->post('upload', '/photo')->build()['config'];
+        $proxy = $this->proxy($this->client([new Response(200, [], 'uploaded')]));
+
+        try {
+            self::assertSame('uploaded', $this->capture(fn () => $proxy->handle($this->controller, $config, 'upload')));
+            self::assertCount(1, $this->history);
+            $request = $this->history[0]['request'];
+            self::assertStringStartsWith('multipart/form-data; boundary=', $request->getHeaderLine('Content-Type'));
+            $body = (string) $request->getBody();
+            self::assertStringContainsString('name="photo"; filename="profile.png"', $body);
+            self::assertStringContainsString("photo\x00bytes", $body);
+            self::assertStringContainsString('name="note"', $body);
+            self::assertStringContainsString('Profile photo', $body);
+            self::assertMatchesRegularExpression('/name="enabled"\r\n(?:[^\r\n]+\r\n)*\r\n0\r\n/', $body);
+            self::assertSame('7', $request->getHeaderLine('X-User-Id'));
+        } finally {
+            $_FILES = [];
+            \CUploadedFile::reset();
+            unlink($file);
+        }
+    }
+
+    #[DataProvider('failedUploadErrors')]
+    public function testFailedUploadNeverForwardsThePartialFile(int $error): void
+    {
+        $_FILES = ['photo' => ['name' => 'partial.png', 'type' => 'image/png',
+            'tmp_name'                => '/must-not-be-read', 'error' => $error, 'size' => 100]];
+        \CUploadedFile::reset();
+        $config = Strangler::proxy('example')->mapFiles(['photo' => 'photo'])
+            ->post('upload', '/photo')->build()['config'];
+        $proxy = $this->proxy($this->client([new Response(422)]));
+
+        try {
+            $this->capture(fn () => $proxy->handle($this->controller, $config, 'upload'));
+            self::assertCount(1, $this->history);
+            self::assertStringNotContainsString('partial.png', (string) $this->history[0]['request']->getBody());
+        } finally {
+            $_FILES = [];
+            \CUploadedFile::reset();
+        }
+    }
+
+    /** @return list<array{int}> */
+    public static function failedUploadErrors(): array
+    {
+        return [[UPLOAD_ERR_PARTIAL], [UPLOAD_ERR_NO_FILE]];
+    }
+
+    public function testFileMappingsDoNotChangeOtherJsonActions(): void
+    {
+        $this->request->body = '{"name":"Document"}';
+        $config = Strangler::proxy('example')->mapFiles(['photo' => 'photo'], ['upload'])
+            ->post('create', '/items')->build()['config'];
+        $proxy = $this->proxy($this->client([new Response(201)]));
+
+        $this->capture(fn () => $proxy->handle($this->controller, $config, 'create'));
+
+        self::assertSame('application/json', $this->history[0]['request']->getHeaderLine('Content-Type'));
+        self::assertSame('{"name":"Document"}', (string) $this->history[0]['request']->getBody());
+    }
+
+    #[DataProvider('emptyUploadNames')]
+    public function testFileMappingsRejectEmptyNames(string $source, string $target): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        Strangler::proxy('example')->mapFiles([$source => $target]);
+    }
+
+    /** @return list<array{string, string}> */
+    public static function emptyUploadNames(): array
+    {
+        return [['', 'photo'], ['photo', '']];
+    }
+
+    public function testNestedMultipartFieldsFailBeforeAnyAttempt(): void
+    {
+        $config = Strangler::proxy('example')->mapFiles([])
+            ->payloadUsing(static fn (): array => ['nested' => ['value']])
+            ->post('upload', '/photo')->build()['config'];
+        $proxy = $this->proxy($this->client([]));
+
+        try {
+            $proxy->handle($this->controller, $config, 'upload');
+            self::fail('Nested multipart values must be rejected.');
+        } catch (InvalidArgumentException $exception) {
+            self::assertSame('Multipart form fields must be scalar values.', $exception->getMessage());
+            self::assertSame([], $this->history);
+        }
+    }
+
+    public function testUnreadableUploadFailsBeforeAnyAttempt(): void
+    {
+        $file = tempnam(sys_get_temp_dir(), 'strangler-missing-');
+        self::assertIsString($file);
+        unlink($file);
+        $_FILES = ['photo' => ['name' => 'missing.png', 'type' => 'image/png',
+            'tmp_name'                => $file, 'error' => UPLOAD_ERR_OK, 'size' => 1]];
+        \CUploadedFile::reset();
+        $config = Strangler::proxy('example')->mapFiles(['photo' => 'photo'])
+            ->post('upload', '/photo')->build()['config'];
+        $proxy = $this->proxy($this->client([]));
+
+        try {
+            $proxy->handle($this->controller, $config, 'upload');
+            self::fail('Unreadable upload must be rejected.');
+        } catch (RuntimeException) {
+            self::assertSame([], $this->history);
+        } finally {
+            $_FILES = [];
+            \CUploadedFile::reset();
+        }
+    }
+
     public function testMissingBackendReturns500WithoutSendingARequest(): void
     {
         $this->application->getParams()->add('strangler', []);

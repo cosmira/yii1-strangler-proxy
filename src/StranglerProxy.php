@@ -118,7 +118,11 @@ final readonly class StranglerProxy
             return false;
         }
 
-        $bypassPayload = $payload ?? self::readPayload($controller, $config)[self::PAYLOAD];
+        $bypassPayload = $payload ?? self::readPayload(
+            $controller,
+            $config,
+            $actionKey,
+        )[self::PAYLOAD];
 
         foreach ($fields as $field) {
             if (array_key_exists($field, $bypassPayload)) {
@@ -186,7 +190,7 @@ final readonly class StranglerProxy
         ?InlineMapping $inline,
     ): bool {
         try {
-            $snapshot = self::readPayload($controller, $config);
+            $snapshot = self::readPayload($controller, $config, $actionKey);
             $payload = $snapshot[self::PAYLOAD];
         } catch (JsonException) {
             $this->emitter->error(400, 'strangler_invalid_payload', $adapter, $actionKey, $inline);
@@ -263,12 +267,19 @@ final readonly class StranglerProxy
      *
      * @return array{payload: array<array-key, mixed>, body: string|null}
      */
-    private static function readPayload(CController $controller, array $config): array
-    {
+    private static function readPayload(
+        CController $controller,
+        array $config,
+        string $actionKey,
+    ): array {
         $reader = $config['payloadReader'] ?? null;
 
         if ($reader !== null) {
             return [self::PAYLOAD => $reader($controller), self::RAW_BODY => null];
+        }
+
+        if (YiiRuntime::fileMappings($config, $actionKey) !== null) {
+            return [self::PAYLOAD => $_POST, self::RAW_BODY => null];
         }
 
         $body = self::application()->getRequest()->getRawBody();

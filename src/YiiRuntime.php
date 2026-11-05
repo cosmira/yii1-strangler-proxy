@@ -364,4 +364,18 @@ final class YiiRuntime
     {
         return explode('#', explode('?', $path)[0])[0];
     }
+
+    /**
+     * Select action-specific uploads before the shared file mapping.
+     *
+     * @param Config $config
+     *
+     * @return array<string, string>|null
+     */
+    public static function fileMappings(array $config, string $actionKey): ?array
+    {
+        $files = $config['files'] ?? [];
+
+        return $files[$actionKey] ?? $files['*'] ?? null;
+    }
 }

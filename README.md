@@ -129,6 +129,26 @@ serializes the result and keeps safe headers. No application adapter class is re
 Follow the [API adaptation guide](docs/api-adaptation.md) for a complete example
 with pagination, body identifiers and both backend and transport errors.
 
+## File uploads
+
+Use `mapFiles()` to send a multipart request for selected actions:
+
+```php
+Strangler::proxy('directory')
+    ->mapFiles(['files[0]' => 'photo'], ['uploadImage'])
+    ->post('uploadImage', '/api/people/{person_id}/photo')
+    ->build();
+```
+
+Keys are Yii upload names, including bracket paths; values are upstream field names.
+Files are streamed from PHP's temporary upload directory. Other files are not forwarded.
+`mapPayload()` can rename scalar form fields. Without a payload reader, fields come from `$_POST`.
+Nested form values are not supported. Actions without file mappings keep their JSON behavior.
+
+Missing or failed uploads are omitted so the backend can validate required files.
+The backend must validate file size, content and permissions. Multipart requests use the same
+trusted headers, timeouts and single-attempt behavior as JSON requests.
+
 ## Sessions and user context
 
 Strangler sends the current Yii identity as `X-User-Id` and the current language as

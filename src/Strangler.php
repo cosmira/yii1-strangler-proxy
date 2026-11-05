@@ -25,7 +25,8 @@ use InvalidArgumentException;
  *     bypass?: callable(CController, string, array<array-key, mixed>): bool,
  *     bypassPayload?: callable(array<array-key, mixed>, string, array<array-key, mixed>): bool,
  *     afterAttempt?: callable(string, string): void,
- *     bypassPayloadFields?: array<string, list<string>>
+ *     bypassPayloadFields?: array<string, list<string>>,
+ *     files?: array<string, array<string, string>>
  * }
  */
 final class Strangler
@@ -151,6 +152,31 @@ final class Strangler
     public function payloadUsing(callable $reader): self
     {
         $this->config['payloadReader'] = $reader;
+
+        return $this;
+    }
+
+    /**
+     * Forward selected Yii uploads as named multipart fields.
+     *
+     * @param array<string, string> $files   Yii upload names mapped to upstream names.
+     * @param list<string>          $actions
+     */
+    public function mapFiles(array $files, array $actions = []): self
+    {
+        self::validateFieldMap($files);
+        foreach ($files as $source => $target) {
+            if ($source === '' || $target === '') {
+                throw new InvalidArgumentException(
+                    'File mappings require nonempty upload and field names.',
+                );
+            }
+        }
+        $this->config['files'] = self::registerMapping(
+            $this->config['files'] ?? [],
+            $files,
+            $actions,
+        );
 
         return $this;
     }

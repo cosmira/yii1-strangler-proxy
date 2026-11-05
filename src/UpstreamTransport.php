@@ -9,6 +9,7 @@ use GuzzleHttp\Client;
 use GuzzleHttp\ClientInterface;
 use GuzzleHttp\Exception\GuzzleException;
 use GuzzleHttp\Psr7\Response;
+use GuzzleHttp\Psr7\Utils;
 use GuzzleHttp\RequestOptions;
 use Throwable;
 
@@ -190,6 +191,7 @@ final readonly class UpstreamTransport
             return self::requestOptions(
                 $settings, $outgoing[self::METHOD], $outgoing['query'],
                 $outgoing['payload'], $outgoing[self::BODY],
+                YiiRuntime::fileMappings($config, $actionKey),
             );
         } catch (Throwable $exception) {
             YiiRuntime::logRejection(...[...$rejection, 'transport_configuration_failure']);
@@ -201,9 +203,10 @@ final readonly class UpstreamTransport
     /**
      * Build trusted headers and transport options for the upstream request.
      *
-     * @param array<array-key, mixed> $settings
-     * @param array<array-key, mixed> $query
-     * @param array<array-key, mixed> $payload
+     * @param array<array-key, mixed>    $settings
+     * @param array<array-key, mixed>    $query
+     * @param array<array-key, mixed>    $payload
+     * @param array<string, string>|null $files
      *
      * @return array<array-key, mixed>
      */
@@ -213,6 +216,7 @@ final readonly class UpstreamTransport
         array $query,
         array $payload,
         ?string $body,
+        ?array $files = null,
     ): array {
         $headers = array_merge(HttpHeaders::request($settings), [
             'X-User-Id'          => YiiRuntime::userId(),
@@ -236,6 +240,14 @@ final readonly class UpstreamTransport
             return $options;
         }
 
+        if ($files !== null) {
+            unset($headers['Content-Type']);
+            $options[RequestOptions::HEADERS] = $headers;
+            $options[RequestOptions::MULTIPART] = self::multipart($payload, $files);
+
+            return $options;
+        }
+
         if ($body !== null) {
             $headers['Content-Type'] = 'application/json';
             $options[RequestOptions::HEADERS] = $headers;
@@ -247,6 +259,41 @@ final readonly class UpstreamTransport
         $options[RequestOptions::JSON] = $payload;
 
         return $options;
+    }
+
+    /**
+     * Build scalar fields and streamed uploads without forwarding failed or unselected files.
+     *
+     * @param array<array-key, mixed> $payload
+     * @param array<string, string>   $files
+     *
+     * @return list<array{name: string, contents: string|resource, filename?: string}>
+     */
+    private static function multipart(array $payload, array $files): array
+    {
+        $parts = [];
+        foreach ($payload as $name => $value) {
+            if (! is_scalar($value) && $value !== null) {
+                throw new \InvalidArgumentException('Multipart form fields must be scalar values.');
+            }
+            $parts[] = [
+                'name'     => (string) $name,
+                'contents' => (string) (is_bool($value) ? (int) $value : $value),
+            ];
+        }
+        foreach ($files as $source => $target) {
+            $file = \CUploadedFile::getInstanceByName($source);
+            if ($file === null || $file->getError() !== UPLOAD_ERR_OK) {
+                continue;
+            }
+            $parts[] = [
+                'name'     => $target,
+                'contents' => Utils::tryFopen($file->getTempName(), 'rb'),
+                'filename' => $file->getName(),
+            ];
+        }
+
+        return $parts;
     }
 
     /**

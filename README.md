@@ -30,7 +30,7 @@ Install the tagged release directly from its Git repository in your Yii applicat
 
 ```shell
 composer config repositories.yii1-strangler-proxy vcs https://github.com/cosmira/yii1-strangler-proxy
-composer require cosmira/yii1-strangler-proxy:^1.3.1
+composer require cosmira/yii1-strangler-proxy:^1.4.0
 ```
 
 The VCS entry is needed until the package is registered on Packagist.
@@ -124,6 +124,9 @@ Use its case table as a starting point for your own application's contract check
 ## When the APIs differ
 
 Use `mapQuery()`, `mapPayload()`, `mapJsonResponse()`, and `mapJsonErrors()` in the existing builder.
+`Query::legacy()` and `JsonResource::make()` provide callable fluent configurations for
+legacy queries and Yii-style resources.
+See the [fluent adaptation example](docs/api-adaptation.md#fluent-query-and-resource-mappings).
 `Mapping` handles fields, collections, pagination, and validation errors. `Json::response()`
 serializes the result and keeps safe headers. No application adapter class is required.
 `payloadUsing()` still reads legacy form fields. Existing `usingAdapter()` integrations remain supported.

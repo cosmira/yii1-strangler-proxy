@@ -185,3 +185,70 @@ short-circuits the predicate. Exceptions do not select the old handler.
 
 Roll back by disabling the feature for subsequent requests. Neither disabling a flag
 nor returning `false` from a request mapper replays an operation already sent upstream.
+
+## Fluent query and resource mappings
+
+`Query` and `JsonResource` are callable value builders accepted by `mapQuery()` and
+`mapJsonResponse()`. Each fluent method returns a new configuration, leaving its
+source reusable. Application rules belong in a `recordUsing()` callback.
+
+```php
+use Cosmira\Strangler\Query;
+use Cosmira\Strangler\JsonResource;
+use Cosmira\Strangler\Strangler;
+
+$resource = JsonResource::make()
+    ->fields(['id' => 'key', 'title' => 'name'])
+    ->writable(['title']);
+
+return Strangler::proxy('catalog')
+    ->mapQuery(Query::legacy()
+        ->filters(['name' => 'title'])
+        ->sorts(['name' => 'title'])
+        ->includes(['owner' => 'author']))
+    ->mapPayload($resource->payload(...), ['create', 'edit'])
+    ->mapJsonResponse($resource)
+    ->get('get', '/api/items')
+    ->get('view', '/api/items/{id}')
+    ->post('create', '/api/items')
+    ->put('edit', '/api/items/{id}')
+    ->delete('delete', '/api/items/{id}')
+    ->build();
+```
+
+`Query::legacy()` defaults to list action `get`, ignored query keys `id` and `_`,
+and page sizes 20 through 100. `filters()`, `sorts()`, and `includes()` use the
+source-to-target names understood by `Mapping::legacyQuery()`. `ignore()` and
+`lists()` replace their defaults. Non-list actions discard `start` and `limit`
+before validation and omit generated pagination; unsupported projections, fields,
+filters, sorts, and includes still return `false` to retain legacy execution.
+
+`JsonResource::make()` defaults to the common Yii REST convention: envelope
+`['state' => 'data']`, records under `data`, collection action `get`, total from
+`['meta', 'total']` to `['meta', 'totalCount']`, empty action `delete`, and HTTP 200.
+An upstream 204 or an action selected by `empty()` produces only the configured
+envelope, without reading a record. The inline response mapper still requires valid
+JSON or an empty body: malformed JSON produces a controlled 502 before `JsonResource`
+is called, including for empty actions and upstream 204 responses.
+These are compatibility defaults, not Yii
+framework requirements. `empty([])` disables action-based empty responses.
+
+- `fields(array)` selects and renames record fields; without it records pass through.
+- `recordUsing(callable)` replaces record transformation; the callback receives the
+  validated record and original request context. Date, null, and domain conversions
+  belong here; nested records can use `Mapping::fields()`.
+- `writable(list<string>)` selects upstream field names for writes.
+  `payload(array): array` inverses the configured field map for those names only,
+  preserving null values. A later `recordUsing()` does not change that field map.
+- `envelope(array)`, `totals(array $sourcePath, array $targetPath)`,
+  `collections(list<string>)`, and `empty(list<string>)` replace those defaults.
+  Paths are literal segment lists. Collection totals must exist and be nonnegative integers.
+- `status(?int)` sets the mapped status; `null` preserves the upstream status for
+  nonempty responses. Empty responses with `status(null)` use HTTP 200.
+
+Missing or malformed upstream data is rejected by `Mapping` with
+`InvalidUpstreamResponse`, so the existing inline mapping handler produces its
+controlled 502 response. A record callback must throw `InvalidUpstreamResponse`
+when it rejects upstream data. Other callback exceptions, including `TypeError`
+and `UnexpectedValueException`, propagate as application programming errors.
+Lower-level `Mapping` methods remain available for other response shapes.

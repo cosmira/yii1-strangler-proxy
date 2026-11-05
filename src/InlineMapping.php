@@ -147,13 +147,22 @@ final readonly class InlineMapping
         if ($status >= 300 && $status < 400) {
             return $response;
         }
-        $handler = $this->select($status >= 400
-            ? ($this->mappings['errors'] ?? [])
-            : ($this->mappings['response'] ?? []));
+        $handler = $this->select($this->mappings[$status >= 400 ? 'errors' : 'response'] ?? []);
         if ($handler === null) {
             return $response;
         }
 
+        return $this->mapResponse($response, $handler);
+    }
+
+    /**
+     * Decode selected responses and contain malformed upstream data.
+     *
+     * @param ResponseMapper $handler
+     */
+    private function mapResponse(ResponseInterface $response, callable $handler): ResponseInterface
+    {
+        $status = $response->getStatusCode();
         $body = (string) $response->getBody();
 
         try {
@@ -161,35 +170,47 @@ final readonly class InlineMapping
                 $body, flags: JSON_THROW_ON_ERROR | JSON_BIGINT_AS_STRING,
             );
         } catch (JsonException) {
-            return $this->invalidResponse($response);
+            return $this->mapInvalidResponse($response);
         }
 
         try {
             return $handler($json, $response, $this->context);
         } catch (InvalidUpstreamResponse) {
-            return $this->invalidResponse($response, $status < 400);
+            return $status < 400
+                ? $this->mapInvalidResponse($response)
+                : $this->invalidResponse($response);
         }
     }
 
     /**
      * Produce one controlled error without recursively retrying its handler.
      */
-    private function invalidResponse(
-        ResponseInterface $upstream,
-        bool $mapError = true,
-    ): ResponseInterface {
-        $body = (object) ['state' => 'error', 'error' => 'invalid_upstream_response'];
-        $response = Json::response($upstream, $body, 502);
-        $handler = $mapError ? $this->select($this->mappings['errors'] ?? []) : null;
+    private function mapInvalidResponse(ResponseInterface $upstream): ResponseInterface
+    {
+        $response = $this->invalidResponse($upstream);
+        $handler = $this->select($this->mappings['errors'] ?? []);
         if ($handler === null) {
             return $response;
         }
 
         try {
-            return $handler($body, $response, $this->context);
+            return $handler(
+                (object) ['state' => 'error', 'error' => 'invalid_upstream_response'],
+                $response, $this->context,
+            );
         } catch (InvalidUpstreamResponse) {
             return $response;
         }
+    }
+
+    /**
+     * Replace unusable upstream bytes with a stable error envelope.
+     */
+    private function invalidResponse(ResponseInterface $upstream): ResponseInterface
+    {
+        return Json::response($upstream, [
+            'state' => 'error', 'error' => 'invalid_upstream_response',
+        ], 502);
     }
 
     /**

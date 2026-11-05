@@ -125,8 +125,11 @@ Use this route for your API requests; preserve an appropriate HTML error action 
 browser pages if the application serves both. The error action must be reachable
 without repeating the failing filters. Run production with `YII_DEBUG=false`, because
 Yii debug exception rendering bypasses its configured error action. Keep exception
-details in server logs. Test malformed backend JSON and a throwing adapter: both
-must return `500` JSON without a second backend or legacy execution.
+details in server logs. With a JSON response mapper, malformed backend JSON produces
+`502 invalid_upstream_response` before application error mapping. Your mapper may
+translate that status. Programming exceptions reach Yii's error handler; test its
+JSON `500` response separately. Without a JSON mapper, response bytes pass through.
+None of these paths retries the backend or executes the legacy action.
 
 ## Trusted channel
 
@@ -356,8 +359,8 @@ preserved. Adapters receive PHP arrays with large integers represented as string
 they own the re-encoded object's shape, including empty objects.
 `payloadUsing()` reads form fields explicitly and must return an array; validate its
 structure in the preceding filters. The filter uses one payload snapshot for the
-bypass decision and forwarding. File uploads and arbitrary raw bodies are outside
-this JSON adapter's scope.
+bypass decision and forwarding. Use [`mapFiles()`](../README.md#file-uploads) for
+multipart uploads. Arbitrary raw request bodies are outside this JSON adapter's scope.
 
 ## Rollout and rollback
 
@@ -464,3 +467,19 @@ composer require cosmira/yii1-strangler-proxy:dev-main
 A path repository is for development; deploy the tagged VCS dependency and the
 application's lock file. If you deploy a path checkout, pin its reviewed commit
 explicitly and ensure that exact checkout is present during installation.
+
+From the package checkout, install dependencies and run the checks:
+
+```shell
+composer install
+composer test
+composer test:types
+composer test:rector
+vendor/bin/pint --test
+composer test:coverage
+composer test:mutation
+```
+
+Coverage checks require PCOV or Xdebug; mutation testing is slower than the unit suite.
+CI also runs Soda, Markdown and spelling checks. Coverage and mutation thresholds
+protect this library, not the compatibility of an application's migration.

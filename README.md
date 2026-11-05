@@ -10,8 +10,9 @@ actions and leaves the remaining actions in the legacy application. When the API
 differ, inline maps preserve the existing client's contract inside Yii.
 
 Requires **PHP 8.2+ and Yii 1.1.31+**; upgrade older runtimes first.
-Use it for JSON API actions. Legacy form fields can be translated to JSON; file
-uploads, binary bodies and streamed responses need a separate integration.
+Forward JSON API actions and selected multipart uploads. Map legacy form fields
+to JSON when needed. Binary responses pass through unchanged; response bodies are
+buffered, so this package is not a streaming proxy.
 
 ## How it works
 
@@ -29,7 +30,7 @@ Install the tagged release directly from its Git repository in your Yii applicat
 
 ```shell
 composer config repositories.yii1-strangler-proxy vcs https://github.com/cosmira/yii1-strangler-proxy
-composer require cosmira/yii1-strangler-proxy:^1.2
+composer require cosmira/yii1-strangler-proxy:^1.3.1
 ```
 
 The VCS entry is needed until the package is registered on Packagist.
@@ -185,40 +186,13 @@ With request logging enabled, candidate decisions explain disabled flags, unmapp
 actions and bypass rules. With several Strangler filters, a skipped candidate can
 continue to the next filter; it does not yet imply legacy execution. See [logging and callbacks](docs/integration.md#logging-and-callbacks).
 
-## Quality checks
+## Development
 
-[![Code Coverage][coverage-badge]][coverage-workflow]
-[![Mutation Testing][mutation-badge]][mutation-workflow]
-[![Quality Assurance][quality-badge]][quality-workflow]
-[![Coding Guidelines][style-badge]][style-workflow]
-[![Markdown][markdown-badge]][markdown-workflow]
-[![ShellCheck][shellcheck-badge]][shellcheck-workflow]
-[![Spelling][spelling-badge]][spelling-workflow]
-[![PHPStan max][phpstan-badge]](phpstan.neon)
-[![Coverage gate 100%][coverage-gate-badge]][coverage-workflow]
-[![MSI gate 100%][mutation-gate-badge]](infection.json)
-
-The coverage and mutation badges describe enforced quality gates, not a guarantee
-that every application's API contract is compatible.
+See [local development](docs/integration.md#local-development) for tests, static analysis,
+coverage and mutation checks. These checks protect the package; each migration still
+needs tests for its own client contract.
 
 [tests-badge]: https://github.com/cosmira/yii1-strangler-proxy/actions/workflows/phpunit.yml/badge.svg?branch=main
 [tests-workflow]: https://github.com/cosmira/yii1-strangler-proxy/actions/workflows/phpunit.yml
-[coverage-badge]: https://github.com/cosmira/yii1-strangler-proxy/actions/workflows/coverage.yml/badge.svg?branch=main
-[coverage-workflow]: https://github.com/cosmira/yii1-strangler-proxy/actions/workflows/coverage.yml
-[mutation-badge]: https://github.com/cosmira/yii1-strangler-proxy/actions/workflows/mutation.yml/badge.svg?branch=main
-[mutation-workflow]: https://github.com/cosmira/yii1-strangler-proxy/actions/workflows/mutation.yml
-[quality-badge]: https://github.com/cosmira/yii1-strangler-proxy/actions/workflows/quality.yml/badge.svg?branch=main
-[quality-workflow]: https://github.com/cosmira/yii1-strangler-proxy/actions/workflows/quality.yml
-[style-badge]: https://github.com/cosmira/yii1-strangler-proxy/actions/workflows/code-style.yml/badge.svg?branch=main
-[style-workflow]: https://github.com/cosmira/yii1-strangler-proxy/actions/workflows/code-style.yml
-[markdown-badge]: https://github.com/cosmira/yii1-strangler-proxy/actions/workflows/markdown.yml/badge.svg?branch=main
-[markdown-workflow]: https://github.com/cosmira/yii1-strangler-proxy/actions/workflows/markdown.yml
-[shellcheck-badge]: https://github.com/cosmira/yii1-strangler-proxy/actions/workflows/shellcheck.yml/badge.svg?branch=main
-[shellcheck-workflow]: https://github.com/cosmira/yii1-strangler-proxy/actions/workflows/shellcheck.yml
-[spelling-badge]: https://github.com/cosmira/yii1-strangler-proxy/actions/workflows/typos.yml/badge.svg?branch=main
-[spelling-workflow]: https://github.com/cosmira/yii1-strangler-proxy/actions/workflows/typos.yml
 [php-badge]: https://img.shields.io/badge/PHP-8.2--8.5-777BB4?logo=php&logoColor=white
 [license-badge]: https://img.shields.io/github/license/cosmira/yii1-strangler-proxy
-[phpstan-badge]: https://img.shields.io/badge/PHPStan-max-brightgreen
-[coverage-gate-badge]: https://img.shields.io/badge/coverage%20gate-100%25-brightgreen
-[mutation-gate-badge]: https://img.shields.io/badge/MSI%20gate-100%25-brightgreen

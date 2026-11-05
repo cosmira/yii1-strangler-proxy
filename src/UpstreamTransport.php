@@ -23,41 +23,6 @@ use Throwable;
 final readonly class UpstreamTransport
 {
     /**
-     * Request or response field containing the HTTP body.
-     */
-    private const BODY = 'body';
-
-    /**
-     * Response field containing the HTTP status code.
-     */
-    private const STATUS = 'status';
-
-    /**
-     * Response field containing the upstream HTTP headers.
-     */
-    private const HEADERS = 'headers';
-
-    /**
-     * Outgoing request field containing the resolved upstream path.
-     */
-    private const PATH = 'path';
-
-    /**
-     * Safe diagnostic category for a completed attempt.
-     */
-    private const REASON = 'reason';
-
-    /**
-     * Actual HTTP attempt duration in milliseconds.
-     */
-    private const TIME_MS = 'time_ms';
-
-    /**
-     * Outgoing request field containing the mapped HTTP method.
-     */
-    private const METHOD = 'method';
-
-    /**
      * Configure the HTTP client, response output and elapsed-time clock.
      *
      * @param Closure(): float $clock
@@ -127,8 +92,8 @@ final readonly class UpstreamTransport
         string $routeTemplate,
         ?InlineMapping $inline,
     ): void {
-        $method = $outgoing[self::METHOD];
-        $path = $outgoing[self::PATH];
+        $method = $outgoing['method'];
+        $path = $outgoing['path'];
         $options = self::validatedOptions(
             $settings, $config, $actionKey, $outgoing, $routeTemplate,
         );
@@ -140,11 +105,11 @@ final readonly class UpstreamTransport
         } catch (GuzzleException) {
             $timeMs = $this->elapsed($startedAt);
             YiiRuntime::logResult($config, $actionKey, $routeTemplate, [
-                self::REASON => 'transport_failure',
-                self::METHOD => $method, self::TIME_MS => $timeMs,
+                'reason' => 'transport_failure',
+                'method' => $method, 'time_ms' => $timeMs,
             ]);
             $this->notifyAttempt(
-                $config, $actionKey, $outgoing, $routeTemplate, [self::TIME_MS => $timeMs],
+                $config, $actionKey, $outgoing, $routeTemplate, ['time_ms' => $timeMs],
             );
             $this->emitFailure(
                 $config, $actionKey, $routeTemplate, $timeMs, $method, $adapter, $inline,
@@ -154,17 +119,17 @@ final readonly class UpstreamTransport
         }
 
         $responseSnapshot = [
-            self::STATUS  => $response->getStatusCode(),
-            self::BODY    => (string) $response->getBody(),
-            self::HEADERS => $response->getHeaders(),
+            'status'  => $response->getStatusCode(),
+            'body'    => (string) $response->getBody(),
+            'headers' => $response->getHeaders(),
         ];
         $timeMs = $this->elapsed($startedAt);
         $this->notifyAttempt($config, $actionKey, $outgoing, $routeTemplate, [
-            'upstream_status' => $responseSnapshot[self::STATUS], self::TIME_MS => $timeMs,
+            'upstream_status' => $responseSnapshot['status'], 'time_ms' => $timeMs,
         ]);
         $this->emitResponse(
             $config, $actionKey, $routeTemplate, $timeMs, $responseSnapshot,
-            $method, $adapter, inline: $inline,
+            $method, $adapter, $responseSnapshot['status'], $inline,
         );
     }
 
@@ -189,8 +154,8 @@ final readonly class UpstreamTransport
 
         try {
             return self::requestOptions(
-                $settings, $outgoing[self::METHOD], $outgoing['query'],
-                $outgoing['payload'], $outgoing[self::BODY],
+                $settings, $outgoing['method'], $outgoing['query'],
+                $outgoing['payload'], $outgoing['body'],
                 YiiRuntime::fileMappings($config, $actionKey),
             );
         } catch (Throwable $exception) {
@@ -336,13 +301,13 @@ final readonly class UpstreamTransport
         string $routeTemplate,
         array $result,
     ): void {
-        $result[self::METHOD] = $outgoing[self::METHOD];
+        $result['method'] = $outgoing['method'];
 
         try {
-            YiiRuntime::afterAttempt($config, $outgoing[self::METHOD], $outgoing[self::PATH]);
+            YiiRuntime::afterAttempt($config, $outgoing['method'], $outgoing['path']);
         } catch (Throwable $exception) {
             YiiRuntime::logResult(
-                $config, $actionKey, $routeTemplate, [self::REASON => 'callback_failure'] + $result,
+                $config, $actionKey, $routeTemplate, ['reason' => 'callback_failure'] + $result,
             );
 
             throw $exception;
@@ -364,10 +329,10 @@ final readonly class UpstreamTransport
         ?InlineMapping $inline,
     ): void {
         $this->emitResponse($config, $actionKey, $routeTemplate, $timeMs, [
-            self::STATUS  => 503,
-            self::BODY    => '{"state":"error","error":"service_temporarily_unavailable"}',
-            self::HEADERS => ['Content-Type' => ['application/json; charset=utf-8']],
-        ], $method, $adapter, false, $inline);
+            'status'  => 503,
+            'body'    => '{"state":"error","error":"service_temporarily_unavailable"}',
+            'headers' => ['Content-Type' => ['application/json; charset=utf-8']],
+        ], $method, $adapter, null, $inline);
     }
 
     /**
@@ -384,45 +349,45 @@ final readonly class UpstreamTransport
         array $response,
         string $method,
         ?StranglerAdapterInterface $adapter,
-        bool $hasResponse = true,
+        ?int $upstreamStatus,
         ?InlineMapping $inline = null,
     ): void {
-        $result = [self::TIME_MS => $timeMs, self::METHOD => $method];
-        if ($hasResponse) {
-            $result['upstream_status'] = $response[self::STATUS];
+        $result = ['time_ms' => $timeMs, 'method' => $method];
+        if ($upstreamStatus !== null) {
+            $result['upstream_status'] = $upstreamStatus;
         }
 
         try {
             if ($inline !== null) {
                 $mapped = $inline->response(new Response(
-                    $response[self::STATUS], $response[self::HEADERS], $response[self::BODY],
+                    $response['status'], $response['headers'], $response['body'],
                 ));
                 $legacyResponse = [
-                    self::STATUS  => $mapped->getStatusCode(),
-                    self::BODY    => (string) $mapped->getBody(),
-                    self::HEADERS => $mapped->getHeaders(),
+                    'status'  => $mapped->getStatusCode(),
+                    'body'    => (string) $mapped->getBody(),
+                    'headers' => $mapped->getHeaders(),
                 ];
             } else {
                 $legacyResponse = $adapter?->transformResponse(
-                    $actionKey, $response[self::STATUS],
-                    $response[self::BODY], $response[self::HEADERS],
+                    $actionKey, $response['status'],
+                    $response['body'], $response['headers'],
                 ) ?? $response;
             }
         } catch (Throwable $exception) {
             YiiRuntime::logResult(
                 $config, $actionKey, $routeTemplate,
-                [self::REASON => 'adaptation_failure'] + $result,
+                ['reason' => 'adaptation_failure'] + $result,
             );
 
             throw $exception;
         }
         YiiRuntime::logResult($config, $actionKey, $routeTemplate, [
-            self::REASON => 'forwarded', 'client_status' => $legacyResponse[self::STATUS],
+            'reason' => 'forwarded', 'client_status' => $legacyResponse['status'],
         ] + $result);
         $this->emitter->send(
-            $legacyResponse[self::STATUS],
-            $legacyResponse[self::BODY], $legacyResponse[self::HEADERS],
-            $hasResponse ? $timeMs : 0,
+            $legacyResponse['status'],
+            $legacyResponse['body'], $legacyResponse['headers'],
+            $upstreamStatus === null ? 0 : $timeMs,
         );
     }
 }

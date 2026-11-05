@@ -25,26 +25,6 @@ use Throwable;
 final readonly class StranglerProxy
 {
     /**
-     * Configuration key for the callback that retains legacy handling.
-     */
-    private const BYPASS_CALLBACK = 'bypass';
-
-    /**
-     * Snapshot field containing the decoded legacy request payload.
-     */
-    private const PAYLOAD = 'payload';
-
-    /**
-     * Route field containing the upstream path template or resolved path.
-     */
-    private const PATH = 'path';
-
-    /**
-     * Snapshot field containing the unmodified JSON request body.
-     */
-    private const RAW_BODY = 'body';
-
-    /**
      * Send upstream attempts through the HTTP transport boundary.
      */
     private UpstreamTransport $transport;
@@ -106,7 +86,7 @@ final readonly class StranglerProxy
         ?array $payload = null,
     ): bool {
         $actionKey = self::normalizeActionKey($actionId);
-        $bypass = $config[self::BYPASS_CALLBACK] ?? null;
+        $bypass = $config['bypass'] ?? null;
         if ($bypass !== null && $bypass($controller, $actionKey, $_GET)) {
             return true;
         }
@@ -122,7 +102,7 @@ final readonly class StranglerProxy
             $controller,
             $config,
             $actionKey,
-        )[self::PAYLOAD];
+        )['payload'];
 
         foreach ($fields as $field) {
             if (array_key_exists($field, $bypassPayload)) {
@@ -150,13 +130,13 @@ final readonly class StranglerProxy
             return false;
         }
 
-        $bypass = $config[self::BYPASS_CALLBACK] ?? null;
+        $bypass = $config['bypass'] ?? null;
         if ($bypass !== null && $bypass($controller, $actionKey, $_GET)) {
             YiiRuntime::logDecision($config, $actionKey, 'bypass_callback');
 
             return false;
         }
-        unset($config[self::BYPASS_CALLBACK]);
+        unset($config['bypass']);
 
         $inline = isset($config['mappings']) ? new InlineMapping($config['mappings'], [
             'action' => $actionKey, 'query' => $_GET, 'payload' => null,
@@ -165,7 +145,7 @@ final readonly class StranglerProxy
         $adapter = YiiRuntime::resolveAdapter($adapterConfig);
         if ($adapter === null && self::hasAdapterConfig($adapterConfig)) {
             YiiRuntime::logRejection(
-                $config, $actionKey, $route[self::PATH], 'strangler_adapter_not_configured',
+                $config, $actionKey, $route['path'], 'strangler_adapter_not_configured',
             );
             $this->emitter->error(500, 'strangler_adapter_not_configured', inline: $inline);
 
@@ -191,7 +171,7 @@ final readonly class StranglerProxy
     ): bool {
         try {
             $snapshot = self::readPayload($controller, $config, $actionKey);
-            $payload = $snapshot[self::PAYLOAD];
+            $payload = $snapshot['payload'];
         } catch (JsonException) {
             $this->emitter->error(400, 'strangler_invalid_payload', $adapter, $actionKey, $inline);
 
@@ -203,7 +183,7 @@ final readonly class StranglerProxy
 
             return false;
         }
-        $mapping = $inline?->withPayload($payload, $snapshot[self::RAW_BODY]);
+        $mapping = $inline?->withPayload($payload, $snapshot['body']);
 
         $prepared = self::prepareRequest(
             $config, $actionKey, $route, $snapshot, $adapter, $mapping,
@@ -213,7 +193,7 @@ final readonly class StranglerProxy
 
             return false;
         }
-        $this->sendPrepared($config, $actionKey, $route[self::PATH], $prepared, $adapter, $mapping);
+        $this->sendPrepared($config, $actionKey, $route['path'], $prepared, $adapter, $mapping);
 
         return true;
     }
@@ -235,9 +215,9 @@ final readonly class StranglerProxy
         $outgoing = $prepared['outgoing'];
 
         try {
-            $outgoing[self::PATH] = self::resolvePath(
+            $outgoing['path'] = self::resolvePath(
                 $routeTemplate, $prepared['pathQuery'],
-                $outgoing[self::PAYLOAD], $prepared['routeId'],
+                $outgoing['payload'], $prepared['routeId'],
             );
         } catch (InvalidArgumentException) {
             YiiRuntime::logRejection(
@@ -275,16 +255,16 @@ final readonly class StranglerProxy
         $reader = $config['payloadReader'] ?? null;
 
         if ($reader !== null) {
-            return [self::PAYLOAD => $reader($controller), self::RAW_BODY => null];
+            return ['payload' => $reader($controller), 'body' => null];
         }
 
         if (YiiRuntime::fileMappings($config, $actionKey) !== null) {
-            return [self::PAYLOAD => $_POST, self::RAW_BODY => null];
+            return ['payload' => $_POST, 'body' => null];
         }
 
         $body = self::application()->getRequest()->getRawBody();
         if (trim($body) === '') {
-            return [self::PAYLOAD => [], self::RAW_BODY => $body];
+            return ['payload' => [], 'body' => $body];
         }
 
         $decoded = json_decode($body, true, flags: JSON_THROW_ON_ERROR | JSON_BIGINT_AS_STRING);
@@ -292,7 +272,7 @@ final readonly class StranglerProxy
             throw new JsonException('Strangler requires a JSON object or array.');
         }
 
-        return [self::PAYLOAD => $decoded, self::RAW_BODY => $body];
+        return ['payload' => $decoded, 'body' => $body];
     }
 
     /**
@@ -377,14 +357,14 @@ final readonly class StranglerProxy
         ?StranglerAdapterInterface $adapter,
         ?InlineMapping $inline,
     ): array|false {
-        $payload = $snapshot[self::PAYLOAD];
+        $payload = $snapshot['payload'];
         $request = self::application()->getRequest();
         $query = $_GET;
         unset($query['r']);
 
         $routeId = self::routeIdentifier($request->getParam('id'), $payload, $config);
         $mapped = self::requestValues(
-            $config, $actionKey, $route[self::PATH], $query, $snapshot, $adapter, $inline,
+            $config, $actionKey, $route['path'], $query, $snapshot, $adapter, $inline,
         );
         if ($mapped === false) {
             return false;
@@ -398,10 +378,10 @@ final readonly class StranglerProxy
         return [
             'outgoing' => [
                 'method'       => strtoupper($route['method']),
-                self::PATH     => $route[self::PATH],
+                'path'         => $route['path'],
                 'query'        => $mapped['query'],
-                self::PAYLOAD  => $mapped[self::PAYLOAD],
-                self::RAW_BODY => $mapped[self::RAW_BODY],
+                'payload'      => $mapped['payload'],
+                'body'         => $mapped['body'],
             ],
             'pathQuery' => $pathQuery,
             'routeId'   => $routeId,
@@ -428,13 +408,13 @@ final readonly class StranglerProxy
     ): array|false {
         if ($adapter !== null) {
             return YiiRuntime::mapRequest(
-                $config, $actionKey, $path, $adapter, $query, $snapshot[self::PAYLOAD],
-            ) + [self::RAW_BODY => null];
+                $config, $actionKey, $path, $adapter, $query, $snapshot['payload'],
+            ) + ['body' => null];
         }
         if ($inline !== null) {
             try {
                 return $inline->request(
-                    $query, $snapshot[self::PAYLOAD], $snapshot[self::RAW_BODY],
+                    $query, $snapshot['payload'], $snapshot['body'],
                 );
             } catch (Throwable $exception) {
                 YiiRuntime::logRejection($config, $actionKey, $path, 'request_adaptation_failure');
@@ -442,13 +422,13 @@ final readonly class StranglerProxy
                 throw $exception;
             }
         }
-        $body = $snapshot[self::RAW_BODY];
+        $body = $snapshot['body'];
         if ($body !== null && trim($body) === '') {
             $body = '[]';
         }
 
         return [
-            'query' => $query, self::PAYLOAD => $snapshot[self::PAYLOAD], self::RAW_BODY => $body,
+            'query' => $query, 'payload' => $snapshot['payload'], 'body' => $body,
         ];
     }
 

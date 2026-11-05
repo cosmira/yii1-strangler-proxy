@@ -75,7 +75,7 @@ final class Mapping
 
         return self::put(
             (object) $envelope,
-            self::path($to, false),
+            self::destination($to),
             $mapper(self::record(self::read($json, $from))),
         );
     }
@@ -106,7 +106,7 @@ final class Mapping
             ),
             default => [$totalFrom, $totalTo],
         };
-        $destination = self::path($to, false);
+        $destination = self::destination($to);
         $result = self::put(
             (object) $envelope,
             $destination,
@@ -114,7 +114,7 @@ final class Mapping
         );
         if ($totalPaths !== null) {
             [$totalSource, $totalTarget] = $totalPaths;
-            $totalDestination = self::path($totalTarget, false);
+            $totalDestination = self::destination($totalTarget);
             $length = min(count($destination), count($totalDestination));
             if (array_slice($destination, 0, $length)
                 === array_slice($totalDestination, 0, $length)) {
@@ -263,11 +263,11 @@ final class Mapping
      *
      * @param array<array-key, mixed> $path
      *
-     * @return ($allowEmpty is false ? non-empty-list<array-key> : list<array-key>)
+     * @return list<array-key>
      */
-    private static function path(array $path, bool $allowEmpty = true): array
+    private static function path(array $path): array
     {
-        if (! array_is_list($path) || (! $allowEmpty && $path === [])) {
+        if (! array_is_list($path)) {
             throw new InvalidArgumentException(
                 'Use literal segment lists; destination paths must not be empty.',
             );
@@ -280,6 +280,25 @@ final class Mapping
 
             return array_key_first([$segment => null]);
         }, $path);
+    }
+
+    /**
+     * Require a destination without replacing the whole response envelope.
+     *
+     * @param array<array-key, mixed> $path
+     *
+     * @return non-empty-list<array-key>
+     */
+    private static function destination(array $path): array
+    {
+        $segments = self::path($path);
+        if ($segments === []) {
+            throw new InvalidArgumentException(
+                'Use literal segment lists; destination paths must not be empty.',
+            );
+        }
+
+        return $segments;
     }
 
     /**

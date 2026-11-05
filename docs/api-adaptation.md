@@ -126,7 +126,7 @@ Malformed backend JSON and helper-detected invalid response structure produce on
 502 `invalid_upstream_response`, then run the error mapper. A programming exception
 in a callback reaches the host error handler unchanged. Neither path retries a write
 or runs the old Yii action after forwarding. Configure the JSON error action from
-[the integration guide](integration.md#json-api-error-handler) for application bugs.
+[the integration guide](integration.md#api-errors-from-yii) for application bugs.
 
 `Json::response()` serializes the body and retains `X-Request-Id`, `Retry-After`, and
 `X-RateLimit-Remaining`. It removes stale compression, length, validators, and digest

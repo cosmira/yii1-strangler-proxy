@@ -313,17 +313,48 @@ final class StranglerProxyTest extends TestCase
         self::assertSame('{"name":"Document"}', (string) $this->history[0]['request']->getBody());
     }
 
-    #[DataProvider('emptyUploadNames')]
-    public function testFileMappingsRejectEmptyNames(string $source, string $target): void
+    #[DataProvider('invalidUploadNames')]
+    public function testFileMappingsRejectInvalidNames(string $source, mixed $target): void
     {
         $this->expectException(InvalidArgumentException::class);
         Strangler::proxy('example')->mapFiles([$source => $target]);
     }
 
-    /** @return list<array{string, string}> */
-    public static function emptyUploadNames(): array
+    /** @return list<array{string, mixed}> */
+    public static function invalidUploadNames(): array
     {
-        return [['', 'photo'], ['photo', '']];
+        return [['', 'photo'], ['photo', ''], ['photo', null], ['photo', false], ['photo', []]];
+    }
+
+    public function testActionFilesOverrideSharedMappingsWithoutLosingOtherUploads(): void
+    {
+        $file = tempnam(sys_get_temp_dir(), 'strangler-actions-');
+        self::assertIsString($file);
+        file_put_contents($file, 'file-content');
+        $_FILES = ['photo' => ['name' => 'photo.png', 'type' => 'image/png',
+            'tmp_name'                => $file, 'error' => UPLOAD_ERR_OK, 'size' => 12]];
+        \CUploadedFile::reset();
+        $config = Strangler::proxy('example')
+            ->mapFiles(['missing' => 'unused', 'photo' => 'attachment'])
+            ->mapFiles(['photo' => 'avatar'], ['upload'])
+            ->post('upload', '/avatar')->post('create', '/document')->build()['config'];
+        $proxy = $this->proxy($this->client([new Response(200), new Response(200)]));
+
+        try {
+            $this->capture(fn () => $proxy->handle($this->controller, $config, 'upload'));
+            $this->capture(fn () => $proxy->handle($this->controller, $config, 'create'));
+
+            $upload = (string) $this->history[0]['request']->getBody();
+            $document = (string) $this->history[1]['request']->getBody();
+            self::assertStringContainsString('name="avatar"', $upload);
+            self::assertStringNotContainsString('name="attachment"', $upload);
+            self::assertStringContainsString('name="attachment"', $document);
+            self::assertStringContainsString('file-content', $document);
+        } finally {
+            $_FILES = [];
+            \CUploadedFile::reset();
+            unlink($file);
+        }
     }
 
     public function testNestedMultipartFieldsFailBeforeAnyAttempt(): void

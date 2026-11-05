@@ -267,7 +267,7 @@ final readonly class UpstreamTransport
      * @param array<array-key, mixed> $payload
      * @param array<string, string>   $files
      *
-     * @return list<array{name: string, contents: string|resource, filename?: string}>
+     * @return list<array{name: array-key, contents: scalar|resource|null, filename?: string}>
      */
     private static function multipart(array $payload, array $files): array
     {
@@ -277,8 +277,8 @@ final readonly class UpstreamTransport
                 throw new \InvalidArgumentException('Multipart form fields must be scalar values.');
             }
             $parts[] = [
-                'name'     => (string) $name,
-                'contents' => (string) (is_bool($value) ? (int) $value : $value),
+                'name'     => $name,
+                'contents' => is_bool($value) ? (int) $value : $value,
             ];
         }
         foreach ($files as $source => $target) {

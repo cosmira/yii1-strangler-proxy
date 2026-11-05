@@ -159,22 +159,23 @@ final class Strangler
     /**
      * Forward selected Yii uploads as named multipart fields.
      *
-     * @param array<string, string> $files   Yii upload names mapped to upstream names.
-     * @param list<string>          $actions
+     * @param array<string, mixed> $files   Yii upload names mapped to upstream names.
+     * @param list<string>         $actions
      */
     public function mapFiles(array $files, array $actions = []): self
     {
-        self::validateFieldMap($files);
+        $names = [];
         foreach ($files as $source => $target) {
-            if ($source === '' || $target === '') {
+            if ($source === '' || ! is_string($target) || $target === '') {
                 throw new InvalidArgumentException(
                     'File mappings require nonempty upload and field names.',
                 );
             }
+            $names[$source] = $target;
         }
         $this->config['files'] = self::registerMapping(
             $this->config['files'] ?? [],
-            $files,
+            $names,
             $actions,
         );
 

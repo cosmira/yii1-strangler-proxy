@@ -14,12 +14,13 @@ final class Mapping
      * Select and rename literal keys while preserving null and container shape.
      *
      * @param array<array-key, mixed>|stdClass $record
-     * @param array<array-key, mixed>          $fields
+     * @param array<array-key, mixed>|Fields   $fields
      *
      * @return ($record is stdClass ? stdClass : array<array-key, mixed>)
      */
-    public static function fields(array|stdClass $record, array $fields): array|stdClass
+    public static function fields(array|stdClass $record, array|Fields $fields): array|stdClass
     {
+        $fields = $fields instanceof Fields ? $fields->names() : $fields;
         $names = self::names($fields);
         if (count(array_unique($names)) !== count($names)) {
             throw new InvalidArgumentException('Field maps require distinct target names.');

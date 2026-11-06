@@ -216,6 +216,48 @@ return Strangler::proxy('catalog')
     ->build();
 ```
 
+### Share field names across directions
+
+Use one `Fields` schema when the legacy API uses uppercase keys. List ordinary
+upstream names once. Associative entries describe naming exceptions.
+
+```php
+use Cosmira\Strangler\Fields;
+
+$fields = Fields::uppercase([
+    'id' => 'PERSON_ID',
+    'display_name',
+    'updated_at' => 'CHANGE_DATE',
+    'groups' => 'parents',
+])->filterAs('display_name', 'query');
+
+$resource = JsonResource::make()
+    ->fields($fields)
+    ->writable(['display_name']);
+
+$query = Query::legacy()
+    ->filters($fields->only(['display_name']))
+    ->sorts($fields->only(['updated_at']))
+    ->includes($fields->only(['groups']));
+```
+
+The schema always describes **upstream name to legacy name**. `JsonResource` uses
+that direction for responses and reverses writable fields for payloads. `Query`
+reverses it for filters, sorting and includes. The example translates
+`filter[DISPLAY_NAME]` to `filter[query]`, `sort[CHANGE_DATE]` to `updated_at`
+ordering, and `with[]=parents` to `include=groups`.
+
+`only()` returns a new schema and rejects unknown names. It does not add fields to
+the original. Duplicate legacy names cannot be reversed and are rejected when
+configuring a query. `filterAs()`, `sortAs()` and `writeAs()` override the upstream
+name in that direction without changing the response name. For example,
+`writeAs('display_name', 'name')` sends `DISPLAY_NAME` as `name` in a write payload.
+Each method returns a new schema and requires an existing field. Existing array maps keep their existing direction and behavior.
+`Mapping::fields()` also accepts a `Fields` schema.
+
+Schemas rename keys only. Date formatting, boolean values, null omission and
+changes to record shape remain explicit application rules.
+
 `Query::legacy()` defaults to list action `get`, ignored query keys `id` and `_`,
 and page sizes 20 through 100. `filters()`, `sorts()`, and `includes()` use the
 source-to-target names understood by `Mapping::legacyQuery()`. `ignore()` and
@@ -233,7 +275,7 @@ is called, including for empty actions and upstream 204 responses.
 These are compatibility defaults, not Yii
 framework requirements. `empty([])` disables action-based empty responses.
 
-- `fields(array)` selects and renames record fields; without it records pass through.
+- `fields(array|Fields)` selects and renames record fields; without it records pass through.
 - `recordUsing(callable)` replaces record transformation; the callback receives the
   validated record and original request context. Date, null, and domain conversions
   belong here; nested records can use `Mapping::fields()`.

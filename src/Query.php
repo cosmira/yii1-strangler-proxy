@@ -62,12 +62,12 @@ final class Query
     /**
      * Select the legacy filters that can reach the upstream API.
      *
-     * @param array<array-key, mixed> $fields
+     * @param array<array-key, mixed>|Fields $fields
      */
-    public function filters(array $fields): self
+    public function filters(array|Fields $fields): self
     {
         $copy = clone $this;
-        $copy->filterFields = $fields;
+        $copy->filterFields = $fields instanceof Fields ? $fields->filters() : $fields;
 
         return $copy;
     }
@@ -75,12 +75,12 @@ final class Query
     /**
      * Translate supported legacy ordering fields to upstream names.
      *
-     * @param array<array-key, mixed> $fields
+     * @param array<array-key, mixed>|Fields $fields
      */
-    public function sorts(array $fields): self
+    public function sorts(array|Fields $fields): self
     {
         $copy = clone $this;
-        $copy->sortFields = $fields;
+        $copy->sortFields = $fields instanceof Fields ? $fields->sorts() : $fields;
 
         return $copy;
     }
@@ -88,12 +88,12 @@ final class Query
     /**
      * Translate supported legacy relations to upstream includes.
      *
-     * @param array<array-key, mixed> $fields
+     * @param array<array-key, mixed>|Fields $fields
      */
-    public function includes(array $fields): self
+    public function includes(array|Fields $fields): self
     {
         $copy = clone $this;
-        $copy->includeFields = $fields;
+        $copy->includeFields = $fields instanceof Fields ? $fields->inverse() : $fields;
 
         return $copy;
     }

@@ -59,6 +59,9 @@ final class JsonResource
      * @var array<array-key, string>
      */
     private array $fieldMap = [];
+
+    /** @var array<string, string>|null */
+    private ?array $writeMap = null;
     /**
      * Upstream fields allowed to receive values from legacy write payloads.
      *
@@ -85,12 +88,14 @@ final class JsonResource
     /**
      * Select response fields and retain their names for inverse payload mapping.
      *
-     * @param array<array-key, string> $fields
+     * @param array<array-key, string>|Fields $fields
      */
-    public function fields(array $fields): self
+    public function fields(array|Fields $fields): self
     {
-        Mapping::fields([], $fields);
         $copy = clone $this;
+        $copy->writeMap = $fields instanceof Fields ? $fields->writes() : null;
+        $fields = $fields instanceof Fields ? $fields->names() : $fields;
+        Mapping::fields([], $fields);
         $copy->record = $fields;
         $copy->fieldMap = $fields;
 
@@ -198,8 +203,9 @@ final class JsonResource
     public function payload(array $payload): array
     {
         $fields = array_intersect_key($this->fieldMap, array_flip($this->writableFields));
+        $names = $this->writeMap ?? array_flip($this->fieldMap);
 
-        return Mapping::fields($payload, array_flip($fields));
+        return Mapping::fields($payload, array_intersect_key($names, array_flip($fields)));
     }
 
     /**

@@ -23,6 +23,18 @@ final class IncludesTest extends TestCase
         self::assertNull($includes->normalize('contacts'));
     }
 
+    public function testRepeatedRelationNamesUseTheLastSelection(): void
+    {
+        $includes = Includes::only(['groups' => ['NAME_PATH']]);
+
+        self::assertSame(['groups' => []], $includes->normalize([
+            'groups' => ['NAME_PATH'], 'groups',
+        ]));
+        self::assertSame(['groups' => ['NAME_PATH' => []]], $includes->normalize([
+            'groups', 'groups' => ['NAME_PATH'],
+        ]));
+    }
+
     public function testInvalidSchemaIsRejectedAtConfigurationTime(): void
     {
         $this->expectException(\InvalidArgumentException::class);

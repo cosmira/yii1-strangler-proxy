@@ -332,7 +332,6 @@ final class Record
 
             $nested = $this->relationProjection($projection, $name);
             $value = $attributes[$source];
-            $child = $child instanceof self ? $child : $child();
             $mapped[$name] = $many
                 ? $this->mapCollection($child, $value, $context, $nested)
                 : $this->mapOne($child, $value, $context, $nested);
@@ -371,38 +370,50 @@ final class Record
     /**
      * Reject object-shaped collections and map each item without changing order.
      *
+     * @param self|Closure(): self      $child
      * @param array<array-key, mixed>   $context
      * @param array<string, mixed>|null $projection
      *
      * @return list<array<array-key, mixed>|stdClass>
      */
     private function mapCollection(
-        self $child, mixed $value, array $context, ?array $projection,
+        self|Closure $child, mixed $value, array $context, ?array $projection,
     ): array {
         if (! is_array($value) || ! array_is_list($value)) {
             throw new InvalidUpstreamResponse('Expected a related record list.');
         }
 
+        if ($value === []) {
+            return [];
+        }
+        $schema = $child instanceof self ? $child : $child();
+
         return array_map(
             fn (mixed $item): array|stdClass => $this->mapChild(
-                $child, $item, $context, $projection,
+                $schema, $item, $context, $projection,
             ),
             $value,
         );
     }
 
     /**
-     * Preserve an absent to-one relation while validating every present object.
+     * Preserve null without constructing a child schema; validate every present object.
      *
+     * @param self|Closure(): self      $child
      * @param array<array-key, mixed>   $context
      * @param array<string, mixed>|null $projection
      *
      * @return array<array-key, mixed>|stdClass|null
      */
     private function mapOne(
-        self $child, mixed $item, array $context, ?array $projection,
+        self|Closure $child, mixed $item, array $context, ?array $projection,
     ): array|stdClass|null {
-        return $item === null ? null : $this->mapChild($child, $item, $context, $projection);
+        if ($item === null) {
+            return null;
+        }
+        $schema = $child instanceof self ? $child : $child();
+
+        return $this->mapChild($schema, $item, $context, $projection);
     }
 
     /**

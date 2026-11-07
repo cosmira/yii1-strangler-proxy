@@ -128,6 +128,38 @@ final class RecordTest extends TestCase
         self::assertSame(['ID' => 'a'], $record(['id' => 'a', 'owner' => null]));
     }
 
+    public function testEmptyRelationsDoNotExecuteTheirFactories(): void
+    {
+        $factory = static function (): Record {
+            throw new \LogicException('An empty relation does not need a child schema.');
+        };
+        $record = Record::uppercase()
+            ->one('owner', $factory)
+            ->many('children', $factory);
+
+        self::assertSame([], $record([]));
+        self::assertSame(['owner' => null, 'children' => []], $record([
+            'owner' => null, 'children' => [],
+        ]));
+    }
+
+    public function testToOneFactoryRunsOnlyForSelectedNonNullData(): void
+    {
+        $calls = 0;
+        $record = Record::uppercase()->one('owner', static function () use (&$calls): Record {
+            $calls++;
+
+            return Record::uppercase()->identifier('OWNER_ID');
+        });
+        $hidden = $record->projectionUsing(static fn (): array => []);
+
+        self::assertSame([], $hidden(['owner' => ['id' => 'o']]));
+        self::assertSame(['owner' => null], $record(['owner' => null]));
+        self::assertSame(0, $calls);
+        self::assertSame(['owner' => ['OWNER_ID' => 'o']], $record(['owner' => ['id' => 'o']]));
+        self::assertSame(1, $calls);
+    }
+
     public function testLazyRelationsAreBuiltOnlyWhenPresentAndOncePerCollection(): void
     {
         $calls = 0;

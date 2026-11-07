@@ -146,6 +146,10 @@ Opaque nested JSON is not a model and its keys are left untouched.
 Mapped attributes and present, selected relations must have distinct output names.
 Conflicts, including a null value overwritten by a relation, are invalid upstream
 responses; absent or omitted relations do not conflict with partial records.
+`one()` and `many()` retain the source relation name unless `as` is supplied;
+attribute naming remains independent. Lazy child factories run only for present,
+selected relations containing data. A null to-one or an empty list does not build
+a child schema; a populated list resolves its factory once for that list.
 
 ## Define and connect one feature
 

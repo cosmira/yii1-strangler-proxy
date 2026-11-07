@@ -481,6 +481,7 @@ version, locally and in GitHub Actions; no separate checkout of Soda is required
 | Source | Forbidden dependencies | Responsibility |
 | --- | --- | --- |
 | `Cosmira\Strangler` | `App`, application `strangler`, `Illuminate`, `Symfony`, package tests | The reusable Yii package must not import its consuming application, another application framework, or test fixtures. |
+| `Cosmira\\Strangler\\Schema` | `GuzzleHttp`, `Psr\\Http`, package internals | Naming and include schemas remain independent of transport and orchestration. |
 | `Cosmira\Strangler\Internal\Payload` | `GuzzleHttp`, `Psr\Http` | Body bindings transform PHP/JSON data without sending requests or reading HTTP messages. |
 
 Public naming and include schemas live in `Cosmira\Strangler\Schema` as
@@ -497,3 +498,8 @@ because orchestration already depends on the payload namespace.
 The rule matches namespace dependencies, not global class names. It cannot forbid
 Yii's global `Yii` or `CUploadedFile` classes, and it does not claim to separate all
 public mapping helpers from runtime code. Those boundaries still need code review.
+
+`NoStaticMutableProperties` rejects static properties and local static variables,
+keeping configuration and schema caches scoped to their owning instance.
+`NoVacuousDocblocks` rejects descriptions that only repeat a member name;
+DocBlocks must explain a contract, a constraint, or information absent from its type.

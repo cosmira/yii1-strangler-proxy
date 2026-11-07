@@ -34,6 +34,7 @@
         "ext-json": "*"
     },
     "require-dev": {
+        "cosmira/soda": "^1.2.1",
         "infection/infection": "^0.32.4",
         "laravel/pint": "^1.27",
         "phpstan/phpstan": "^2.2",
@@ -60,7 +61,7 @@
             "Composer\\Config::disableProcessTimeout",
             "@php tools/run-mutation.php"
         ],
-        "test:soda": "@php .tools/soda/soda quality src --config=soda.php",
+        "test:soda": "@php vendor/bin/soda quality src --config=soda.php",
         "test:types": "@php vendor/bin/phpstan analyse --memory-limit=1G",
         "test:rector": [
             "@php vendor/bin/rector validate-config",

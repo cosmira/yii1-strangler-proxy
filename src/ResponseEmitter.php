@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Cosmira\Strangler;
 
 use Closure;
+use Cosmira\Strangler\Internal\Http\HttpHeaders;
 use GuzzleHttp\Psr7\Response;
 
 /**
@@ -76,8 +77,6 @@ final readonly class ResponseEmitter
     public function error(
         int $status,
         string $code,
-        ?StranglerAdapterInterface $adapter = null,
-        string $actionId = '',
         ?InlineMapping $inline = null,
     ): void {
         if ($inline !== null) {
@@ -91,17 +90,6 @@ final readonly class ResponseEmitter
                 $response->getHeaders(),
                 0,
             );
-
-            return;
-        }
-
-        if ($adapter !== null) {
-            $body = json_encode(
-                ['state' => self::ERROR_STATE, 'error' => $code], JSON_THROW_ON_ERROR,
-            );
-            $headers = ['Content-Type' => ['application/json; charset=utf-8']];
-            $response = $adapter->transformResponse($actionId, $status, $body, $headers);
-            $this->send($response['status'], $response['body'], $response['headers'], 0);
 
             return;
         }

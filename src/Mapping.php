@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Cosmira\Strangler;
 
+use Cosmira\Strangler\Schema\Fields;
 use InvalidArgumentException;
 use stdClass;
 
@@ -20,8 +21,8 @@ final class Mapping
      */
     public static function fields(array|stdClass $record, array|Fields $fields): array|stdClass
     {
-        $fields = $fields instanceof Fields ? $fields->names() : $fields;
-        $names = self::names($fields);
+        $fieldMap = $fields instanceof Fields ? $fields->namesFor($record) : $fields;
+        $names = self::names($fieldMap);
         if (count(array_unique($names)) !== count($names)) {
             throw new InvalidArgumentException('Field maps require distinct target names.');
         }

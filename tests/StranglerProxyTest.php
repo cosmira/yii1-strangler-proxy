@@ -6,16 +6,14 @@ namespace Cosmira\Strangler\Tests;
 
 use CController;
 use CFilterChain;
-use Cosmira\Strangler\AbstractStranglerAdapter;
+use Cosmira\Strangler\InlineMapping;
 use Cosmira\Strangler\ResponseEmitter;
 use Cosmira\Strangler\Strangler;
 use Cosmira\Strangler\StranglerFilter;
 use Cosmira\Strangler\StranglerProxy;
-use Cosmira\Strangler\Tests\Fixtures\Adapter;
 use Cosmira\Strangler\Tests\Fixtures\ApplicationEnded;
 use Cosmira\Strangler\Tests\Fixtures\Controller;
 use Cosmira\Strangler\Tests\Fixtures\Request;
-use Cosmira\Strangler\Tests\Fixtures\ThrowingAdapter;
 use Cosmira\Strangler\Tests\Fixtures\User;
 use Cosmira\Strangler\Tests\Fixtures\WebApplication;
 use GuzzleHttp\Client;
@@ -32,6 +30,7 @@ use PHPUnit\Framework\Attributes\PreserveGlobalState;
 use PHPUnit\Framework\Attributes\RunInSeparateProcess;
 use PHPUnit\Framework\TestCase;
 use Psr\Http\Message\RequestInterface;
+use Psr\Http\Message\ResponseInterface;
 use RuntimeException;
 use Yii;
 
@@ -146,7 +145,7 @@ final class StranglerProxyTest extends TestCase
     {
         $config = Strangler::proxy('example')
             ->payloadUsing(static fn () => ['special' => null])
-            ->bypassWhenPayloadHas('PUT', ['special'])
+            ->payloadUsing(bypass: static fn (array $payload, string $action): bool => $action === 'put' && array_intersect_key($payload, array_flip(['special'])) !== [])
             ->build()['config'];
 
         self::assertTrue(StranglerProxy::shouldBypass($this->controller, $config, 'put'));
@@ -159,17 +158,23 @@ final class StranglerProxyTest extends TestCase
         $_SERVER['HTTP_AUTHORIZATION'] = 'Bearer token';
         $_SERVER['HTTP_CONNECTION'] = 'keep-alive';
         $_SERVER['HTTP_CONTENT_LENGTH'] = '99';
-        $adapter = new Adapter();
+        $transformed = false;
         $events = [];
         $config = Strangler::proxy('example')
-            ->usingAdapter($adapter)
+            ->mapQuery(static fn (array $query): array => ['page' => $query['start'] ?? 0])
+            ->mapPayload(static fn (array $payload): array => ['name' => $payload['NAME'] ?? null])
+            ->mapJsonResponse(static function (mixed $json, ResponseInterface $response) use (&$transformed): ResponseInterface {
+                $transformed = true;
+
+                return new Response(202, $response->getHeaders(), 'mapped:'.(is_string($json) ? $json : json_encode($json, JSON_THROW_ON_ERROR)));
+            })
             ->payloadUsing(static fn () => ['ID' => 'a/b c', 'NAME' => 'Alice'])
-            ->bodyIdentifier('ID')
+            ->routeParametersUsing(static fn (array $context): array => ['id' => $context['query']['id'] ?? $context['payload']['ID'] ?? null])
             ->put('update', '/api/items/{id}')
-            ->afterAttempt(static function (string $method, string $path) use (&$events, $adapter): void {
-                $events[] = [$method, $path, $adapter->transformed];
+            ->afterAttempt(static function (string $method, string $path) use (&$events, &$transformed): void {
+                $events[] = [$method, $path, $transformed];
             })->build()['config'];
-        $proxy = $this->proxy($this->client([new Response(201, ['X-Upstream' => 'yes'], 'saved')]));
+        $proxy = $this->proxy($this->client([new Response(201, ['X-Upstream' => 'yes'], '"saved"')]));
 
         $body = $this->capture(fn () => $proxy->handle($this->controller, $config, 'UPDATE'));
 
@@ -190,7 +195,7 @@ final class StranglerProxyTest extends TestCase
     public function testUrlIdentifierTakesPrecedenceOverPayload(): void
     {
         $_GET = ['id' => 'url-id'];
-        $config = Strangler::proxy('example')->bodyIdentifier('ID')
+        $config = Strangler::proxy('example')->routeParametersUsing(static fn (array $context): array => ['id' => $context['query']['id'] ?? $context['payload']['ID'] ?? null])
             ->payloadUsing(static fn () => ['ID' => 'body-id'])
             ->put('update', '/api/items/{id}')->build()['config'];
         $proxy = $this->proxy($this->client([new Response(204)]));
@@ -409,36 +414,6 @@ final class StranglerProxyTest extends TestCase
         self::assertCount(0, $this->history);
     }
 
-    /** @param string|array<string, mixed> $adapter */
-    #[DataProvider('invalidAdapters')]
-    public function testInvalidAdapterFailsBeforeSendingARequest(string|array $adapter): void
-    {
-        $config = Strangler::proxy('example')->usingAdapter($adapter)
-            ->get('get', '/api/items')->build()['config'];
-        $proxy = $this->proxy($this->client([]));
-
-        $body = $this->capture(fn () => $proxy->handle($this->controller, $config, 'get'));
-
-        self::assertSame(500, http_response_code());
-        self::assertSame(['state' => 'error', 'error' => 'strangler_adapter_not_configured'], json_decode($body, true));
-        self::assertCount(0, $this->history);
-    }
-
-    /** @return list<array{string|array<string, mixed>}> */
-    public static function invalidAdapters(): array
-    {
-        return [['missing.Component'], [['bad' => 'config']], [['class' => 'stdClass']]];
-    }
-
-    public function testYiiCreatesAConfiguredAdapter(): void
-    {
-        $config = Strangler::proxy('example')->usingAdapter(['class' => Adapter::class])
-            ->get('get', '/api/items')->build()['config'];
-        $proxy = $this->proxy($this->client([new Response(200, [], 'items')]));
-
-        self::assertSame('mapped:items', $this->capture(fn () => $proxy->handle($this->controller, $config, 'get')));
-    }
-
     public function testJsonPayloadIsReadWithoutAnApplicationSpecificController(): void
     {
         $this->request->body = '{"name":"Alice"}';
@@ -473,11 +448,10 @@ final class StranglerProxyTest extends TestCase
         ];
     }
 
-    public function testAdaptersReceiveBigIntegerIdentifiersWithoutRounding(): void
+    public function testPayloadMappingReceivesBigIntegerIdentifiersWithoutRounding(): void
     {
         $this->request->body = '{"id":922337203685477580812345}';
-        $adapter = new class extends AbstractStranglerAdapter {};
-        $config = Strangler::proxy('example')->usingAdapter($adapter)->post('create', '/api/items')->build()['config'];
+        $config = Strangler::proxy('example')->mapPayload(static fn (array $payload): array => $payload)->post('create', '/api/items')->build()['config'];
         $proxy = $this->proxy($this->client([new Response(201)]));
         $this->capture(fn () => $proxy->handle($this->controller, $config, 'create'));
 
@@ -552,11 +526,25 @@ final class StranglerProxyTest extends TestCase
         self::assertSame('https://backend.test', $this->history[0]['options']['base_uri']);
     }
 
+    public function testExplicitRoutesNormalizeSupportedMethods(): void
+    {
+        $config = Strangler::proxy('example')->route('edit', 'patch', '/items/{id}')->build()['config'];
+
+        self::assertSame('PATCH', $config['routes']['edit']['method'] ?? null);
+    }
+
+    public function testExplicitRoutesRejectUnsupportedMethods(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('Unsupported upstream HTTP method.');
+
+        Strangler::proxy('example')->route('edit', 'TRACE', '/items/{id}');
+    }
+
     public function testBuilderExportsAllHttpMethodsAndIndependentActions(): void
     {
         $config = Strangler::proxy('example')->get('GET', '/get')->post('CREATE', '/post')
-            ->put('UPDATE', '/put')->delete('DELETE', '/delete')->patch('PATCH', '/patch')->head('HEAD', '/head')
-            ->bypassWhenPayloadHas('UPDATE', ['one'])->bypassWhenPayloadHas('CREATE', ['two'])
+            ->put('UPDATE', '/put')->delete('DELETE', '/delete')->route('PATCH', 'PATCH', '/patch')->route('HEAD', 'HEAD', '/head')
             ->build()['config'];
 
         self::assertSame('example', $config['feature'] ?? null);
@@ -568,7 +556,6 @@ final class StranglerProxyTest extends TestCase
             'patch'  => ['method' => 'PATCH', 'path' => '/patch'],
             'head'   => ['method' => 'HEAD', 'path' => '/head'],
         ], $config['routes'] ?? null);
-        self::assertSame(['update' => ['one'], 'create' => ['two']], $config['bypassPayloadFields'] ?? null);
     }
 
     #[RunInSeparateProcess]
@@ -616,16 +603,6 @@ final class StranglerProxyTest extends TestCase
         } finally {
             ob_end_clean();
         }
-        $this->application->getParams()->add('strangler', ['base_uri' => 'https://backend.test']);
-        $config['adapter'] = ['bad' => 'config'];
-        ob_start();
-
-        try {
-            self::assertTrue($proxy->handle($this->controller, $config, 'get'));
-            self::assertSame('{"state":"error","error":"strangler_adapter_not_configured"}', ob_get_contents());
-        } finally {
-            ob_end_clean();
-        }
         $this->application->getParams()->add('strangler', ['base_uri' => 'unsupported://backend.test']);
         ob_start();
 
@@ -659,14 +636,11 @@ final class StranglerProxyTest extends TestCase
     {
         $config = Strangler::proxy('example')->bypassUsing(static fn (): bool => false)
             ->payloadUsing(static fn (): array => ['second' => false])
-            ->bypassWhenPayloadHas('GET', ['first', 'second'])->build()['config'];
+            ->payloadUsing(bypass: static fn (array $payload, string $action): bool => $action === 'get' && array_intersect_key($payload, array_flip(['first', 'second'])) !== [])->build()['config'];
         self::assertTrue(StranglerProxy::shouldBypass($this->controller, $config, 'GET'));
         $config['payloadReader'] = static fn (): array => [];
         self::assertFalse(StranglerProxy::shouldBypass($this->controller, $config, 'get'));
         self::assertFalse(StranglerProxy::shouldBypass($this->controller, [], 'get'));
-        $config['payloadReader'] = static function (): array {
-            self::fail('Unmapped bypass fields must not read the payload.');
-        };
         self::assertFalse(StranglerProxy::shouldBypass($this->controller, $config, 'unmapped'));
     }
 
@@ -678,7 +652,7 @@ final class StranglerProxyTest extends TestCase
     {
         $_GET = $query;
         $config = Strangler::proxy('example')->payloadUsing(static fn (): array => $payload)
-            ->bodyIdentifier('ID')->put('update', $path)->build()['config'];
+            ->put('update', $path)->build()['config'];
         $proxy = $this->proxy($this->client([new Response(200)]));
         $this->capture(fn () => $proxy->handle($this->controller, $config, 'update'));
         self::assertSame($expected, $this->history[0]['request']->getUri()->getPath());
@@ -898,24 +872,6 @@ final class StranglerProxyTest extends TestCase
         self::assertSame('{"state":"error","error":"strangler_not_configured"}', $this->capture(fn () => $proxy->handle($this->controller, $config, 'get')));
     }
 
-    public function testClassNameAndEmptyAdapterConfigurations(): void
-    {
-        foreach ([Adapter::class, '', []] as $adapter) {
-            $config = Strangler::proxy('example')->usingAdapter($adapter)->get('get', '/get')->build()['config'];
-            $proxy = $this->proxy($this->client([new Response(200, [], 'body')]));
-            self::assertSame($adapter === Adapter::class ? 'mapped:body' : 'body', $this->capture(fn () => $proxy->handle($this->controller, $config, 'get')));
-        }
-    }
-
-    public function testApplicationProgrammingFailuresStayVisible(): void
-    {
-        $config = Strangler::proxy('example')->usingAdapter(ThrowingAdapter::class)->get('get', '/get')->build()['config'];
-        $proxy = $this->proxy($this->client([]));
-        $this->expectException(RuntimeException::class);
-        $this->expectExceptionMessage('adapter bug');
-        $proxy->handle($this->controller, $config, 'get');
-    }
-
     public function testWebApplicationIsRequired(): void
     {
         Yii::setApplication(null);
@@ -973,7 +929,7 @@ final class StranglerProxyTest extends TestCase
     {
         $filter = Strangler::proxy('example')->get('get', '/items')
             ->payloadUsing(static fn (): array => ['legacy_only' => true])
-            ->bypassWhenPayloadHas('get', ['legacy_only'])->build();
+            ->payloadUsing(bypass: static fn (array $payload, string $action): bool => $action === 'get' && array_intersect_key($payload, array_flip(['legacy_only'])) !== [])->build();
         $filter['client'] = $this->client([]);
         $chain = CFilterChain::create($this->controller, $this->controller->createAction('get'), [$filter]);
         $chain->run();
@@ -1009,9 +965,7 @@ final class StranglerProxyTest extends TestCase
         if ($kind === 'payload') {
             $this->request->body = 'invalid';
         }
-        if ($kind === 'adapter') {
-            $builder->usingAdapter(['bad' => 'config']);
-        }
+
         if ($kind === 'backend') {
             $this->application->getParams()->add('strangler', ['features' => ['example' => true]]);
         }
@@ -1040,7 +994,6 @@ final class StranglerProxyTest extends TestCase
         return [
             ['payload', 400, 'strangler_invalid_payload'],
             ['route', 400, 'strangler_route_parameter_missing'],
-            ['adapter', 500, 'strangler_adapter_not_configured'],
             ['backend', 500, 'strangler_not_configured'],
             ['transport', 503, 'service_temporarily_unavailable'],
         ];
@@ -1167,17 +1120,13 @@ final class StranglerProxyTest extends TestCase
         $builder->post('get', '/other');
     }
 
-    public function testAdapterCanSupplyANewRouteParameter(): void
+    public function testQueryMappingCanSupplyANewRouteParameter(): void
     {
         $_GET = ['legacy_slug' => 'a/b'];
-        $adapter = new class extends AbstractStranglerAdapter
-        {
-            public function transformQuery(string $actionId, array $query): array
-            {
-                return ['slug' => $query['legacy_slug']];
-            }
+        $mapper = static function (array $query): array {
+            return ['slug' => $query['legacy_slug']];
         };
-        $config = Strangler::proxy('example')->usingAdapter($adapter)->get('get', '/items/{slug}')->build()['config'];
+        $config = Strangler::proxy('example')->mapQuery($mapper)->get('get', '/items/{slug}')->build()['config'];
         $proxy = $this->proxy($this->client([new Response(200)]));
         $this->capture(fn () => $proxy->handle($this->controller, $config, 'get'));
         self::assertSame('/items/a%2Fb', $this->history[0]['request']->getUri()->getPath());
@@ -1187,14 +1136,10 @@ final class StranglerProxyTest extends TestCase
     public function testTransformedQueryAliasesOverrideOriginalParametersIgnoringCase(): void
     {
         $_GET = ['item_id' => 'original', 'slug' => 'original'];
-        $adapter = new class extends AbstractStranglerAdapter
-        {
-            public function transformQuery(string $actionId, array $query): array
-            {
-                return ['ITEM_ID' => 'mapped/id', 'SLUG' => 'mapped/slug'];
-            }
+        $mapper = static function (array $query): array {
+            return ['ITEM_ID' => 'mapped/id', 'SLUG' => 'mapped/slug'];
         };
-        $config = Strangler::proxy('example')->usingAdapter($adapter)->get('get', '/items/{item_id}/{SLUG}')->build()['config'];
+        $config = Strangler::proxy('example')->mapQuery($mapper)->get('get', '/items/{item_id}/{SLUG}')->build()['config'];
         $proxy = $this->proxy($this->client([new Response(200)]));
         $this->capture(fn () => $proxy->handle($this->controller, $config, 'get'));
         self::assertSame('/items/mapped%2Fid/mapped%2Fslug', $this->history[0]['request']->getUri()->getPath());
@@ -1228,18 +1173,12 @@ final class StranglerProxyTest extends TestCase
                 $status = $code;
             },
         );
-        $adapter = new class extends AbstractStranglerAdapter
-        {
-            public function transformResponse(string $actionId, int $status, string $body, array $headers): array
-            {
-                return ['status' => 409, 'body' => 'adapted error', 'headers' => ['X-Adapted' => ['yes']]];
-            }
-        };
+        $inline = new InlineMapping(['errors' => ['*' => static fn (): Response => new Response(409, ['X-Adapted' => ['yes']], 'adapted error')]], ['action' => 'get', 'query' => [], 'payload' => null]);
 
         ob_start();
 
         try {
-            $emitter->error(500, 'original_error', $adapter, 'get');
+            $emitter->error(500, 'original_error', $inline);
             $body = ob_get_contents();
         } finally {
             ob_end_clean();
@@ -1250,46 +1189,38 @@ final class StranglerProxyTest extends TestCase
         self::assertSame(['X-Adapted: yes', 'X-Strangler: 1'], $headers);
     }
 
-    #[DataProvider('requestAdapterSteps')]
-    public function testRequestAdapterExceptionsPropagate(string $step): void
+    #[DataProvider('requestMappingSteps')]
+    public function testRequestMappingExceptionsPropagate(string $step): void
     {
-        $adapter = new class($step) extends AbstractStranglerAdapter
-        {
-            public function __construct(private readonly string $step) {}
-
-            public function transformQuery(string $actionId, array $query): array
-            {
-                if ($this->step === 'query') {
-                    throw new InvalidArgumentException('Broken query adapter');
+        $config = Strangler::proxy('example')
+            ->mapQuery(static function (array $query) use ($step): array {
+                if ($step === 'query') {
+                    throw new InvalidArgumentException('Broken query mapping');
                 }
 
                 return $query;
-            }
-
-            public function transformPayload(string $actionId, array $payload): array
-            {
-                throw new InvalidArgumentException('Broken payload adapter');
-            }
-        };
-        $config = Strangler::proxy('example')->usingAdapter($adapter)->get('get', '/api/items')->build();
+            })
+            ->mapPayload(static function (): array {
+                throw new InvalidArgumentException('Broken payload mapping');
+            })->get('get', '/api/items')->build();
         $proxy = $this->proxy($this->client([]));
 
         $this->expectException(InvalidArgumentException::class);
-        $this->expectExceptionMessage('Broken '.$step.' adapter');
+        $this->expectExceptionMessage('Broken '.$step.' mapping');
         $proxy->handle($this->controller, $config['config'], 'get');
     }
 
     /** @return iterable<string, array{string}> */
-    public static function requestAdapterSteps(): iterable
+    public static function requestMappingSteps(): iterable
     {
         yield 'query translation' => ['query'];
         yield 'payload translation' => ['payload'];
     }
 
-    public function testOriginalQueryStillSuppliesRoutesAfterAdapterWhitelisting(): void
+    public function testOriginalQueryStillSuppliesRoutesAfterQueryMappingWhitelisting(): void
     {
         $_GET = ['ORIGINAL_ID' => 'a/b'];
-        $config = Strangler::proxy('example')->usingAdapter(new Adapter())->get('get', '/items/{original_id}')->build()['config'];
+        $config = Strangler::proxy('example')->mapQuery(static fn (): array => ['page' => 0])->get('get', '/items/{original_id}')->build()['config'];
         $proxy = $this->proxy($this->client([new Response(200)]));
         $this->capture(fn () => $proxy->handle($this->controller, $config, 'get'));
         self::assertSame('/items/a%2Fb', $this->history[0]['request']->getUri()->getPath());
@@ -1340,7 +1271,7 @@ final class StranglerProxyTest extends TestCase
         $emitter = new ResponseEmitter(static function (string $header) use (&$headers): void {
             $headers[] = $header;
         });
-        $config = Strangler::proxy('example')->usingAdapter(new class extends AbstractStranglerAdapter {})
+        $config = Strangler::proxy('example')->mapJsonErrors(static fn (mixed $json, ResponseInterface $response): ResponseInterface => $response)
             ->get('get', '/items')->build()['config'];
         $proxy = $this->proxy($this->client([new ConnectException('offline', new HttpRequest('GET', '/items'))]), $emitter);
         self::assertSame('{"state":"error","error":"service_temporarily_unavailable"}',
@@ -1348,7 +1279,7 @@ final class StranglerProxyTest extends TestCase
         self::assertContains('Content-Type: application/json; charset=utf-8', $headers);
         self::assertContains('X-Strangler-Time: 0', $headers);
         $headers = [];
-        $config = Strangler::proxy('example')->usingAdapter(new class extends AbstractStranglerAdapter {})
+        $config = Strangler::proxy('example')->mapJsonErrors(static fn (mixed $json, ResponseInterface $response): ResponseInterface => $response)
             ->get('get', '/items/{id}')->build()['config'];
         $proxy = $this->proxy($this->client([]), $emitter);
         self::assertSame('{"state":"error","error":"strangler_route_parameter_missing"}',
@@ -1359,14 +1290,20 @@ final class StranglerProxyTest extends TestCase
         self::assertCount(1, $this->history);
     }
 
-    public function testTransportErrorsUseTheSameResponseAdapter(): void
+    public function testTransportErrorsUseErrorMapping(): void
     {
-        $adapter = new Adapter();
-        $config = Strangler::proxy('example')->usingAdapter($adapter)->get('get', '/items')->build()['config'];
+        $transformed = false;
+        $config = Strangler::proxy('example')->mapQuery(static fn (array $query): array => ['page' => $query['start'] ?? 0])
+            ->mapPayload(static fn (array $payload): array => ['name' => $payload['NAME'] ?? null])
+            ->mapJsonErrors(static function (mixed $json, ResponseInterface $response) use (&$transformed): ResponseInterface {
+                $transformed = true;
+
+                return new Response(202, $response->getHeaders(), 'mapped:'.(is_string($json) ? $json : json_encode($json, JSON_THROW_ON_ERROR)));
+            })->get('get', '/items')->build()['config'];
         $proxy = $this->proxy($this->client([new ConnectException('offline', new HttpRequest('GET', '/items'))]));
         self::assertSame('mapped:{"state":"error","error":"service_temporarily_unavailable"}',
             $this->capture(fn () => $proxy->handle($this->controller, $config, 'get')));
-        self::assertTrue($adapter->transformed);
+        self::assertTrue($transformed);
         self::assertSame(202, http_response_code());
         self::assertCount(1, $this->history);
     }
@@ -1380,7 +1317,7 @@ final class StranglerProxyTest extends TestCase
                 $reads++;
 
                 return ['name' => 'first'];
-            })->bypassWhenPayloadHas('get', ['legacy_only'])->build();
+            })->payloadUsing(bypass: static fn (array $payload, string $action): bool => $action === 'get' && array_intersect_key($payload, array_flip(['legacy_only'])) !== [])->build();
         $filter['client'] = $this->client([new Response(200, [], 'upstream')]);
         $chain = CFilterChain::create($this->controller, $this->controller->createAction('get'), [$filter]);
         self::assertSame('upstream', $this->capture(static fn () => $chain->run()));

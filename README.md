@@ -30,7 +30,7 @@ Install the tagged release directly from its Git repository in your Yii applicat
 
 ```shell
 composer config repositories.yii1-strangler-proxy vcs https://github.com/cosmira/yii1-strangler-proxy
-composer require cosmira/yii1-strangler-proxy:^1.4.0
+composer require cosmira/yii1-strangler-proxy:^2.0
 ```
 
 The VCS entry is needed until the package is registered on Packagist.
@@ -123,15 +123,84 @@ Use its case table as a starting point for your own application's contract check
 
 ## When the APIs differ
 
-Use `mapQuery()`, `mapPayload()`, `mapJsonResponse()`, and `mapJsonErrors()` in the existing builder.
-`Query::legacy()` and `JsonResource::make()` provide callable fluent configurations for
-legacy queries and Yii-style resources.
-See the [fluent adaptation example](docs/api-adaptation.md#fluent-query-and-resource-mappings).
-`Mapping` handles fields, collections, pagination, and validation errors. `Json::response()`
-serializes the result and keeps safe headers. No application adapter class is required.
-`payloadUsing()` still reads legacy form fields. Existing `usingAdapter()` integrations remain supported.
-Follow the [API adaptation guide](docs/api-adaptation.md) for a complete example
-with pagination, body identifiers and both backend and transport errors.
+Describe only the differences from ordinary uppercase/lowercase names:
+
+```php
+use Cosmira\Strangler\Strangler;
+
+Strangler::proxy('catalog')
+    ->uppercase('ITEM_ID')
+    ->response(fields: ['updated_at' => 'CHANGE_DATE'])
+    ->get('get', '/api/items')
+    ->get('view', '/api/items/{id}')
+    ->post('create', '/api/items')
+    ->put('edit', '/api/items/{id}')
+    ->delete('delete', '/api/items/{id}')
+    ->build();
+```
+
+Ordinary response attributes become uppercase; input, filter and sort names become
+lowercase. Do not repeat backend permission lists in the proxy: keep input and
+resource access checks before Strangler and validate the new API independently.
+Response exceptions do not change input names. Use `request(fields: [...])` for an actual
+input naming difference, and explicit stage callbacks for different semantics.
+Callbacks replace that stage regardless of fluent call order.
+
+A parent formerly supplied in the body can select the new route:
+
+```php
+Strangler::proxy('directory')
+    ->uppercase('PERSON_ID')
+    ->post('create', '/groups/{group}/people', fromBody: [
+        'group' => 'GROUPS.*.GROUP_ID',
+    ])
+    ->build();
+```
+
+The wildcard requires exactly one list item. Missing, invalid, conflicting or
+ambiguous bindings keep the request in Yii before HTTP. Only selected leaves and
+containers made empty by their removal are consumed; neighboring metadata is kept.
+The original callback context still contains the original body.
+See [advanced mappings](docs/api-adaptation.md) for response graphs and real legacy
+exceptions. The package owns JSON, headers and a single HTTP attempt.
+
+For a serialized field value, describe that difference without replacing the body mapper:
+
+```php
+Strangler::proxy('catalog')
+    ->uppercase('ITEM_ID')
+    ->request(values: ['meta' => static fn ($value) => json_encode($value, JSON_THROW_ON_ERROR)])
+    ->response(values: ['meta' => static fn ($value) => json_decode($value, flags: JSON_THROW_ON_ERROR)])
+    ->post('create', '/items')
+    ->build();
+```
+
+Value maps use upstream attribute names and leave absent fields alone. A full stage
+callback replaces its value and name conventions too. Use `routeParametersUsing()`
+for parent identifiers requiring a native scoped lookup; its values select only the
+path and are never inserted into the transmitted query or body.
+
+Conventions translate names, not backend capabilities. Every representable filter
+and sort is forwarded; the backend validates the request. For example, `PERSON_ID`
+becomes `person_id` in a filter and `SN` becomes `sn` in ordering, regardless of
+which names the backend accepts. The response identifier alias affects reads only.
+Errors never cause native replay after forwarding.
+
+For a response graph, `response(using: ...)` extends the already configured
+`JsonResource`; its `configureRecord()` method extends the current record schema.
+Naming exceptions and value conversions remain active across configuration calls.
+`mapJsonResponse()` is the explicit full-stage replacement for a different contract.
+
+## Version 2.0
+
+Version 2.0 has one callback-based mapping pipeline. Adapter classes and their
+configuration entry point are removed. Request, response and query differences
+are grouped under `request()`, `response()` and `query()`. The response resource
+only describes responses; write translation belongs to `mapPayload()`.
+Use `payloadUsing(reader: ..., bypass: ...)` for body callbacks and
+`routeParametersUsing()` for custom route identifiers. HEAD and PATCH routes use
+`route($action, $method, $path)`. Public `Fields` and `Includes` schemas now live
+in `Cosmira\Strangler\Schema`. No compatibility aliases are provided.
 
 ## File uploads
 
@@ -175,9 +244,8 @@ and data compatibility determine whether rollback is possible. See the
 **Strangler never falls back to Yii after forwarding and never retries requests.**
 The backend may have completed a write before its response was lost. A second
 execution could duplicate data. Backend errors are returned; transport failures
-return `503`, and a missing backend returns `500`. A configured API adapter can
-translate these responses into the old client's format. An unavailable adapter
-returns `500` without translation. Other configuration and programming errors
+return `503`, and a missing backend returns `500`. A configured error mapping can
+translate these responses into the old client's format. Configuration and programming errors
 reach the application's Yii error handler.
 
 ## Quick diagnostics

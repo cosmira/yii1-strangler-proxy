@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Cosmira\Strangler\Tests;
 
-use Cosmira\Strangler\HttpHeaders;
+use Cosmira\Strangler\Internal\Http\HttpHeaders;
 use InvalidArgumentException;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;

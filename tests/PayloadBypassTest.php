@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Cosmira\Strangler\Tests;
 
 use CFilterChain;
-use Cosmira\Strangler\AbstractStranglerAdapter;
 use Cosmira\Strangler\Strangler;
 use Cosmira\Strangler\StranglerProxy;
 use Cosmira\Strangler\Tests\Fixtures\ApplicationEnded;
@@ -74,7 +73,7 @@ final class PayloadBypassTest extends TestCase
             ->payloadUsing(static function (): array {
                 self::fail('Unselected filter must not read the body.');
             })
-            ->bypassPayloadUsing(static function (): bool {
+            ->payloadUsing(bypass: static function (): bool {
                 self::fail('Unselected filter must not evaluate the predicate.');
             })
             ->build();
@@ -99,7 +98,7 @@ final class PayloadBypassTest extends TestCase
             ->payloadUsing(static function (): array {
                 self::fail('Early bypass must not read the body.');
             })
-            ->bypassPayloadUsing(static function (): bool {
+            ->payloadUsing(bypass: static function (): bool {
                 self::fail('Early bypass must not evaluate the predicate.');
             })
             ->build()['config'];
@@ -121,7 +120,7 @@ final class PayloadBypassTest extends TestCase
 
                 return $payload;
             })
-            ->bypassPayloadUsing(static function (array $body, string $action, array $query) use (&$calls, $payload, $bypass): bool {
+            ->payloadUsing(bypass: static function (array $body, string $action, array $query) use (&$calls, $payload, $bypass): bool {
                 $calls++;
                 self::assertSame($payload, $body);
                 self::assertSame('get', $action);
@@ -129,13 +128,7 @@ final class PayloadBypassTest extends TestCase
 
                 return $bypass;
             })
-            ->usingAdapter(new class extends AbstractStranglerAdapter
-            {
-                public function transformPayload(string $actionId, array $payload): array
-                {
-                    return ['mapped' => true];
-                }
-            })->build();
+            ->mapPayload(static fn (array $payload): array => ['mapped' => true])->build();
         $filter['client'] = $this->client();
 
         $output = $this->runFilter($filter);
@@ -156,13 +149,13 @@ final class PayloadBypassTest extends TestCase
         return [[true], [false]];
     }
 
-    public function testPayloadFieldBypassSkipsPredicate(): void
+    public function testPayloadPredicateCanShortCircuitForAPresentNullField(): void
     {
         $filter = Strangler::proxy('example')->get('get', '/items')
             ->payloadUsing(static fn (): array => ['legacy_only' => null])
-            ->bypassWhenPayloadHas('get', ['legacy_only'])
-            ->bypassPayloadUsing(static function (): bool {
-                self::fail('Matching payload field must short-circuit.');
+            ->payloadUsing(bypass: static function (array $payload): bool {
+                return array_key_exists('legacy_only', $payload)
+                    || throw new RuntimeException('Matching payload must short-circuit.');
             })
             ->build();
         $filter['client'] = $this->client();
@@ -179,7 +172,7 @@ final class PayloadBypassTest extends TestCase
     {
         $failure = new $exceptionClass('predicate failed');
         $filter = Strangler::proxy('example')->get('get', '/items')
-            ->bypassPayloadUsing(static function () use ($failure): bool {
+            ->payloadUsing(bypass: static function () use ($failure): bool {
                 throw $failure;
             })
             ->build();
@@ -212,10 +205,10 @@ final class PayloadBypassTest extends TestCase
 
                 return ['source' => 'reader'];
             })
-            ->bypassPayloadUsing(static function (): bool {
+            ->payloadUsing(bypass: static function (): bool {
                 self::fail('The last predicate must replace the first.');
             })
-            ->bypassPayloadUsing(static function (array $payload, string $action, array $query) use (&$calls): bool {
+            ->payloadUsing(bypass: static function (array $payload, string $action, array $query) use (&$calls): bool {
                 $calls++;
                 self::assertSame('get', $action);
                 self::assertSame([], $query);

@@ -4,8 +4,10 @@ declare(strict_types=1);
 
 namespace Cosmira\Strangler\Tests;
 
+use PHPUnit\Framework\Attributes\Large;
 use PHPUnit\Framework\TestCase;
 
+#[Large]
 final class CatalogExampleTest extends TestCase
 {
     public function testPublishedExamplePassesItsRealHttpContracts(): void

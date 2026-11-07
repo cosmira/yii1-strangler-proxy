@@ -24,7 +24,7 @@ function catalogSettings(): array
     ];
 }
 
-/** No callback is invoked and no business adapter is constructed here. */
+/** No callback is invoked here. */
 function catalogProxyFilters(): array
 {
     $item = static function (mixed $record): object {
@@ -59,8 +59,12 @@ function catalogProxyFilters(): array
 
                 return Json::response($response, catalogErrorBody($invalid ? 'internal_error' : $code, (array) $fields), $invalid ? 500 : null);
             })
-            ->payloadUsing(static fn (CController $controller): array => $controller->validatedInput)
-            ->bodyIdentifier('ID')
+            ->payloadUsing(reader: static fn (CController $controller): array => $controller->validatedInput)
+            ->routeParametersUsing(static function (array $context): array {
+                $id = $context['query']['id'] ?? $context['payload']['ID'] ?? null;
+
+                return $id === null ? [] : ['id' => $id];
+            })
             ->afterAttempt(static function (string $method, string $path): void {
                 if (getenv('CATALOG_HOOK_FAIL') === '1') {
                     throw new RuntimeException('Mandatory application hook failed.');

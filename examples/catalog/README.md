@@ -186,11 +186,11 @@ php examples/catalog/check.php
 ```
 
 The configuration check uses the host's actual declarations, including with both
-flags off. It checks origin, routes, an optional adapter class, inline mapping
-declarations, headers, TLS and timeouts without constructing an adapter, invoking callbacks,
+flags off. It checks origin, routes, inline mapping
+declarations, headers, TLS and timeouts without invoking callbacks,
 creating storage or contacting the backend. Missing `STRANGLER_TOKEN` fails the
 check even though the local runtime has a demo fallback. Invalid timeouts report
-the runtime fallback as warnings. It does not validate business adapter constructors.
+the runtime fallback as warnings.
 
 Check reachability separately, only when desired and after starting the backend:
 

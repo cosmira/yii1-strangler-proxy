@@ -4,27 +4,30 @@ declare(strict_types=1);
 
 namespace Cosmira\Strangler;
 
+use Closure;
+use Cosmira\Strangler\Schema\Fields;
+
 /** Callable legacy query configuration for Strangler::mapQuery(). */
 final class Query
 {
     /**
      * Legacy filter names mapped to upstream filter names.
      *
-     * @var array<array-key, mixed>
+     * @var array<array-key, mixed>|null
      */
-    private array $filterFields = [];
+    private ?array $filterFields = null;
     /**
      * Legacy sort fields accepted by the upstream query.
      *
-     * @var array<array-key, mixed>
+     * @var array<array-key, mixed>|null
      */
-    private array $sortFields = [];
+    private ?array $sortFields = null;
     /**
      * Legacy relation names mapped to upstream includes.
      *
-     * @var array<array-key, mixed>
+     * @var array<array-key, mixed>|null
      */
-    private array $includeFields = [];
+    private ?array $includeFields = null;
     /**
      * Actions that retain offset pagination during query translation.
      *
@@ -47,16 +50,32 @@ final class Query
     private int $maxLimit = 100;
 
     /**
-     * Keep construction behind the legacy query factory.
+     * Application semantics applied with this query's unchanged defaults.
+     *
+     * @var Closure(
+     *     array<array-key, mixed>, array{action: string}, self
+     * ): (array<array-key, mixed>|false)|null
      */
-    private function __construct() {}
+    private ?Closure $adapter = null;
+
+    /**
+     * Immutable configuration supplied to an adapted query.
+     */
+    private self $defaults;
+
+    /**
+     * Keep optional automatic names separate from explicit restrictions.
+     *
+     * @param Fields $convention An explicit empty schema keeps the legacy default strict.
+     */
+    private function __construct(private Fields $convention) {}
 
     /**
      * Start with legacy list pagination and transport-key defaults.
      */
-    public static function legacy(): self
+    public static function legacy(?Fields $convention = null): self
     {
-        return new self();
+        return new self($convention ?? Fields::uppercase([]));
     }
 
     /**
@@ -137,6 +156,24 @@ final class Query
     }
 
     /**
+     * Add application semantics without rebuilding field or include conventions.
+     *
+     * @internal
+     *
+     * @param callable(
+     *     array<array-key, mixed>, array{action: string}, self
+     * ): (array<array-key, mixed>|false) $adapter
+     */
+    public function adapt(callable $adapter): self
+    {
+        $copy = clone $this;
+        $copy->adapter = $adapter(...);
+        $copy->defaults = $this;
+
+        return $copy;
+    }
+
+    /**
      * Translate supported queries and retain legacy execution for unsupported values.
      *
      * @param array<array-key, mixed> $query
@@ -146,17 +183,74 @@ final class Query
      */
     public function __invoke(array $query, array $context): array|false
     {
+        if ($this->adapter !== null) {
+            return ($this->adapter)($query, $context, $this->defaults);
+        }
         $values = array_diff_key($query, array_flip($this->ignored));
         $list = in_array($context['action'], $this->listActions, true);
         if (! $list) {
             unset($values['start'], $values['limit']);
         }
-        $mapped = Mapping::legacyQuery($values, $this->filterFields, $this->sortFields,
-            $this->includeFields, $this->defaultLimit, $this->maxLimit);
+
+        try {
+            $filters = $this->filterFields
+                ?? $this->convention->filters(self::names(self::keys($values['filter'] ?? [])));
+            $sorts = $this->sortFields
+                ?? $this->convention->sorts(self::names(self::keys($values['sort'] ?? [])));
+            $includes = $this->includeNames($values['with'] ?? []);
+        } catch (\InvalidArgumentException) {
+            return false;
+        }
+        $mapped = Mapping::legacyQuery($values, $filters, $sorts,
+            $includes, $this->defaultLimit, $this->maxLimit);
         if ($mapped !== false && ! $list) {
             unset($mapped['page'], $mapped['per_page']);
         }
 
         return $mapped;
+    }
+
+    /**
+     * Apply explicit relation differences and resolve other names through the convention.
+     *
+     * @return array<array-key, mixed>
+     */
+    private function includeNames(mixed $values): array
+    {
+        $declared = $this->includeFields ?? [];
+        $ordinary = array_values(array_diff(self::names($values), array_keys($declared)));
+
+        return $declared + $this->convention->inverse($ordinary);
+    }
+
+    /**
+     * Read query field keys without accepting malformed filter or sort containers.
+     *
+     * @return list<array-key>
+     */
+    private static function keys(mixed $values): array
+    {
+        return is_array($values) ? array_keys($values) : [];
+    }
+
+    /**
+     * Resolve supplied names only; Mapping validates original query shapes and values.
+     *
+     * @return list<string>
+     */
+    private static function names(mixed $values): array
+    {
+        if (! is_array($values)) {
+            return [];
+        }
+        $names = [];
+        foreach ($values as $name) {
+            if (! is_string($name)) {
+                return [];
+            }
+            $names[] = $name;
+        }
+
+        return $names;
     }
 }

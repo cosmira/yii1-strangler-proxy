@@ -2,7 +2,6 @@
 
 declare(strict_types=1);
 
-use Cosmira\Strangler\AbstractStranglerAdapter;
 use Cosmira\Strangler\Strangler;
 use Cosmira\Strangler\StranglerProxy;
 use Cosmira\Strangler\Tests\Fixtures\CatalogValidationController;
@@ -13,6 +12,7 @@ use GuzzleHttp\Handler\MockHandler;
 use GuzzleHttp\HandlerStack;
 use GuzzleHttp\Middleware;
 use GuzzleHttp\Psr7\Response;
+use Psr\Http\Message\ResponseInterface;
 
 define('YII_DEBUG', false);
 require dirname(__DIR__, 2).'/bootstrap.php';
@@ -43,21 +43,20 @@ $application = new CWebApplication([
 ]);
 $controller = new CatalogValidationController('catalog');
 $history = [];
-$handler = HandlerStack::create(new MockHandler([new Response(200, [], '<html>not JSON</html>')]));
+$handler = HandlerStack::create(new MockHandler([new Response(200, [], json_encode('<html>not JSON</html>', JSON_THROW_ON_ERROR))]));
 $handler->push(Middleware::history($history));
-$adapter = new class extends AbstractStranglerAdapter
-{
-    public function transformResponse(string $actionId, int $status, string $body, array $headers): array
-    {
-        if ($_GET['case'] === 'throw') {
-            throw new RuntimeException('Secret backend implementation detail.');
-        }
-        json_decode($body, true, 512, JSON_THROW_ON_ERROR);
-
-        return parent::transformResponse($actionId, $status, $body, $headers);
+$config = Strangler::proxy('catalog')->mapJsonResponse(static function (mixed $json, ResponseInterface $response): ResponseInterface {
+    if ($_GET['case'] === 'throw') {
+        throw new RuntimeException('Secret backend implementation detail.');
     }
-};
-$config = Strangler::proxy('catalog')->usingAdapter($adapter)->post('update', '/items')->build()['config'];
+
+    if (! is_string($json)) {
+        throw new UnexpectedValueException('Expected the application payload to contain a JSON string.');
+    }
+    json_decode($json, true, 512, JSON_THROW_ON_ERROR);
+
+    return $response;
+})->post('update', '/items')->build()['config'];
 
 try {
     (new StranglerProxy(new Client(['handler' => $handler])))->handle($controller, $config, 'update');
@@ -67,6 +66,6 @@ try {
     }
     header('X-Backend-Attempts: '.count($history));
     header('X-Legacy-Ran: '.(int) $controller->ran);
-    // Dispatch as Yii's application exception handler does; production proxy does not catch adapter errors.
+    // Dispatch as Yii's application exception handler does; production proxy does not catch mapping errors.
     $application->handleException($exception);
 }

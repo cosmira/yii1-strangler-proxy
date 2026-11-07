@@ -3,13 +3,11 @@
 declare(strict_types=1);
 
 // This application-owned check reads the same declarations as the example host.
-// It does not start the host, create adapters, open storage or contact the backend.
+// It does not start the host, open storage or contact the backend.
 require dirname(__DIR__, 2).'/vendor/autoload.php';
 require dirname(__DIR__, 2).'/vendor/yiisoft/yii/framework/yii.php';
 require __DIR__.'/common.php';
 require __DIR__.'/proxy.php';
-
-use Cosmira\Strangler\StranglerAdapterInterface;
 
 $settings = catalogSettings();
 $filters = catalogProxyFilters();
@@ -65,13 +63,6 @@ if (! is_string(getenv('STRANGLER_TOKEN')) || getenv('STRANGLER_TOKEN') === '') 
 foreach ($filters as $filter) {
     $config = $filter['config'];
     $feature = $config['feature'];
-    $adapter = $config['adapter'] ?? null;
-    if ($adapter !== null && (! is_string($adapter) || ! class_exists($adapter)
-        || ! is_subclass_of($adapter, StranglerAdapterInterface::class))) {
-        $errors[] = "{$feature}.adapter: expected an autoloadable contract adapter class.";
-    } elseif (is_string($adapter) && (new ReflectionClass($adapter))->isAbstract()) {
-        $errors[] = "{$feature}.adapter: cannot use an abstract class.";
-    }
     foreach ($config['mappings'] ?? [] as $stage => $mappers) {
         foreach ($mappers as $mapper) {
             if (! is_callable($mapper) && (! in_array($stage, ['query', 'payload'], true) || ! is_array($mapper))) {

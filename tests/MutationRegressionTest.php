@@ -7,10 +7,8 @@ namespace Cosmira\Strangler\Tests;
 use CController;
 use CFilterChain;
 use CLogger;
-use Cosmira\Strangler\AbstractStranglerAdapter;
 use Cosmira\Strangler\ResponseEmitter;
 use Cosmira\Strangler\Strangler;
-use Cosmira\Strangler\StranglerAdapterInterface;
 use Cosmira\Strangler\StranglerProxy;
 use Cosmira\Strangler\Tests\Fixtures\ApplicationEnded;
 use Cosmira\Strangler\Tests\Fixtures\Controller;
@@ -28,6 +26,7 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\PreserveGlobalState;
 use PHPUnit\Framework\Attributes\RunTestsInSeparateProcesses;
 use PHPUnit\Framework\TestCase;
+use Psr\Http\Message\ResponseInterface;
 use Yii;
 
 #[RunTestsInSeparateProcesses]
@@ -93,69 +92,24 @@ final class MutationRegressionTest extends TestCase
         );
     }
 
-    /** @param array<string, mixed> $adapter */
-    #[DataProvider('invalidAdapterLogs')]
-    public function testInvalidAdapterLogsAnActionableWarning(array $adapter, string $message): void
-    {
-        $config = Strangler::proxy('example')->usingAdapter($adapter)->get('get', '/api/items')->build()['config'];
-        $proxy = new StranglerProxy($this->client([]));
-
-        self::assertSame(
-            '{"state":"error","error":"strangler_adapter_not_configured"}',
-            $this->capture(fn () => $proxy->handle($this->controller, $config, 'get')),
-        );
-        $this->assertLog($message, CLogger::LEVEL_WARNING, 2);
-        $logs = $this->logger->getLogs();
-        self::assertIsArray($logs[1]);
-        self::assertSame([
-            'Strangler request rejected | feature: example | action: get | path: /api/items'
-                .' | error: strangler_adapter_not_configured | request_id: ',
-            CLogger::LEVEL_WARNING, 'strangler',
-        ], array_slice($logs[1], 0, 3));
-    }
-
-    /** @return list<array{array<string, mixed>, string}> */
-    public static function invalidAdapterLogs(): array
-    {
-        return [
-            [['unexpected' => true], 'Strangler adapter config must contain class'],
-            [['class' => 7], 'Strangler adapter config must contain class'],
-            [['class' => \stdClass::class], 'Strangler adapter must implement StranglerAdapterInterface: stdClass'],
-            [['class' => 'missing.Component'], 'Strangler adapter could not be created: missing.Component'],
-        ];
-    }
-
-    public function testAllAdapterCallbacksReceiveNormalizedActionAndOriginalDataInOrder(): void
+    public function testAllMappingCallbacksReceiveNormalizedActionAndOriginalDataInOrder(): void
     {
         $_GET = ['r' => 'example/update', 'filter' => ['name' => 'Alice']];
-        $adapter = new class implements StranglerAdapterInterface
-        {
-            /** @var list<array<array-key, mixed>> */
-            public array $calls = [];
-
-            public function transformQuery(string $actionId, array $query): array
-            {
-                $this->calls[] = ['query', $actionId, $query];
-
-                return ['page' => 2];
-            }
-
-            public function transformPayload(string $actionId, array $payload): array
-            {
-                $this->calls[] = ['payload', $actionId, $payload];
-
-                return ['name' => 'mapped'];
-            }
-
-            public function transformResponse(string $actionId, int $status, string $body, array $headers): array
-            {
-                $this->calls[] = ['response', $actionId, $status, $body, $headers];
-
-                return ['status' => 202, 'body' => 'changed', 'headers' => ['X-Mapped' => ['one', 'two']]];
-            }
-        };
+        $calls = [];
         $receivedController = null;
-        $config = Strangler::proxy('example')->usingAdapter($adapter)
+        $config = Strangler::proxy('example')->mapQuery(static function (array $query, array $context) use (&$calls): array {
+            $calls[] = ['query', $context['action'], $query];
+
+            return ['page' => 2];
+        })->mapPayload(static function (array $payload, array $context) use (&$calls): array {
+            $calls[] = ['payload', $context['action'], $payload];
+
+            return ['name' => 'mapped'];
+        })->mapJsonResponse(static function (mixed $json, ResponseInterface $response, array $context) use (&$calls): Response {
+            $calls[] = ['response', $context['action'], $response->getStatusCode(), $json, $response->getHeaders()];
+
+            return new Response(202, ['X-Mapped' => ['one', 'two']], 'changed');
+        })
             ->payloadUsing(static function (CController $controller) use (&$receivedController): array {
                 $receivedController = $controller;
 
@@ -171,7 +125,7 @@ final class MutationRegressionTest extends TestCase
                 $status = $code;
             },
         );
-        $proxy = new StranglerProxy($this->client([new Response(201, ['X-Upstream' => 'before'], 'original')]), $emitter);
+        $proxy = new StranglerProxy($this->client([new Response(201, ['X-Upstream' => 'before'], '"original"')]), $emitter);
 
         self::assertSame('changed', $this->capture(fn () => $proxy->handle($this->controller, $config, 'UPDATE')));
         self::assertSame($this->controller, $receivedController);
@@ -179,7 +133,7 @@ final class MutationRegressionTest extends TestCase
             ['query', 'update', ['filter' => ['name' => 'Alice']]],
             ['payload', 'update', ['name' => 'original']],
             ['response', 'update', 201, 'original', ['X-Upstream' => ['before']]],
-        ], $adapter->calls);
+        ], $calls);
         self::assertSame(202, $status);
         self::assertSame([['X-Mapped: one', true], ['X-Mapped: two', false], ['X-Strangler: 1', true]], $headers);
     }
@@ -286,7 +240,7 @@ final class MutationRegressionTest extends TestCase
                 $reads++;
 
                 return ['unsupported' => true];
-            })->bypassWhenPayloadHas('get', ['unsupported'])->build()['config'];
+            })->payloadUsing(bypass: static fn (array $payload, string $action): bool => $action === 'get' && array_intersect_key($payload, array_flip(['unsupported'])) !== [])->build()['config'];
         $proxy = new StranglerProxy($this->client([]));
 
         self::assertFalse($proxy->handle($this->controller, $config, 'GET'));
@@ -326,16 +280,9 @@ final class MutationRegressionTest extends TestCase
         StranglerProxy::application()->getParams()->add('strangler', [
             'base_uri' => 'https://backend.test', 'log_requests' => true,
         ]);
-        $adapter = new class extends AbstractStranglerAdapter
-        {
-            public function transformResponse(string $actionId, int $status, string $body, array $headers): array
-            {
-                return ['status' => 400, 'body' => 'legacy validation', 'headers' => []];
-            }
-        };
         $now = 1.0;
         $config = Strangler::proxy('example')->get('get', '/items/{id}?token=template-secret#fragment-secret')
-            ->usingAdapter($adapter)->afterAttempt(static function () use (&$now): void {
+            ->mapJsonErrors(static fn (): Response => new Response(400, [], 'legacy validation'))->afterAttempt(static function () use (&$now): void {
                 $now = 10.0;
             })->build()['config'];
         $client = new Client(['handler' => static function () use (&$now) {
@@ -364,25 +311,19 @@ final class MutationRegressionTest extends TestCase
             'base_uri' => 'https://backend.test', 'log_requests' => $logging,
         ]);
         $failure = new \RuntimeException('secret exception URI?token=secret');
-        $adapter = new class($failure) extends AbstractStranglerAdapter
-        {
-            public function __construct(private readonly \RuntimeException $failure) {}
-
-            public function transformResponse(string $actionId, int $status, string $body, array $headers): array
-            {
-                throw $this->failure;
-            }
-        };
         $queue = $transport
             ? [new ConnectException('URI?token=private', new HttpRequest('GET', '/items'))]
-            : [new Response(201, [], 'stored')];
+            : [new Response(201, [], '"stored"')];
         $builder = Strangler::proxy('example')->get('get', '/items/{id}');
         if ($hook) {
             $builder->afterAttempt(static function () use ($failure): void {
                 throw $failure;
             });
         } else {
-            $builder->usingAdapter($adapter);
+            $fail = static function () use ($failure): Response {
+                throw $failure;
+            };
+            $builder->mapJsonResponse($fail)->mapJsonErrors($fail);
         }
         $_GET = ['id' => 'private'];
         $proxy = new StranglerProxy($this->client($queue), clock: static fn (): float => 1.0);
@@ -448,26 +389,16 @@ final class MutationRegressionTest extends TestCase
     public function testRequestMappingErrorsAreDiagnosedWithoutAnAttempt(string $stage): void
     {
         $failure = new \RuntimeException('private input');
-        $adapter = new class($failure, $stage) extends AbstractStranglerAdapter
-        {
-            public function __construct(private readonly \RuntimeException $failure, private readonly string $stage) {}
-
-            public function transformQuery(string $actionId, array $query): array
-            {
-                if ($this->stage === 'query') {
-                    throw $this->failure;
+        $config = Strangler::proxy('example')->get('get', '/items/{id}?token=private')
+            ->mapQuery(static function (array $query) use ($stage, $failure): array {
+                if ($stage === 'query') {
+                    throw $failure;
                 }
 
                 return $query;
-            }
-
-            public function transformPayload(string $actionId, array $payload): array
-            {
-                throw $this->failure;
-            }
-        };
-        $config = Strangler::proxy('example')->get('get', '/items/{id}?token=private')
-            ->usingAdapter($adapter)->build()['config'];
+            })->mapPayload(static function () use ($failure): array {
+                throw $failure;
+            })->build()['config'];
         $_GET = ['id' => 'private'];
 
         try {

@@ -4,12 +4,11 @@ declare(strict_types=1);
 
 namespace Cosmira\Strangler;
 
-use CException;
 use CLogger;
+use Cosmira\Strangler\Internal\Http\HttpHeaders;
 use CWebApplication;
 use InvalidArgumentException;
 use LogicException;
-use Throwable;
 use Yii;
 
 /**
@@ -21,11 +20,6 @@ use Yii;
  */
 final class YiiRuntime
 {
-    /**
-     * Yii component configuration field naming the adapter implementation.
-     */
-    private const COMPONENT_CLASS = 'class';
-
     /**
      * Application parameter name and logging category for the proxy.
      */
@@ -115,115 +109,6 @@ final class YiiRuntime
         }
 
         return true;
-    }
-
-    /**
-     * Determine whether an adapter was explicitly configured.
-     */
-    private static function hasAdapterConfig(mixed $adapterConfig): bool
-    {
-        return ! ($adapterConfig === null || $adapterConfig === '' || $adapterConfig === []);
-    }
-
-    /**
-     * Resolve an instance or Yii component configuration.
-     */
-    public static function resolveAdapter(mixed $adapterConfig): ?StranglerAdapterInterface
-    {
-        if (! self::hasAdapterConfig($adapterConfig)) {
-            return null;
-        }
-
-        if ($adapterConfig instanceof StranglerAdapterInterface) {
-            return $adapterConfig;
-        }
-
-        $componentConfig = is_string($adapterConfig)
-            ? [self::COMPONENT_CLASS => $adapterConfig]
-            : $adapterConfig;
-
-        if (! is_array($componentConfig)
-            || ! is_string($componentConfig[self::COMPONENT_CLASS] ?? null)
-        ) {
-            Yii::log(
-                'Strangler adapter config must contain class',
-                CLogger::LEVEL_WARNING,
-                self::CATEGORY,
-            );
-
-            return null;
-        }
-
-        return self::createAdapter($componentConfig);
-    }
-
-    /**
-     * Instantiate and validate an application-owned Yii adapter.
-     *
-     * @param array{class: string, ...} $adapterConfig
-     */
-    private static function createAdapter(array $adapterConfig): ?StranglerAdapterInterface
-    {
-        try {
-            $adapter = Yii::createComponent($adapterConfig);
-        } catch (CException) {
-            Yii::log(
-                sprintf(
-                    'Strangler adapter could not be created: %s',
-                    $adapterConfig[self::COMPONENT_CLASS],
-                ),
-                CLogger::LEVEL_WARNING,
-                self::CATEGORY,
-            );
-
-            return null;
-        }
-
-        if (! $adapter instanceof StranglerAdapterInterface) {
-            Yii::log(
-                sprintf(
-                    'Strangler adapter must implement StranglerAdapterInterface: %s',
-                    $adapterConfig[self::COMPONENT_CLASS],
-                ),
-                CLogger::LEVEL_WARNING,
-                self::CATEGORY,
-            );
-
-            return null;
-        }
-
-        return $adapter;
-    }
-
-    /**
-     * Map application request fields while preserving safe diagnostics and original exceptions.
-     *
-     * @param Config                  $config
-     * @param array<array-key, mixed> $query
-     * @param array<array-key, mixed> $payload
-     *
-     * @return array{query: array<array-key, mixed>, payload: array<array-key, mixed>}
-     */
-    public static function mapRequest(
-        array $config,
-        string $actionKey,
-        string $path,
-        StranglerAdapterInterface $adapter,
-        array $query,
-        array $payload,
-    ): array {
-        $rejection = [$config, $actionKey, $path];
-
-        try {
-            return [
-                'query'   => $adapter->transformQuery($actionKey, $query),
-                'payload' => $adapter->transformPayload($actionKey, $payload),
-            ];
-        } catch (Throwable $exception) {
-            self::logRejection(...[...$rejection, 'request_adaptation_failure']);
-
-            throw $exception;
-        }
     }
 
     /**

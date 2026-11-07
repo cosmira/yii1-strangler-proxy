@@ -125,17 +125,6 @@ final class FluentMappingTest extends TestCase
         ];
     }
 
-    public function testPayloadUsesOnlyWritableFieldsAndPreservesNull(): void
-    {
-        $resource = JsonResource::make()
-            ->fields(['id' => 'key', 'name' => 'title'])
-            ->writable(['name']);
-
-        $payload = $resource->payload(['key' => 1, 'title' => null, 'extra' => 2]);
-
-        self::assertSame(['name' => null], $payload);
-    }
-
     public function testResourceMapsItemsAndNormalizesTheirStatus(): void
     {
         $resource = JsonResource::make()->fields(['id' => 'key']);
@@ -239,17 +228,6 @@ final class FluentMappingTest extends TestCase
         ];
     }
 
-    public function testWritePayloadTemplatesCanBeRestrictedIndependently(): void
-    {
-        $template = JsonResource::make()->fields(['id' => 'key', 'name' => 'title'])->writable(['id']);
-        $payload = ['key' => 1, 'title' => 'desk'];
-
-        $variant = $template->writable(['name']);
-
-        self::assertSame(['name' => 'desk'], $variant->payload($payload));
-        self::assertSame(['id' => 1], $template->payload($payload));
-    }
-
     public function testEmptyResponsesUse200WhenNonemptyResponsesPreserveTheirStatus(): void
     {
         $resource = JsonResource::make()->status(null);
@@ -327,19 +305,16 @@ final class FluentMappingTest extends TestCase
         ];
     }
 
-    public function testResourceCallbackReceivesContextAndRetainsWritableFields(): void
+    public function testResourceCallbackReceivesContext(): void
     {
         $resource = JsonResource::make()
             ->fields(['name' => 'title'])
-            ->writable(['name'])
             ->recordUsing(static fn (array|stdClass $record, array $context): array => [
                 'action' => $context['action'],
             ]);
 
-        $payload = $resource->payload(['title' => null]);
         $response = $resource(json_decode('{"data":{}}'), new Response(), ['action' => 'view']);
 
-        self::assertSame(['name' => null], $payload);
         self::assertSame('{"state":"data","data":{"action":"view"}}', (string) $response->getBody());
     }
 

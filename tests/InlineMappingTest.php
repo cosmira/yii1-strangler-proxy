@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Cosmira\Strangler\Tests;
 
 use CFilterChain;
-use Cosmira\Strangler\AbstractStranglerAdapter;
+use Cosmira\Strangler\InlineMapping;
 use Cosmira\Strangler\InvalidUpstreamResponse;
 use Cosmira\Strangler\Json;
 use Cosmira\Strangler\Mapping;
@@ -76,12 +76,21 @@ final class InlineMappingTest extends TestCase
         $this->controller = new Controller('example');
     }
 
+    public function testScalarJsonCannotSupplyABodyBindingSnapshot(): void
+    {
+        $mapping = new InlineMapping([], ['action' => 'create', 'query' => [], 'payload' => null]);
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('A body binding requires an object or array.');
+
+        $mapping->withPayload([], 'false');
+    }
+
     public function testAllMappersReceiveTheOriginalSnapshotAndRouteIdentifier(): void
     {
         $_GET = ['r' => 'example/get', 'start' => 20];
         $this->request->body = '{"ID":"a/b","NAME":"Desk","nullable":null}';
         $context = ['action' => 'get', 'query' => $_GET, 'payload' => ['ID' => 'a/b', 'NAME' => 'Desk', 'nullable' => null]];
-        $filter = Strangler::proxy('example')->post('get', '/items/{id}')->bodyIdentifier('ID')
+        $filter = Strangler::proxy('example')->post('get', '/items/{id}')->routeParametersUsing(static fn (array $context): array => ['id' => $context['query']['id'] ?? $context['payload']['ID'] ?? null])
             ->mapQuery(static function (array $query, array $request) use ($context): array {
                 self::assertSame(['start' => 20], $query);
                 self::assertSame($context, $request);
@@ -181,7 +190,7 @@ final class InlineMappingTest extends TestCase
             self::assertNull($payload['nullable']);
         };
         $filter = Strangler::proxy('example')->post('get', '/items')
-            ->bypassPayloadUsing(static function (array $payload): bool {
+            ->payloadUsing(bypass: static function (array $payload): bool {
                 self::assertSame([
                     'options' => [], 'list' => [],
                     'nested'  => ['id' => '9223372036854775808', 'empty' => []], 'nullable' => null,
@@ -560,27 +569,6 @@ final class InlineMappingTest extends TestCase
         self::assertSame('', $this->executeFilter($filter, new Response(200, [], '{}')));
         self::assertTrue($this->controller->ran);
         self::assertSame([], $this->history);
-    }
-
-    #[DataProvider('adapterOrders')]
-    public function testAdaptersAndInlineMappingsCannotBeCombined(bool $adapterFirst): void
-    {
-        $builder = Strangler::proxy('example');
-        $adapter = new class extends AbstractStranglerAdapter {};
-        if ($adapterFirst) {
-            $builder->usingAdapter($adapter)->mapQuery([]);
-        } else {
-            $builder->mapJsonErrors(static fn (mixed $json, ResponseInterface $response): ResponseInterface => $response)->usingAdapter($adapter);
-        }
-
-        $this->expectException(InvalidArgumentException::class);
-        $builder->build();
-    }
-
-    /** @return list<array{bool}> */
-    public static function adapterOrders(): array
-    {
-        return [[true], [false]];
     }
 
     public function testMappedErrorDoesNotFallThroughWhenYiiEndReturns(): void

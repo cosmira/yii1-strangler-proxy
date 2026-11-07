@@ -1,8 +1,151 @@
 # Adapt different API contracts inside Yii
 
 Keep the old client contract in Yii. The backend can keep its new API.
-Use inline mappings for ordinary translations and retain `usingAdapter()` for an
-existing or unusually complex adapter. Do not combine both approaches in one filter.
+Use inline mappings for request and response translations. Application callbacks handle
+complex contracts through the same mapping pipeline.
+
+## One fluent proxy
+
+Use the naming convention once, then describe only directional exceptions:
+
+```php
+use Cosmira\Strangler\Strangler;
+
+return Strangler::proxy('catalog')
+    ->uppercase('ITEM_ID')
+    ->response(fields: ['updated_at' => 'CHANGE_DATE'])
+    ->get('view', '/items/{id}')
+    ->put('edit', '/items/{id}')
+    ->build();
+```
+
+Ordinary request fields, filters and ordering names are lowercase upstream;
+ordinary response attributes are uppercase in Yii. `with` becomes `include`, and
+`start/limit` becomes `page/per_page`. There are no required field, writable, filter
+or sort lists. Keep native request/access checks before Strangler and validate the
+backend independently: naming conventions do not grant permissions.
+
+`response(fields: [...])` maps upstream to legacy names. `request(fields: [...])` maps legacy to
+upstream names. The two directions are deliberately independent: a Person may
+return `given_name` while accepting `givenname`.
+
+### Directional query differences
+
+A search parameter can have different semantics from the model attribute:
+
+```php
+use Cosmira\Strangler\Strangler;
+
+return Strangler::proxy('directory')
+    ->uppercase('PERSON_ID')
+    ->query(
+        filters: ['display_name' => 'query', 'is_visible' => 'visible'],
+        sorts: ['change_date' => 'updated_at'],
+    )
+    ->get('get', '/people')
+    ->build();
+```
+
+The first name is the field after ordinary request-name conversion; the second
+is the name sent in that query direction. These exceptions affect only their query direction. They do not rename write
+attributes or response fields. Ordinary filters and sorts still need no list.
+`query(includes: ['groups' => 'groups_all'])` declares a relation-name difference;
+ordinary undeclared names still pass through the convention. Multiple legacy names
+may share one upstream include; an empty target omits that include.
+
+For application-specific query semantics, `query(using: ...)` receives the original
+query, its context and the already configured `Query`. Validate or normalize the
+semantic difference, then invoke that supplied mapper. Do not rebuild `Fields` or
+`Query::legacy()` in the callback. Return `false` to retain Yii before HTTP.
+`mapQuery()` remains the explicit full-replacement escape hatch and takes priority
+over the convention and its semantic adapter.
+
+### Body values in routes
+
+```php
+Strangler::proxy('directory')
+    ->uppercase('PERSON_ID')
+    ->post('create', '/groups/{group}/people', fromBody: [
+        'group' => ['GROUPS.*.GROUP_ID', 'GROUPS.*.PARENT_GROUP_ID'],
+    ])
+    ->build();
+```
+
+A wildcard accepts exactly one list element. Alternatives may be absent; present
+alternatives must be valid and agree. Missing, invalid or ambiguous values retain
+native execution before HTTP. Route parameters do not become query/body fields.
+Consumed leaves and newly empty ancestors disappear from the forwarded body;
+sibling metadata remains. Query/payload callbacks keep the original body in their
+context, while the payload argument contains the remaining body.
+
+### Value differences and scoped identifiers
+
+`request(values: [...])` and `response(values: [...])` accept attribute-to-formatter maps keyed by
+upstream names. They run only for fields present in that input or record. Input
+formatters run after input names are translated; output formatters run before
+response names are translated. Opaque values are not recursively renamed.
+
+A full stage callback replaces these defaults as well. Callback arguments and
+contexts have independent JSON containers: changing a nested object in one callback
+does not change the original snapshot observed by the next callback.
+
+Use `routeParametersUsing()` when a parent identifier must be loaded through native
+scope/ownership rules. Return route-only names and values, or `false` to retain Yii
+execution before HTTP. Conflicts with declared `fromBody` values also retain Yii.
+These computed values never become query or body attributes.
+
+Conventions translate every representable filter and ordering name; they do not
+check backend capabilities. `filter[PERSON_ID]` becomes `filter[person_id]` and
+`sort[SN]=DESC` becomes `sort=-sn`. The configured response identifier alias does
+not rename input filters. Backend validation decides whether these names and values
+are accepted. Automatic conventions do not impose a backend page-size maximum;
+exact offset-to-page translation still requires a positive limit and aligned offset.
+No post-HTTP native replay is attempted.
+
+### Different semantics and response graphs
+
+Use `response(using: ...)` to extend the configured resource and record graph.
+Use `configureRecord()` to extend its record schema, which already contains
+`response(fields: [...], values: [...])`. Repeated configuration calls run in
+order and preserve the current resource when adding relations or native normalization:
+
+```php
+use Cosmira\Strangler\JsonResource;
+use Cosmira\Strangler\Record;
+use Cosmira\Strangler\Strangler;
+
+return Strangler::proxy('catalog')
+    ->uppercase('PERIMETER_ID')
+    ->response(fields: ['updated_at' => 'CHANGE_DATE'])
+    ->response(using: static fn (JsonResource $resource): JsonResource => $resource
+        ->configureRecord(static fn (Record $record): Record => $record
+            ->many('contacts', Record::uppercase()->identifier('CONTACT_ID'))))
+    ->get('view', '/perimeters/{id}')
+    ->build();
+```
+
+`configureRecord()` requires a Record-based response; a full custom record callback
+cannot be extended as a schema. `Record::attributesUsing()` adds normalization steps
+before naming and relation traversal. `afterUsing()` adds derived-field steps after
+that mapping. Both run in registration order; forks leave the original unchanged.
+`JsonResource::validateUsing()` adds checks for the final generated response,
+including an empty response. Existing checks remain active. Failures propagate
+without retrying HTTP or Yii.
+
+An explicit `mapQuery()`, `mapPayload()` or `mapJsonResponse()` replaces that stage
+for its registered actions, regardless of whether `uppercase()` appears before or
+after it. `uppercase('PERSON_ID', except: ['image'])` excludes only automatic
+mappings. Register an explicit JSON handler for its JSON actions; a global
+`mapJsonResponse()` also selects binary actions and would reject their bytes.
+For example, `mapJsonResponse($handler, ['get', 'view', 'create', 'edit'])`
+leaves an unconfigured `image` response untouched.
+Existing advanced `Fields`, `Query`, `JsonResource` and `Record` mechanisms remain
+available. Use `Record` only when an actual response graph needs different relation
+names, child identifiers or projections; do not enumerate ordinary attributes.
+Opaque nested JSON is not a model and its keys are left untouched.
+Mapped attributes and present, selected relations must have distinct output names.
+Conflicts, including a null value overwritten by a relation, are invalid upstream
+responses; absent or omitted relations do not conflict with partial records.
 
 ## Define and connect one feature
 
@@ -49,7 +192,11 @@ $record = static function (mixed $item, array $request) use ($fields, $relations
 };
 
 return Strangler::proxy('catalog')
-    ->bodyIdentifier('ID')
+    ->routeParametersUsing(static function (array $context): array {
+        $id = $context['query']['id'] ?? $context['payload']['ID'] ?? null;
+
+        return $id === null ? [] : ['id' => $id];
+    })
     ->mapQuery(static fn (): array => [])
     ->mapQuery(static function (array $query) use ($relations): array|false {
         $relations($query);
@@ -78,7 +225,7 @@ return Strangler::proxy('catalog')
         'error' => ['code' => $json->code ?? $json->error ?? 'request_failed',
             'fields' => (array) Mapping::validationErrors($json->errors ?? new stdClass(), $errorFields)],
     ]))
-    ->bypassPayloadUsing(static fn (array $payload, string $action): bool =>
+    ->payloadUsing(bypass: static fn (array $payload, string $action): bool =>
         $action === 'update' && ($payload['OPTIONS']['MODE'] ?? null) === 'legacy')
     ->get('get', '/api/items')
     ->get('view', '/api/items/{id}')
@@ -98,7 +245,7 @@ For a list, the legacy client gets `{"success":true,"rows":[...],"total":50}`.
 A 204 response stays empty in this example. To restore a legacy success envelope
 instead, return `Json::response($response, ['state' => 'data'], 200)`.
 
-## Use maps for ordinary fields
+## Advanced: replace a mapping stage
 
 All field maps use `SOURCE => TARGET`. A flat `mapPayload(['NAME' => 'title'])`
 produces an object containing only the mapped fields. An empty result is `{}`.
@@ -113,7 +260,8 @@ JSON `{}` and `[]` remain distinct. Big integers decode as strings without round
 `Mapping::legacyQuery()` translates allowed filters, sort directions, includes, and
 exact offset pagination. Unsupported fields or an offset not divisible by the limit
 return `false`, keeping Yii before any upstream request. No records are skipped by
-rounding. Add filters, sorts, and includes as explicit name maps.
+rounding. In a full replacement, explicit maps can restrict filters, sorts and
+includes; the default convention resolves ordinary names automatically.
 
 ## Preserve errors and headers
 
@@ -143,28 +291,29 @@ The first argument of `Strangler::proxy()` is a feature key. In
 HTTP method belong to the backend. Keep incoming method and CSRF rules in preceding
 Yii filters. A route must start with one `/`; it cannot change the upstream origin.
 
-`bodyIdentifier('ID')` captures the original body identifier before mapping. Removing
-`ID` from the outgoing body still resolves `/api/items/42`. The request `id` wins.
-Reject conflicting identifiers in the preceding validation filter before its
-resource-access check. Unresolved placeholders return 400 without contacting the backend.
+`uppercase('ID')` captures the original body identifier before mapping. The request
+`id` takes precedence. Without conventions, resolve body-only identifiers explicitly:
+
+```php
+->routeParametersUsing(static fn (array $context): array => [
+    'id' => $context['query']['id'] ?? $context['payload']['ID'] ?? null,
+])
+```
+
+Reject conflicting identifiers in preceding validation before resource-access checks.
+Unresolved placeholders return 400 without contacting the backend. Use
+`route('image', 'HEAD', '/items/{id}/image')` or
+`route('move', 'PATCH', '/items/{id}/groups')` for those outgoing methods.
 
 For legacy form fields, read the same validated input as the preceding filter:
 
 ```php
-->payloadUsing(static fn (CController $controller): array => $controller->validatedInput)
+->payloadUsing(reader: static fn (CController $controller): array => $controller->validatedInput)
 ```
 
 This turns validated form values into upstream JSON. It does not forward files.
 The [runnable catalog](../examples/catalog/README.md) includes JSON and form variants,
 ACL, CSRF, tenant isolation, idempotency, and a real HTTP contract verifier.
-
-## Retain existing adapters where needed
-
-Existing `StranglerAdapterInterface` implementations remain supported. Extend
-`AbstractStranglerAdapter` and override `transformQuery()`, `transformPayload()`, or
-`transformResponse()` for a complex existing integration. Connect it with
-`usingAdapter($instance)`, an autoloadable class name, or Yii component configuration.
-Do not combine that option with inline mappings in the same filter.
 
 ## Enable the feature after checking compatibility
 
@@ -172,21 +321,26 @@ Keep the feature off until the client's requests and responses match through bot
 executors. Verify list, item, writes, errors, permissions, relations, and timeouts.
 Unmapped actions and deliberate bypasses stay in Yii before forwarding.
 
-A simple payload-field bypass remains available:
+A payload predicate receives the original payload snapshot, lowercase action and
+original query. For example, a present field, including null, can select Yii:
 
 ```php
-->bypassWhenPayloadHas('update', ['LEGACY_ONLY'])
+->payloadUsing(bypass: static fn (array $payload, string $action): bool =>
+    $action === 'update' && array_key_exists('LEGACY_ONLY', $payload))
 ```
 
-For a nested value, use `bypassPayloadUsing()` as in the complete example. Both use
-the original payload snapshot. An early `bypassUsing()` match does not read the body.
-The payload rules run after one read and before mapping. A matching field bypass
-short-circuits the predicate. Exceptions do not select the old handler.
+The complete example shows a nested-value predicate. An early `bypassUsing()` match
+does not read the body. The payload predicate runs after one read and before mapping.
+Exceptions reach the application error handler; they do not select the old handler.
 
 Roll back by disabling the feature for subsequent requests. Neither disabling a flag
 nor returning `false` from a request mapper replays an operation already sent upstream.
 
-## Fluent query and resource mappings
+## Advanced: explicit query and resource contracts
+
+Use this lower-level API only when the contract needs a full replacement or an
+explicit capability restriction. Ordinary uppercase CRUD uses the single builder
+above and needs none of these field lists.
 
 `Query` and `JsonResource` are callable value builders accepted by `mapQuery()` and
 `mapJsonResponse()`. Each fluent method returns a new configuration, leaving its
@@ -197,16 +351,14 @@ use Cosmira\Strangler\Query;
 use Cosmira\Strangler\JsonResource;
 use Cosmira\Strangler\Strangler;
 
-$resource = JsonResource::make()
-    ->fields(['id' => 'key', 'title' => 'name'])
-    ->writable(['title']);
+$resource = JsonResource::make()->fields(['id' => 'key', 'title' => 'name']);
 
 return Strangler::proxy('catalog')
     ->mapQuery(Query::legacy()
         ->filters(['name' => 'title'])
         ->sorts(['name' => 'title'])
         ->includes(['owner' => 'author']))
-    ->mapPayload($resource->payload(...), ['create', 'edit'])
+    ->mapPayload(['name' => 'title'], ['create', 'edit'])
     ->mapJsonResponse($resource)
     ->get('get', '/api/items')
     ->get('view', '/api/items/{id}')
@@ -216,47 +368,50 @@ return Strangler::proxy('catalog')
     ->build();
 ```
 
-### Share field names across directions
+### Explicit field selections
 
-Use one `Fields` schema when the legacy API uses uppercase keys. List ordinary
-upstream names once. Associative entries describe naming exceptions.
+`Fields::uppercase()` converts every field in an upstream record to uppercase.
+Declare naming exceptions with `rename()` instead of listing ordinary fields.
 
 ```php
-use Cosmira\Strangler\Fields;
+use Cosmira\Strangler\Schema\Fields;
 
-$fields = Fields::uppercase([
+$fields = Fields::uppercase()->rename([
     'id' => 'PERSON_ID',
-    'display_name',
     'updated_at' => 'CHANGE_DATE',
-    'groups' => 'parents',
-])->filterAs('display_name', 'query');
+]);
 
-$resource = JsonResource::make()
-    ->fields($fields)
-    ->writable(['display_name']);
+$resource = JsonResource::make()->fields($fields);
 
 $query = Query::legacy()
-    ->filters($fields->only(['display_name']))
-    ->sorts($fields->only(['updated_at']))
-    ->includes($fields->only(['groups']));
+    ->filters($fields->filterAs('display_name', 'query')->only(['display_name']))
+    ->sorts($fields->only(['updated_at']));
 ```
 
-The schema always describes **upstream name to legacy name**. `JsonResource` uses
-that direction for responses and reverses writable fields for payloads. `Query`
-reverses it for filters, sorting and includes. The example translates
-`filter[DISPLAY_NAME]` to `filter[query]`, `sort[CHANGE_DATE]` to `updated_at`
-ordering, and `with[]=parents` to `include=groups`.
+`display_name` becomes `DISPLAY_NAME` without a declaration. Newly added upstream
+fields follow the same convention. This transforms names, not visibility: all
+fields in the upstream public resource remain in the response.
 
-`only()` returns a new schema and rejects unknown names. It does not add fields to
-the original. Duplicate legacy names cannot be reversed and are rejected when
-configuring a query. `filterAs()`, `sortAs()` and `writeAs()` override the upstream
-name in that direction without changing the response name. For example,
-`writeAs('display_name', 'name')` sends `DISPLAY_NAME` as `name` in a write payload.
-Each method returns a new schema and requires an existing field. Existing array maps keep their existing direction and behavior.
-`Mapping::fields()` also accepts a `Fields` schema.
+`only()` selects explicit fields for filters and sorting; naming a field does not
+enable it as a filter. Write translation is independent of the response resource:
+use `mapPayload(['DISPLAY_NAME' => 'display_name', 'NOTE' => 'note'])` for an
+explicit input contract. Unknown keys are ignored and existing null values remain.
 
-Schemas rename keys only. Date formatting, boolean values, null omission and
-changes to record shape remain explicit application rules.
+The schema describes **upstream name to legacy name**. `Query` reverses selected
+names for filters, sorting and includes. `Fields::filterAs()` and `Fields::sortAs()`
+change their respective query direction without changing response names. In this
+example, `filter[DISPLAY_NAME]` becomes `filter[query]`, while the response uses
+`DISPLAY_NAME`. `Fields::writes()` returns an inverse field map when the same names
+are intentionally shared with an explicit input mapper.
+
+All schema methods return a new value. `only()` selects a fixed set of fields;
+`Fields::uppercase(['id', 'display_name'])` is the explicit-selection shorthand.
+Unknown names in an explicit selection are rejected. Duplicate output names are
+rejected rather than silently overwriting values.
+
+Renaming applies to one record at a time. Nested resource records use their own
+schema; arrays stored as field values are preserved. Date formatting, boolean
+values, null omission and changes to record shape remain application rules.
 
 `Query::legacy()` defaults to list action `get`, ignored query keys `id` and `_`,
 and page sizes 20 through 100. `filters()`, `sorts()`, and `includes()` use the
@@ -279,9 +434,6 @@ framework requirements. `empty([])` disables action-based empty responses.
 - `recordUsing(callable)` replaces record transformation; the callback receives the
   validated record and original request context. Date, null, and domain conversions
   belong here; nested records can use `Mapping::fields()`.
-- `writable(list<string>)` selects upstream field names for writes.
-  `payload(array): array` inverses the configured field map for those names only,
-  preserving null values. A later `recordUsing()` does not change that field map.
 - `envelope(array)`, `totals(array $sourcePath, array $targetPath)`,
   `collections(list<string>)`, and `empty(list<string>)` replace those defaults.
   Paths are literal segment lists. Collection totals must exist and be nonnegative integers.

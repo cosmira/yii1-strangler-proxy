@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Cosmira\Strangler;
 
 use CController;
+use Closure;
+use Cosmira\Strangler\Internal\Payload\BodyParameters;
 use InvalidArgumentException;
 
 /**
@@ -12,16 +14,20 @@ use InvalidArgumentException;
  *
  * @phpstan-import-type Settings from InlineMapping
  * @phpstan-import-type QueryMapper from InlineMapping
- * @phpstan-import-type PayloadMapper from InlineMapping
+ * @phpstan-import-type CustomPayloadMapper from InlineMapping
  * @phpstan-import-type ResponseMapper from InlineMapping
  *
+ * @phpstan-type Route array{
+ *     method: string, path: string, fromBody?: array<string, string|list<string>>
+ * }
  * @phpstan-type Config array{
  *     feature?: string,
- *     routes?: array<string, array{method: string, path: string}>,
- *     adapter?: StranglerAdapterInterface|string|array<string, mixed>,
+ *     routes?: array<string, Route>,
  *     mappings?: Settings,
  *     bodyIdentifier?: string,
  *     payloadReader?: callable(CController): array<array-key, mixed>,
+ *     routeParameters?: callable(array{action: string, query: array<array-key, mixed>,
+ *         payload: array<array-key, mixed>|null}): (array<string, mixed>|false),
  *     bypass?: callable(CController, string, array<array-key, mixed>): bool,
  *     bypassPayload?: callable(array<array-key, mixed>, string, array<array-key, mixed>): bool,
  *     afterAttempt?: callable(string, string): void,
@@ -41,16 +47,82 @@ final class Strangler
     /**
      * Upstream routes indexed by normalized legacy action names.
      *
-     * @var array<string, array{method: string, path: string}>
+     * @var array<string, Route>
      */
     private array $routes = [];
 
     /**
-     * Payload fields that keep each action on the legacy implementation.
-     *
-     * @var array<string, list<string>>
+     * Primary legacy body identifier; null leaves the original passthrough contract.
      */
-    private array $bypassPayloadFields = [];
+    private ?string $identifier = null;
+    /**
+     * Actions excluded from automatic request and JSON response mappings.
+     *
+     * @var list<string>
+     */
+    private array $except = [];
+    /**
+     * Response-only naming exceptions.
+     *
+     * @var array<string, string>
+     */
+    private array $responseFields = [];
+    /**
+     * Request-only naming exceptions.
+     *
+     * @var array<string, string>
+     */
+    private array $requestFields = [];
+
+    /**
+     * Filter-only exceptions keyed by the upstream model attribute.
+     *
+     * @var array<string, string>
+     */
+    private array $filterAliases = [];
+
+    /**
+     * Sort-only exceptions independent of writes and response names.
+     *
+     * @var array<string, string>
+     */
+    private array $sortAliases = [];
+
+    /**
+     * Request value differences keyed by their upstream attribute names.
+     *
+     * @var array<string, callable(mixed): mixed>
+     */
+    private array $requestValues = [];
+    /**
+     * Response value differences keyed by their upstream attribute names.
+     *
+     * @var array<string, callable(mixed): mixed>
+     */
+    private array $responseValues = [];
+
+    /**
+     * Supported relation differences; null keeps ordinary include names automatic.
+     *
+     * @var array<string, string>|null
+     */
+    private ?array $includes = null;
+
+    /**
+     * Application query rules that reuse the compiled naming convention.
+     *
+     * @var Closure(
+     *     array<array-key, mixed>, array{action: string}, Query
+     * ): (array<array-key, mixed>|false)|null
+     */
+    private ?Closure $queryAdapter = null;
+
+    /**
+     * Response graph and envelope differences applied to the compiled defaults.
+     *
+     * @var list<Closure(JsonResource): JsonResource>
+     */
+    private array $responseConfigurators = [];
 
     /**
      * Initialize the filter builder.
@@ -69,13 +141,85 @@ final class Strangler
     }
 
     /**
-     * Configure the adapter that translates the API contract.
+     * Enable ordinary uppercase/lowercase names and the Yii success envelope.
      *
-     * @param StranglerAdapterInterface|string|array<string, mixed> $adapter
+     * @param list<string> $except Actions with a different transport contract,
+     *                             such as binary photos.
      */
-    public function usingAdapter(StranglerAdapterInterface|string|array $adapter): self
+    public function uppercase(string $identifier, array $except = []): self
     {
-        $this->config['adapter'] = $adapter;
+        $this->identifier = $identifier;
+        $this->except = array_map(strtolower(...), $except);
+        $this->config['bodyIdentifier'] = $identifier;
+
+        return $this;
+    }
+
+    /**
+     * Declare input naming and value differences without replacing payload translation.
+     *
+     * @param array<string, string>                 $fields Legacy-to-upstream names.
+     * @param array<string, callable(mixed): mixed> $values Upstream attribute names.
+     */
+    public function request(array $fields = [], array $values = []): self
+    {
+        self::validateFieldMap($fields);
+        self::validateFormatters($values);
+        $this->requestFields = array_replace($this->requestFields, $fields);
+        $this->requestValues = array_replace($this->requestValues, $values);
+
+        return $this;
+    }
+
+    /**
+     * Extend output naming, values and the current response graph in registration order.
+     *
+     * @param array<string, string>                     $fields Upstream-to-legacy names.
+     * @param array<string, callable(mixed): mixed>     $values Upstream attribute names.
+     * @param callable(JsonResource): JsonResource|null $using
+     */
+    public function response(array $fields = [], array $values = [], ?callable $using = null): self
+    {
+        self::validateFieldMap($fields);
+        self::validateFormatters($values);
+        $this->responseFields = array_replace($this->responseFields, $fields);
+        $this->responseValues = array_replace($this->responseValues, $values);
+        if ($using !== null) {
+            $this->responseConfigurators[] = $using(...);
+        }
+
+        return $this;
+    }
+
+    /**
+     * Declare query differences while retaining automatic ordinary field names.
+     *
+     * @param array<string, string>      $filters  Upstream filter aliases.
+     * @param array<string, string>      $sorts    Upstream sort aliases.
+     * @param array<string, string>|null $includes Relation aliases; null retains existing rules.
+     * @param callable(
+     *     array<array-key, mixed>, array{action: string}, Query
+     * ): (array<array-key, mixed>|false)|null $using
+     */
+    public function query(
+        array $filters = [], array $sorts = [], ?array $includes = null, ?callable $using = null,
+    ): self {
+        foreach ([$filters, $sorts] as $aliases) {
+            foreach ($aliases as $field => $name) {
+                if ($field === '' || $name === '') {
+                    throw new InvalidArgumentException('Query aliases require nonempty names.');
+                }
+            }
+        }
+        $this->filterAliases = array_replace($this->filterAliases, $filters);
+        $this->sortAliases = array_replace($this->sortAliases, $sorts);
+        if ($includes !== null) {
+            Mapping::legacyQuery([], includes: $includes);
+            $this->includes = $includes;
+        }
+        if ($using !== null) {
+            $this->queryAdapter = $using(...);
+        }
 
         return $this;
     }
@@ -99,8 +243,8 @@ final class Strangler
     /**
      * Configure the payload mapping for selected actions or all actions.
      *
-     * @param PayloadMapper $mapper
-     * @param list<string>  $actions
+     * @param CustomPayloadMapper $mapper
+     * @param list<string>        $actions
      */
     public function mapPayload(array|callable $mapper, array $actions = []): self
     {
@@ -147,11 +291,30 @@ final class Strangler
     /**
      * Read the legacy payload through an application callback.
      *
-     * @param callable(CController): array<array-key, mixed> $reader
+     * @param callable(CController): array<array-key, mixed>|null                           $reader
+     * @param callable(array<array-key, mixed>, string, array<array-key, mixed>): bool|null $bypass
      */
-    public function payloadUsing(callable $reader): self
+    public function payloadUsing(?callable $reader = null, ?callable $bypass = null): self
     {
-        $this->config['payloadReader'] = $reader;
+        if ($reader !== null) {
+            $this->config['payloadReader'] = $reader;
+        }
+        if ($bypass !== null) {
+            $this->config['bypassPayload'] = $bypass;
+        }
+
+        return $this;
+    }
+
+    /**
+     * Resolve route-only values that require native ownership or parent-scope lookups.
+     *
+     * @param callable(array{action: string, query: array<array-key, mixed>,
+     *     payload: array<array-key, mixed>|null}): (array<string, mixed>|false) $resolver
+     */
+    public function routeParametersUsing(callable $resolver): self
+    {
+        $this->config['routeParameters'] = $resolver;
 
         return $this;
     }
@@ -195,18 +358,6 @@ final class Strangler
     }
 
     /**
-     * Keep matching original payloads on the legacy implementation.
-     *
-     * @param callable(array<array-key, mixed>, string, array<array-key, mixed>): bool $predicate
-     */
-    public function bypassPayloadUsing(callable $predicate): self
-    {
-        $this->config['bypassPayload'] = $predicate;
-
-        return $this;
-    }
-
-    /**
      * Run after each transport attempt, before translating the response, including failures.
      *
      * @param callable(string, string): void $callback
@@ -219,73 +370,43 @@ final class Strangler
     }
 
     /**
-     * Set the fallback payload field for route identifiers.
-     */
-    public function bodyIdentifier(string $field): self
-    {
-        $this->config['bodyIdentifier'] = $field;
-
-        return $this;
-    }
-
-    /**
-     * Keep an action on the legacy implementation when any listed field is present.
-     *
-     * @param list<string> $fields
-     */
-    public function bypassWhenPayloadHas(string $action, array $fields): self
-    {
-        $this->bypassPayloadFields[strtolower($action)] = $fields;
-
-        return $this;
-    }
-
-    /**
      * Map a legacy action to an upstream GET route.
+     *
+     * @param array<string, string|list<string>> $fromBody
      */
-    public function get(string $action, string $path): self
+    public function get(string $action, string $path, array $fromBody = []): self
     {
-        return $this->route($action, 'GET', $path);
+        return $this->route($action, 'GET', $path, $fromBody);
     }
 
     /**
      * Map a legacy action to an upstream POST route.
+     *
+     * @param array<string, string|list<string>> $fromBody
      */
-    public function post(string $action, string $path): self
+    public function post(string $action, string $path, array $fromBody = []): self
     {
-        return $this->route($action, 'POST', $path);
+        return $this->route($action, 'POST', $path, $fromBody);
     }
 
     /**
      * Map a legacy action to an upstream PUT route.
+     *
+     * @param array<string, string|list<string>> $fromBody
      */
-    public function put(string $action, string $path): self
+    public function put(string $action, string $path, array $fromBody = []): self
     {
-        return $this->route($action, 'PUT', $path);
+        return $this->route($action, 'PUT', $path, $fromBody);
     }
 
     /**
      * Map a legacy action to an upstream DELETE route.
+     *
+     * @param array<string, string|list<string>> $fromBody
      */
-    public function delete(string $action, string $path): self
+    public function delete(string $action, string $path, array $fromBody = []): self
     {
-        return $this->route($action, 'DELETE', $path);
-    }
-
-    /**
-     * Map a legacy action to an upstream PATCH route.
-     */
-    public function patch(string $action, string $path): self
-    {
-        return $this->route($action, 'PATCH', $path);
-    }
-
-    /**
-     * Map a legacy action to an upstream HEAD route.
-     */
-    public function head(string $action, string $path): self
-    {
-        return $this->route($action, 'HEAD', $path);
+        return $this->route($action, 'DELETE', $path, $fromBody);
     }
 
     /**
@@ -295,16 +416,91 @@ final class Strangler
      */
     public function build(): array
     {
-        if (isset($this->config['mappings']) && array_key_exists('adapter', $this->config)) {
-            throw new InvalidArgumentException(
-                'Inline mappings cannot be combined with usingAdapter().',
-            );
+        $config = $this->compiled();
+
+        return [StranglerFilter::class, 'config' => ['routes' => $this->routes] + $config];
+    }
+
+    /**
+     * Compile convention defaults after all routes and explicit callbacks are known.
+     *
+     * @return Config
+     */
+    private function compiled(): array
+    {
+        if ($this->identifier === null) {
+            $fieldSettings = [
+                $this->responseFields, $this->requestFields, $this->requestValues,
+                $this->responseValues, $this->filterAliases, $this->sortAliases,
+            ];
+            if (array_filter($fieldSettings) !== []
+                || $this->includes !== null || $this->queryAdapter !== null
+                || $this->responseConfigurators !== []) {
+                throw new InvalidArgumentException('Field exceptions require uppercase().');
+            }
+
+            return $this->config;
         }
 
-        return [StranglerFilter::class, 'config' => array_merge($this->config, [
-            'routes'              => $this->routes,
-            'bypassPayloadFields' => $this->bypassPayloadFields,
-        ])];
+        $convention = new Convention(
+            identifier: $this->identifier,
+            responseFields: $this->responseFields,
+            requestFields: $this->requestFields,
+            requestValues: $this->requestValues,
+            responseValues: $this->responseValues,
+            filterAliases: $this->filterAliases,
+            sortAliases: $this->sortAliases,
+            configure: $this->responseConfigurators,
+        );
+        $actions = array_values(array_diff(array_keys($this->routes), $this->except));
+        $query = $convention->queryMapper();
+        if ($this->includes !== null) {
+            $query = $query->includes($this->includes);
+        }
+        $adapter = $this->queryAdapter;
+        $queryMapper = $adapter === null ? $query : $query->adapt($adapter);
+        $mappings = $this->config['mappings'] ?? [];
+        $mappings['query'] = self::defaults($mappings['query'] ?? [], $queryMapper, $actions);
+        $mappings['payload'] = self::defaults($mappings['payload'] ?? [], $convention, $actions);
+        $mappings['response'] = self::defaults(
+            $mappings['response'] ?? [], $convention->response(...), $actions,
+        );
+
+        return array_replace($this->config, ['mappings' => $mappings]);
+    }
+
+    /**
+     * Preserve explicit global or action callbacks regardless of fluent call order.
+     *
+     * @template T
+     *
+     * @param array<string, T> $registered
+     * @param T                $mapper
+     * @param list<string>     $actions
+     *
+     * @return array<string, T>
+     */
+    private static function defaults(array $registered, mixed $mapper, array $actions): array
+    {
+        return isset($registered['*'])
+            ? $registered
+            : array_replace(array_fill_keys($actions, $mapper), $registered);
+    }
+
+    /**
+     * Reject invalid value converters before requests can reach the upstream service.
+     *
+     * @param array<string, mixed> $formatters
+     */
+    private static function validateFormatters(array $formatters): void
+    {
+        foreach ($formatters as $field => $formatter) {
+            if ($field === '' || ! is_callable($formatter)) {
+                throw new InvalidArgumentException(
+                    'Value differences require named callable formatters.',
+                );
+            }
+        }
     }
 
     /**
@@ -344,9 +540,15 @@ final class Strangler
 
     /**
      * Register a route using a case-insensitive action key.
+     *
+     * @param array<string, string|list<string>> $fromBody
      */
-    private function route(string $action, string $method, string $path): self
+    public function route(string $action, string $method, string $path, array $fromBody = []): self
     {
+        $method = strtoupper($method);
+        if (! in_array($method, ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'], true)) {
+            throw new InvalidArgumentException('Unsupported upstream HTTP method.');
+        }
         $key = strtolower($action);
         if (isset($this->routes[$key])) {
             throw new InvalidArgumentException('Duplicate Strangler action: '.$action);
@@ -359,7 +561,12 @@ final class Strangler
             throw new InvalidArgumentException('Strangler routes require one leading slash.');
         }
 
-        $this->routes[$key] = ['method' => $method, 'path' => $path];
+        BodyParameters::validate($fromBody, $path);
+        $route = ['method' => $method, 'path' => $path];
+        if ($fromBody !== []) {
+            $route['fromBody'] = $fromBody;
+        }
+        $this->routes[$key] = $route;
 
         return $this;
     }

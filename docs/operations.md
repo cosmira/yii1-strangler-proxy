@@ -25,10 +25,10 @@ their compatibility. Do not add dual writes to a callback to emulate a transacti
 ## Before enabling
 
 1. Run the application's configuration check while flags remain off. Check origin,
-   route definitions, adapter class/interface, callback declarations, header names,
+   route definitions, callback declarations, header names,
    TLS and timeout values. Show defaulted invalid timeouts as warnings.
 2. Keep secrets in the deployment environment and verify their presence without
-   printing values. Configuration checks do not invoke readers, business adapters,
+   printing values. Configuration checks do not invoke readers,
    hooks, write endpoints or legacy actions.
 3. If desired, call the backend's explicitly documented read-only readiness endpoint.
    Treat reachability and configuration validation as separate results. A successful
@@ -56,11 +56,11 @@ credentials, query strings or resolved resource identifiers.
 | `feature_disabled` | Exact boolean flag and the host's configuration reload. |
 | `route_unmapped` | Lowercase action name and the map of this candidate filter. |
 | `bypass_callback` | Application rule and the original request variant. |
-| `bypass_payload` | Presence of the original payload field, including a null value. |
+| `bypass_payload` | The payload predicate and original values, including null. |
 | `forwarded` | Selected candidate, method, route template and backend correlation. |
-| Backend/client statuses differ | Adapter's explicit status mapping and client error contract. |
+| Backend/client statuses differ | The explicit status mapping and client error contract. |
 | Transport failure | Backend/network telemetry and the operation's possible outcome. |
-| Hook or adapter failure | Application code and error handler; never compensate by replaying writes. |
+| Hook or mapping failure | Application code and error handler; never compensate by replaying writes. |
 
 Candidate diagnostics describe an evaluated filter, not a final claim that Yii ran.
 With several filters, inspect the complete request ID sequence. Confirm final legacy

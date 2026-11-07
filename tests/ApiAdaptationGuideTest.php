@@ -47,8 +47,47 @@ final class ApiAdaptationGuideTest extends TestCase
         new WebApplication([
             'basePath'   => __DIR__, 'runtimePath' => __DIR__,
             'components' => ['request' => ['class' => Request::class], 'user' => ['class' => User::class]],
-            'params'     => ['strangler' => ['base_uri' => 'https://backend.test', 'features' => ['catalog' => true]]],
+            'params'     => ['strangler' => ['base_uri' => 'https://backend.test', 'features' => ['catalog' => true, 'directory' => true]]],
         ]);
+    }
+
+    public function testPublishedResourceExampleSharesReadAndWriteNames(): void
+    {
+        $result = $this->forward('edit', '{"data":{"id":"42","display_name":"Desk","note":null}}',
+            payload: ['ITEM_ID' => '42', 'DISPLAY_NAME' => 'Desk', 'NOTE' => null],
+            builder: $this->builder('One fluent proxy'));
+
+        self::assertSame(['state' => 'data', 'data' => ['ITEM_ID' => '42', 'DISPLAY_NAME' => 'Desk', 'NOTE' => null]], json_decode($result, true));
+        self::assertSame('/items/42', $this->history[0]['request']->getUri()->getPath());
+        self::assertSame('{"display_name":"Desk","note":null}', (string) $this->history[0]['request']->getBody());
+    }
+
+    public function testPublishedDirectionalQueryExampleTranslatesOnlyTheDeclaredExceptions(): void
+    {
+        $this->forward('get', '{"data":[],"meta":{"total":0}}', query: [
+            'filter' => ['DISPLAY_NAME' => 'Иван', 'IS_VISIBLE' => 0, 'PERSON_ID' => 'p'],
+            'sort'   => ['CHANGE_DATE' => 'DESC'],
+        ], builder: $this->builder('Directional query differences'));
+        parse_str($this->history[0]['request']->getUri()->getQuery(), $query);
+
+        self::assertSame(['query' => 'Иван', 'visible' => '0', 'person_id' => 'p'], $query['filter']);
+        self::assertSame('-updated_at', $query['sort']);
+        self::assertCount(1, $this->history);
+    }
+
+    public function testPublishedResponseGraphKeepsItsConfiguredNamingExceptions(): void
+    {
+        $body = $this->forward('view', '{"data":{"id":"p","updated_at":"2026-11-07","contacts":[{"id":"c","value":"user@example.test"}]}}',
+            query: ['id' => 'p'], builder: $this->builder('Different semantics and response graphs'));
+
+        self::assertSame([
+            'state' => 'data', 'data' => [
+                'PERIMETER_ID' => 'p', 'CHANGE_DATE' => '2026-11-07',
+                'contacts'     => [['CONTACT_ID' => 'c', 'VALUE' => 'user@example.test']],
+            ],
+        ], json_decode($body, true));
+        self::assertSame('/perimeters/p', $this->history[0]['request']->getUri()->getPath());
+        self::assertCount(1, $this->history);
     }
 
     public function testPublishedConfigurationPreservesSingleListAndWriteContracts(): void
@@ -134,14 +173,14 @@ final class ApiAdaptationGuideTest extends TestCase
      * @param array<array-key, mixed>     $payload
      * @param array<string, list<string>> $headers
      */
-    private function forward(string $action, string $body, int $status = 200, array $query = [], array $payload = [], array $headers = []): string
+    private function forward(string $action, string $body, int $status = 200, array $query = [], array $payload = [], array $headers = [], ?Strangler $builder = null): string
     {
         $_GET = $query;
         $stack = HandlerStack::create(new MockHandler([new Response($status, $headers, $body)]));
         $stack->push(Middleware::tap(function (RequestInterface $request, array $options): void {
             $this->history[] = ['request' => $request, 'options' => $options];
         }));
-        $config = $this->builder()->payloadUsing(static fn (): array => $payload)->build()['config'];
+        $config = ($builder ?? $this->builder())->payloadUsing(static fn (): array => $payload)->build()['config'];
         $emitter = new ResponseEmitter(function (string $header): void {
             $this->headers[] = $header;
         }, function (int $status): void {
@@ -162,11 +201,11 @@ final class ApiAdaptationGuideTest extends TestCase
         }
     }
 
-    private function builder(): Strangler
+    private function builder(string $section = 'Define and connect one feature'): Strangler
     {
         $guide = file_get_contents(dirname(__DIR__).'/docs/api-adaptation.md');
         self::assertIsString($guide);
-        if (preg_match('/```php\r?\n(.*?)\r?\n```/s', $guide, $matches) !== 1) {
+        if (preg_match('/## '.preg_quote($section, '/').'\b.*?```php\r?\n(.*?)\r?\n```/s', $guide, $matches) !== 1) {
             throw new RuntimeException('The guide must contain its runnable builder.');
         }
         $code = preg_replace('/->build\(\);\s*$/', ';', $matches[1]);

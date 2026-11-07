@@ -62,15 +62,15 @@ public function filterValidateCatalog(CFilterChain $chain): void
         // Use the same validated input as payloadUsing() if you accept form fields.
         $body = $request->getRawBody();
         try {
-            $payload = json_decode($body, true, 512, JSON_THROW_ON_ERROR | JSON_BIGINT_AS_STRING);
+            $payload = json_decode($body, flags: JSON_THROW_ON_ERROR | JSON_BIGINT_AS_STRING);
         } catch (JsonException) {
             throw new CHttpException(400, 'Invalid JSON.');
         }
-        if (!is_array($payload)) {
+        if (!$payload instanceof stdClass) {
             throw new CHttpException(400, 'Expected a JSON object.');
         }
         $requestId = $request->getParam('id');
-        $bodyId = $payload['ID'] ?? null;
+        $bodyId = $payload->ID ?? null;
         if (($requestId !== null && !is_scalar($requestId))
             || ($bodyId !== null && !is_scalar($bodyId))) {
             throw new CHttpException(400, 'Invalid identifier.');

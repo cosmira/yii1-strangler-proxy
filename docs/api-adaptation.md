@@ -4,6 +4,15 @@ Keep the old client contract in Yii. The backend can keep its new API.
 Use inline mappings for request and response translations. Application callbacks handle
 complex contracts through the same mapping pipeline.
 
+- [One fluent proxy](#one-fluent-proxy)
+- [Define and connect one feature](#define-and-connect-one-feature)
+- [Advanced: replace a mapping stage](#advanced-replace-a-mapping-stage)
+- [Preserve errors and headers](#preserve-errors-and-headers)
+- [Keep routing and security explicit](#keep-routing-and-security-explicit)
+- [Enable the feature after checking compatibility](#enable-the-feature-after-checking-compatibility)
+- [Advanced: explicit query and resource contracts](#advanced-explicit-query-and-resource-contracts)
+- [File uploads](#file-uploads)
+
 ## One fluent proxy
 
 Use the naming convention once, then describe only directional exceptions:
@@ -24,6 +33,12 @@ ordinary response attributes are uppercase in Yii. `with` becomes `include`, and
 `start/limit` becomes `page/per_page`. There are no required field, writable, filter
 or sort lists. Keep native request/access checks before Strangler and validate the
 backend independently: naming conventions do not grant permissions.
+
+For a backend item `{"data":{"id":42,"updated_at":"2026-11-08"}}`, this returns
+`{"state":"data","data":{"ITEM_ID":42,"CHANGE_DATE":"2026-11-08"}}`.
+The convention reads records under `data`; list responses also require `meta.total`.
+It uses HTTP 200 for mapped success responses. See [response defaults](#response-defaults)
+for empty actions and custom envelopes.
 
 `response(fields: [...])` maps upstream to legacy names. `request(fields: [...])` maps legacy to
 upstream names. The two directions are deliberately independent: a Person may
@@ -84,6 +99,17 @@ context, while the payload argument contains the remaining body.
 upstream names. They run only for fields present in that input or record. Input
 formatters run after input names are translated; output formatters run before
 response names are translated. Opaque values are not recursively renamed.
+
+For example, serialize an input attribute while decoding the same output attribute:
+
+```php
+Strangler::proxy('catalog')
+    ->uppercase('ITEM_ID')
+    ->request(values: ['meta' => static fn ($value) => json_encode($value, JSON_THROW_ON_ERROR)])
+    ->response(values: ['meta' => static fn ($value) => json_decode($value, flags: JSON_THROW_ON_ERROR)])
+    ->post('create', '/items')
+    ->build();
+```
 
 A full stage callback replaces these defaults as well. Callback arguments and
 contexts have independent JSON containers: changing a nested object in one callback
@@ -170,8 +196,12 @@ use Cosmira\Strangler\Strangler;
 use Psr\Http\Message\ResponseInterface;
 
 $fields = ['id' => 'ID', 'title' => 'NAME'];
-$errorFields = ['title' => 'NAME', 'product.title' => 'NAME',
-    'category.id' => 'CATEGORY_ID', 'product.enabled' => 'ACTIVE'];
+$errorFields = [
+    'title' => 'NAME',
+    'product.title' => 'NAME',
+    'category.id' => 'CATEGORY_ID',
+    'product.enabled' => 'ACTIVE',
+];
 $relations = static function (array $query): array {
     $with = $query['with'] ?? [];
     if (!is_array($with) || !array_is_list($with)
@@ -418,11 +448,13 @@ schema; arrays stored as field values are preserved. Date formatting, boolean
 values, null omission and changes to record shape remain application rules.
 
 `Query::legacy()` defaults to list action `get`, ignored query keys `id` and `_`,
-and page sizes 20 through 100. `filters()`, `sorts()`, and `includes()` use the
-source-to-target names understood by `Mapping::legacyQuery()`. `ignore()` and
-`lists()` replace their defaults. Non-list actions discard `start` and `limit`
+a default page size of 20, and a maximum page size of 100.
+`filters()`, `sorts()`, and `includes()` use the source-to-target names understood
+by `Mapping::legacyQuery()`. `ignore()` and `lists()` replace their defaults. Non-list actions discard `start` and `limit`
 before validation and omit generated pagination; unsupported projections, fields,
 filters, sorts, and includes still return `false` to retain legacy execution.
+
+### Response defaults
 
 `JsonResource::make()` defaults to the common Yii REST convention: envelope
 `['state' => 'data']`, records under `data`, collection action `get`, total from
@@ -450,3 +482,23 @@ controlled 502 response. A record callback must throw `InvalidUpstreamResponse`
 when it rejects upstream data. Other callback exceptions, including `TypeError`
 and `UnexpectedValueException`, propagate as application programming errors.
 Lower-level `Mapping` methods remain available for other response shapes.
+
+## File uploads
+
+Use `mapFiles()` to send a multipart request for selected actions:
+
+```php
+Strangler::proxy('directory')
+    ->mapFiles(['files[0]' => 'photo'], ['uploadImage'])
+    ->post('uploadImage', '/api/people/{person_id}/photo')
+    ->build();
+```
+
+Keys are Yii upload names, including bracket paths; values are upstream field names.
+Files are streamed from PHP's temporary upload directory. Other files are not forwarded.
+`mapPayload()` can rename scalar form fields. Without a payload reader, fields come from `$_POST`.
+Nested form values are not supported. Actions without file mappings keep their JSON behavior.
+
+Missing or failed uploads are omitted so the backend can validate required files.
+The backend must validate file size, content and permissions. Multipart requests use the same
+trusted headers, timeouts and single-attempt behavior as JSON requests.

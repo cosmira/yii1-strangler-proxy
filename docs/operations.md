@@ -5,6 +5,14 @@ Use this runbook with the [integration guide](integration.md) and the
 deployment, authentication, data and backend contract. Strangler chooses an executor;
 it does not coordinate transactions between systems.
 
+- [Record the data contract first](#record-the-data-contract-first)
+- [Before enabling](#before-enabling)
+- [Troubleshooting one request](#troubleshooting-one-request)
+- [A write timed out](#a-write-timed-out)
+- [Disable and verify](#disable-and-verify)
+- [Tenant and idempotency boundaries](#tenant-and-idempotency-boundaries)
+- [Optional metrics](#optional-metrics)
+
 ## Record the data contract first
 
 Fill this table before enabling writes. A boolean flag cannot establish data compatibility.

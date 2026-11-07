@@ -3,6 +3,19 @@
 Strangler routes requests; your application owns access rules, the API contract and
 the deployment procedure. Complete these steps for each feature before enabling it.
 
+- [Access checks and Yii hooks](#access-checks-and-yii-hooks)
+- [Write-action validation](#write-action-validation)
+- [API errors from Yii](#api-errors-from-yii)
+- [Trusted channel](#trusted-channel)
+- [Configuration reference](#configuration-reference)
+- [Inline mappings](#inline-mappings)
+- [Independent read and write flags](#independent-read-and-write-flags)
+- [Headers, TLS and payloads](#headers-tls-and-payloads)
+- [Rollout and rollback](#rollout-and-rollback)
+- [Logging and callbacks](#logging-and-callbacks)
+- [Before deployment](#before-deployment)
+- [Local development](#local-development)
+
 ## Access checks and Yii hooks
 
 Put authentication, HTTP verb checks, CSRF validation for session-authenticated
@@ -247,9 +260,10 @@ includes field-presence and nested-value examples. Repeated non-null `reader` or
 
 ## Inline mappings
 
-For typical integrations, use the [complete inline mapping example](api-adaptation.md).
- `Mapping` handles field maps, lists, item
-and collection envelopes, validation error fields, and exact offset pagination.
+Start with [one fluent proxy](api-adaptation.md#one-fluent-proxy). Use the
+[custom mapping example](api-adaptation.md#define-and-connect-one-feature) when
+your contract requires different shapes. `Mapping` handles field maps, item and
+collection envelopes, validation errors, and exact offset pagination.
 `Json::response()` handles serialization, status, and safe response metadata.
 
 Empty action lists define defaults. An action-specific mapping replaces its default
@@ -341,7 +355,7 @@ preserved. Request mappings receive PHP arrays with large integers represented a
 they own the re-encoded object's shape, including empty objects.
 `payloadUsing()` reads form fields explicitly and must return an array; validate its
 structure in the preceding filters. The filter uses one payload snapshot for the
-bypass decision and forwarding. Use [`mapFiles()`](../README.md#file-uploads) for
+bypass decision and forwarding. Use [`mapFiles()`](api-adaptation.md#file-uploads) for
 multipart uploads. Arbitrary raw request bodies are outside this JSON proxy's scope.
 
 ## Rollout and rollback

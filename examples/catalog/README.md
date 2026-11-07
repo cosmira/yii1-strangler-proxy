@@ -77,6 +77,10 @@ the same procedure to change `CATALOG_WRITE_ENABLED` to `true` when ready.
 
 ## Create and update through JSON or forms
 
+After the flag-off restart above, these requests run in Yii. To forward them,
+set `CATALOG_WRITE_ENABLED=true` and restart the Yii process as shown above.
+Both paths use the same dataset and return the same client contract.
+
 Copy the login's `csrf` into a shell variable. This token belongs to the Yii session;
 it is checked before either executor and is not forwarded to the backend.
 

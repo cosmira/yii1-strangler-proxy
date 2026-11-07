@@ -51,13 +51,24 @@ final class ApiAdaptationGuideTest extends TestCase
         ]);
     }
 
-    public function testPublishedResourceExampleSharesReadAndWriteNames(): void
+    public function testPublishedResourceExampleMapsTheEnvelopeAndDirectionalNames(): void
     {
-        $result = $this->forward('edit', '{"data":{"id":"42","display_name":"Desk","note":null}}',
+        $result = $this->forward(
+            'edit',
+            '{"data":{"id":"42","display_name":"Desk","note":null,"updated_at":"2026-11-08"}}',
             payload: ['ITEM_ID' => '42', 'DISPLAY_NAME' => 'Desk', 'NOTE' => null],
-            builder: $this->builder('One fluent proxy'));
+            builder: $this->builder('One fluent proxy'),
+        );
 
-        self::assertSame(['state' => 'data', 'data' => ['ITEM_ID' => '42', 'DISPLAY_NAME' => 'Desk', 'NOTE' => null]], json_decode($result, true));
+        self::assertSame([
+            'state' => 'data',
+            'data'  => [
+                'ITEM_ID'      => '42',
+                'DISPLAY_NAME' => 'Desk',
+                'NOTE'         => null,
+                'CHANGE_DATE'  => '2026-11-08',
+            ],
+        ], json_decode($result, true));
         self::assertSame('/items/42', $this->history[0]['request']->getUri()->getPath());
         self::assertSame('{"display_name":"Desk","note":null}', (string) $this->history[0]['request']->getBody());
     }

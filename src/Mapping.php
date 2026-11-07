@@ -326,28 +326,29 @@ final class Mapping
     }
 
     /**
-     * Build destination containers without mutating caller-owned objects.
+     * Rebuild destination containers from the leaf without mutating caller-owned objects.
      *
-     * @param array<array-key, mixed>|stdClass $value
-     * @param non-empty-list<array-key>        $path
-     *
-     * @return ($value is stdClass ? stdClass : array<array-key, mixed>)
+     * @param non-empty-list<array-key> $path
      */
-    private static function put(array|stdClass $value, array $path, mixed $data): array|stdClass
+    private static function put(stdClass $value, array $path, mixed $data): stdClass
     {
-        $key = array_shift($path);
-        $values = $value instanceof stdClass ? get_object_vars($value) : $value;
-        if ($path === []) {
-            $values[$key] = $data;
-        } else {
-            $child = $values[$key] ?? new stdClass();
-            if (! is_array($child) && ! $child instanceof stdClass) {
+        $parents = [];
+        $current = $value;
+        foreach ($path as $key) {
+            if (! is_array($current) && ! $current instanceof stdClass) {
                 throw new InvalidArgumentException('Destination paths require containers.');
             }
-            $values[$key] = self::put($child, $path, $data);
+            $values = (array) $current;
+            $parents[] = [$current instanceof stdClass, $values, $key];
+            $current = $values[$key] ?? new stdClass();
+        }
+        $result = $data;
+        foreach (array_reverse($parents) as [$object, $values, $key]) {
+            $values[$key] = $result;
+            $result = $object ? (object) $values : $values;
         }
 
-        return $value instanceof stdClass ? (object) $values : $values;
+        return (object) $result;
     }
 
     /**

@@ -29,7 +29,8 @@ if (PHP_OS_FAMILY === 'Darwin' && function_exists('proc_nice')) {
 
 try {
     $command = [
-        PHP_BINARY, '-d', 'pcov.enabled=1', '-d', 'pcov.directory=.', '-d', 'xdebug.mode=coverage',
+        PHP_BINARY, '-d', 'memory_limit=512M', '-d', 'pcov.enabled=1',
+        '-d', 'pcov.directory=.', '-d', 'xdebug.mode=coverage',
         dirname(__DIR__).'/vendor/bin/infection',
         '--only-covering-test-cases', '--with-timeouts', '--max-timeouts=0',
         ...array_slice($argv, 1),

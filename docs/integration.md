@@ -91,7 +91,7 @@ across a backend call; an end hook is not distributed transaction coordination.
 
 ## API errors from Yii
 
-For API controllers, configure an application-owned error action so adapter bugs and
+For API controllers, configure an application-owned error action so mapping bugs and
 invalid backend responses keep the legacy JSON error contract. In Yii configuration:
 
 ```php
@@ -215,45 +215,46 @@ The controller builder configures behavior for one feature:
 
 | Method | Purpose |
 | --- | --- |
-| `get/post/put/patch/delete/head($action, $path)` | Map one Yii action to an outgoing method/path. Each action may appear once. |
+| `get/post/put/delete($action, $path)` | Map one Yii action to an outgoing method/path. Each action may appear once. |
+| `route($action, $method, $path, $fromBody = [])` | Register GET, HEAD, POST, PUT, PATCH or DELETE, with optional body bindings. |
+| `uppercase($identifier, $except = [])` | Enable conventional names and the Yii response envelope, excluding selected actions. |
+| `request(fields: [], values: [])` | Configure input naming and value differences. |
+| `response(fields: [], values: [], using: null)` | Configure output names, values and extensions to the current resource. |
+| `query(filters: [], sorts: [], includes: null, using: null)` | Configure query aliases and semantic adaptation using the existing mapper. |
 | `mapQuery($mapper, $actions = [])` | Translate query fields or return `false` to keep Yii before forwarding. |
 | `mapPayload($mapper, $actions = [])` | Translate the payload using a field map or callback. |
 | `mapJsonResponse($mapper, $actions = [])` | Map decoded success JSON and return a PSR response. |
 | `mapJsonErrors($mapper, $actions = [])` | Map upstream and package-generated errors. |
-| `usingAdapter($adapter)` | Supply a `StranglerAdapterInterface` instance, autoloadable class name, or Yii `['class' => ..., ...]` configuration. |
-| `payloadUsing($reader)` | Read a validated legacy body as an array, once per handled request. |
-| `bodyIdentifier($field)` | Set the original-body fallback field for `{id}`; disabled by default. Request `id` takes precedence. |
-| `bypassUsing($callback)` | Decide before reading/forwarding payload, from controller, lowercase action and original query. `true` keeps Yii. |
-| `bypassWhenPayloadHas($action, $fields)` | Keep Yii if any named original-payload field is present, including `null`. |
-| `bypassPayloadUsing($predicate)` | Decide from the original payload snapshot, lowercase action, and original query before mapping. `true` keeps Yii. |
+| `payloadUsing(reader: null, bypass: null)` | Read a validated body once, or decide from its original snapshot whether Yii should handle it. |
+| `routeParametersUsing($resolver)` | Resolve route-only values from original action, query and payload; return `false` to keep Yii. |
+| `mapFiles($files, $actions = [])` | Map selected Yii upload names to upstream multipart fields. |
+| `bypassUsing($callback)` | Decide before reading the body, from controller, lowercase action and original query. `true` keeps Yii. |
 | `afterAttempt($callback)` | Observe outgoing method/path after a transport attempt, before response adaptation. |
 | `build()` | Return the native Yii filter configuration. |
 
 Payload decisions run in this order after the feature and route checks:
 
 1. Run the existing early `bypassUsing()` callback. A match does not read the body.
-2. Resolve the adapter and read the payload once.
-3. Check `bypassWhenPayloadHas()`. A match skips the payload predicate.
-4. Call the payload predicate once with the original `($payload, $actionId, $query)` values.
-5. Map the request and attempt forwarding if no bypass matched.
+2. Read the payload once.
+3. Call the configured payload predicate once with original `($payload, $actionId, $query)` values.
+4. Map the request and attempt forwarding if no bypass matched.
 
 A predicate exception reaches the application error handler unchanged. It does not
-select the legacy action. Both payload rules use the `bypass_payload` diagnostic reason.
+select the legacy action. Payload matches use the `bypass_payload` diagnostic reason.
 The [adaptation guide](api-adaptation.md#enable-the-feature-after-checking-compatibility)
-includes a nested-value example. Without the new predicate, existing configurations
-keep their behavior. Calling `bypassPayloadUsing()` again replaces its previous callback.
+includes field-presence and nested-value examples. Repeated non-null `reader` or
+`bypass` arguments replace that callback; omitted arguments retain it.
 
 ## Inline mappings
 
 For typical integrations, use the [complete inline mapping example](api-adaptation.md).
-No application adapter class is required. `Mapping` handles field maps, lists, item
+ `Mapping` handles field maps, lists, item
 and collection envelopes, validation error fields, and exact offset pagination.
 `Json::response()` handles serialization, status, and safe response metadata.
 
 Empty action lists define defaults. An action-specific mapping replaces its default
 for that stage. Re-registering the same action replaces its previous mapping.
-Action names are lowercase. `usingAdapter()` and inline mappings in one filter are
-rejected at `build()`, regardless of their registration order.
+Action names are lowercase.
 
 Request callbacks receive `($value, $request)`. The snapshot has original `action`,
 `query`, and `payload`; errors before body reading have `payload=null`. Query mapping
@@ -304,25 +305,6 @@ It never rounds an offset into a different page.
 Use two existing builders with distinct feature names and disjoint action maps.
 Keep **both filters after all preceding security checks**; the final part of the
 filter list is the Strangler block. No route-level flag API is required.
-For an existing custom adapter implementing your catalog contract:
-
-```php
-$readFilter = Strangler::proxy('catalog_read')
-    ->usingAdapter(ExistingCatalogAdapter::class)
-    ->get('get', '/api/items')
-    ->build();
-$writeFilter = Strangler::proxy('catalog_write')
-    ->usingAdapter(ExistingCatalogAdapter::class)
-    ->bodyIdentifier('ID')
-    ->post('create', '/api/items')
-    ->put('update', '/api/items/{id}')
-    ->build();
-// Append $readFilter and $writeFilter after the host's security filters.
-```
-
-This adapter recipe assumes supported page-aligned list offsets. The inline
-configuration in [the runnable catalog](../examples/catalog/proxy.php) uses the same
-read and write split with shared mappings and a validated input reader.
 Set `features.catalog_read` and `features.catalog_write` to independent booleans.
 All four combinations are checked by `composer example:verify`.
 A skipped first filter continues to the next; it does not necessarily select Yii.
@@ -341,7 +323,7 @@ Cookie and Authorization are excluded by default. An explicit `forward_headers`
 entry can opt in only when your backend contract requires those client credentials;
 this is a deliberate change from the normal Yii-owned session model. Server-owned
 backend credentials belong in `headers`. Backend `Set-Cookie` is always removed.
-The JSON request has its own Content-Type. If an adapter rewrites a response body,
+The JSON request has its own Content-Type. If a mapping rewrites a response body,
 set its Content-Type and remove obsolete ETag, compression and cache metadata; the
 [catalog example](api-adaptation.md) shows an explicit response-header policy.
 
@@ -354,13 +336,13 @@ The default payload reader accepts a JSON object or array. An empty body means n
 payload; malformed JSON, `null` and scalar JSON return `400` before forwarding.
 This validation applies to every mapped action, including GET and HEAD: their bodies
 can supply route or bypass fields but are not sent upstream. Do not send irrelevant
-bodies on read requests. Without an adapter, payload mapper, or custom reader, write JSON bytes are
-preserved. Adapters receive PHP arrays with large integers represented as strings;
+bodies on read requests. Without a payload mapper or custom reader, write JSON bytes are
+preserved. Request mappings receive PHP arrays with large integers represented as strings;
 they own the re-encoded object's shape, including empty objects.
 `payloadUsing()` reads form fields explicitly and must return an array; validate its
 structure in the preceding filters. The filter uses one payload snapshot for the
 bypass decision and forwarding. Use [`mapFiles()`](../README.md#file-uploads) for
-multipart uploads. Arbitrary raw request bodies are outside this JSON adapter's scope.
+multipart uploads. Arbitrary raw request bodies are outside this JSON proxy's scope.
 
 ## Rollout and rollback
 
@@ -412,14 +394,14 @@ callback bypass and payload bypass. `selected=false` refers to this candidate;
 another Strangler filter may still forward the request. Use your existing `X-Request-Id` to correlate systems;
 Strangler forwards a valid single-line value and includes it with the feature in
 its logs. It does not create a new correlation service. Attempt logs record backend
-and client statuses separately, so an adapter's status change remains visible.
+and client statuses separately, so a mapping's status change remains visible.
 Ordinary logs use route templates and safe error categories rather than resolved
 identifiers or raw transport exception messages. Payloads and tokens are not logged.
 See [operations](operations.md) for troubleshooting and recovery.
 
 The optional `afterAttempt($method, $path)` callback runs after a transport attempt,
 including failure, **before response mapping**. It does not receive the final client
-response. Keep it small: a thrown callback or adapter exception reaches Yii's error
+response. Keep it small: a thrown callback exception reaches Yii's error
 handler and can prevent delivery of a response even after a successful backend
 write. Test these hooks and never replay writes to compensate for their errors.
 
@@ -446,8 +428,8 @@ There is no new observer API or silent exception suppression in Strangler.
 
 The [example deployment check](../examples/catalog/README.md) examines the example's
 actual configuration even when its feature flags are off. It performs no business
-HTTP call and does not create an adapter or execute its callbacks. It cannot prove
-that a future adapter constructor or backend operation will succeed.
+HTTP call and does not execute mapping callbacks. It cannot prove
+that a future backend operation will succeed.
 Application bootstrap, secrets and configuration reload remain host-specific.
 Availability checks use a separately declared safe read-only endpoint; never probe
 a write route. Follow the [operations runbook](operations.md) for data ownership,
@@ -475,11 +457,43 @@ composer install
 composer test
 composer test:types
 composer test:rector
+composer test:soda
 vendor/bin/pint --test
 composer test:coverage
 composer test:mutation
 ```
 
 Coverage checks require PCOV or Xdebug; mutation testing is slower than the unit suite.
-CI also runs Soda, Markdown and spelling checks. Coverage and mutation thresholds
-protect this library, not the compatibility of an application's migration.
+CI also runs Soda, Markdown and spelling checks. Source line, method and class
+coverage must reach 100%; whole-package mutation score and covered mutation score
+must each reach at least 90% using the configured default mutator set.
+Mutation runs enforce per-test time limits, including failures caused by nontermination;
+the HTTP catalog example retains its larger integration-test budget. These gates
+protect this library; each application still needs its own migration contract tests.
+
+### Dependency boundaries
+
+Soda is a Composer development dependency. `composer test:soda` uses the installed
+version, locally and in GitHub Actions; no separate checkout of Soda is required.
+
+`ForbiddenDependencies` in `soda.php` enforces these directions:
+
+| Source | Forbidden dependencies | Responsibility |
+| --- | --- | --- |
+| `Cosmira\Strangler` | `App`, application `strangler`, `Illuminate`, `Symfony`, package tests | The reusable Yii package must not import its consuming application, another application framework, or test fixtures. |
+| `Cosmira\Strangler\Internal\Payload` | `GuzzleHttp`, `Psr\Http` | Body bindings transform PHP/JSON data without sending requests or reading HTTP messages. |
+
+Public naming and include schemas live in `Cosmira\Strangler\Schema` as
+`Fields` and `Includes`. Import them from that namespace.
+
+The payload boundary contains `BodyParameters`, an internal implementation detail;
+HTTP orchestration may call it. `Internal\Http\HttpHeaders` owns protocol header
+rules shared by the transport and emitter; it is not a supported application API. Other mapping
+APIs can use PSR response messages: response adaptation is part of their contract.
+Existing cycle checks remain enabled without changing their module configuration.
+They also reject a reverse dependency from payload parsing to the package runtime,
+because orchestration already depends on the payload namespace.
+
+The rule matches namespace dependencies, not global class names. It cannot forbid
+Yii's global `Yii` or `CUploadedFile` classes, and it does not claim to separate all
+public mapping helpers from runtime code. Those boundaries still need code review.

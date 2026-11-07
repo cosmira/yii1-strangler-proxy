@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Cosmira\Strangler;
 
 use Closure;
+use Cosmira\Strangler\Schema\Fields;
+use InvalidArgumentException;
 use Psr\Http\Message\ResponseInterface;
 use stdClass;
 
@@ -14,11 +16,11 @@ final class JsonResource
     /**
      * Field selection or application callback applied to each upstream record.
      *
-     * @var array<array-key, mixed>|Closure(
+     * @var array<array-key, mixed>|Fields|Record|Closure(
      *     array<array-key, mixed>|stdClass, array<array-key, mixed>
      * ): mixed
      */
-    private array|Closure $record;
+    private array|Fields|Record|Closure $record;
     /**
      * Application-owned response fields surrounding mapped data.
      *
@@ -54,20 +56,11 @@ final class JsonResource
      */
     private ?int $responseStatus = 200;
     /**
-     * Source-to-target names retained for inverse write-payload translation.
+     * Application contract validation applied to the final generated response.
      *
-     * @var array<array-key, string>
+     * @var list<Closure(ResponseInterface): void>
      */
-    private array $fieldMap = [];
-
-    /** @var array<string, string>|null */
-    private ?array $writeMap = null;
-    /**
-     * Upstream fields allowed to receive values from legacy write payloads.
-     *
-     * @var list<string>
-     */
-    private array $writableFields = [];
+    private array $validators = [];
 
     /**
      * Preserve upstream records until a field map or callback is configured.
@@ -86,31 +79,56 @@ final class JsonResource
     }
 
     /**
-     * Select response fields and retain their names for inverse payload mapping.
+     * Select and rename response fields.
      *
      * @param array<array-key, string>|Fields $fields
      */
     public function fields(array|Fields $fields): self
     {
         $copy = clone $this;
-        $copy->writeMap = $fields instanceof Fields ? $fields->writes() : null;
-        $fields = $fields instanceof Fields ? $fields->names() : $fields;
-        Mapping::fields([], $fields);
+        $names = $fields instanceof Fields ? $fields->names() : $fields;
+        Mapping::fields([], $names);
         $copy->record = $fields;
-        $copy->fieldMap = $fields;
 
         return $copy;
     }
 
     /**
-     * Replace record transformation without changing the writable field map.
+     * Replace record transformation while retaining response settings.
      *
      * @param callable(array<array-key, mixed>|stdClass, array<array-key, mixed>): mixed $mapper
      */
     public function recordUsing(callable $mapper): self
     {
         $copy = clone $this;
-        $copy->record = Closure::fromCallable($mapper);
+        $copy->record = $mapper instanceof Record ? $mapper : Closure::fromCallable($mapper);
+
+        return $copy;
+    }
+
+    /**
+     * Extend the current conventional record instead of replacing its naming and values.
+     *
+     * @param callable(Record): Record $configure
+     */
+    public function configureRecord(callable $configure): self
+    {
+        if (! $this->record instanceof Record) {
+            throw new InvalidArgumentException('Only conventional Record schemas can be extended.');
+        }
+
+        return $this->recordUsing($configure($this->record));
+    }
+
+    /**
+     * Append a final response check while retaining previously configured checks.
+     *
+     * @param callable(ResponseInterface): void $validator
+     */
+    public function validateUsing(callable $validator): self
+    {
+        $copy = clone $this;
+        $copy->validators[] = Closure::fromCallable($validator);
 
         return $copy;
     }
@@ -181,34 +199,6 @@ final class JsonResource
     }
 
     /**
-     * Restrict inverse payload mapping to selected upstream field names.
-     *
-     * @param list<string> $fields Upstream field names accepted in write payloads.
-     */
-    public function writable(array $fields): self
-    {
-        $copy = clone $this;
-        $copy->writableFields = $fields;
-
-        return $copy;
-    }
-
-    /**
-     * Translate writable legacy fields to upstream names while preserving null values.
-     *
-     * @param array<array-key, mixed> $payload
-     *
-     * @return array<array-key, mixed>
-     */
-    public function payload(array $payload): array
-    {
-        $fields = array_intersect_key($this->fieldMap, array_flip($this->writableFields));
-        $names = $this->writeMap ?? array_flip($this->fieldMap);
-
-        return Mapping::fields($payload, array_intersect_key($names, array_flip($fields)));
-    }
-
-    /**
      * Restore the legacy response contract or reject unusable upstream data.
      *
      * @param array{action: string} $context
@@ -220,16 +210,37 @@ final class JsonResource
     ): ResponseInterface {
         if ($response->getStatusCode() === 204
             || in_array($context['action'], $this->emptyActions, true)) {
-            return Json::response($response, $this->responseEnvelope, $this->responseStatus ?? 200);
+            return $this->validate(Json::response(
+                $response, $this->responseEnvelope, $this->responseStatus ?? 200,
+            ));
         }
 
-        $mapper = is_array($this->record) ? $this->record
-            : fn (array|stdClass $record): mixed => ($this->record)($record, $context);
+        $mapper = match (true) {
+            $this->record instanceof Fields => fn (
+                array|stdClass $record,
+            ): array|stdClass => Mapping::fields($record, $this->record),
+            is_array($this->record)         => $this->record,
+            default                         => fn (
+                array|stdClass $record,
+            ): mixed => ($this->record)($record, $context),
+        };
         $body = in_array($context['action'], $this->collectionActions, true)
             ? Mapping::collection($json, $mapper, $this->responseEnvelope,
                 totalFrom: $this->totalSource, totalTo: $this->totalTarget)
             : Mapping::item($json, $mapper, $this->responseEnvelope);
 
-        return Json::response($response, $body, $this->responseStatus);
+        return $this->validate(Json::response($response, $body, $this->responseStatus));
+    }
+
+    /**
+     * Run application validation and retain the generated response unchanged.
+     */
+    private function validate(ResponseInterface $response): ResponseInterface
+    {
+        foreach ($this->validators as $validate) {
+            $validate($response);
+        }
+
+        return $response;
     }
 }

@@ -35,7 +35,7 @@ final class PayloadBypassController extends CController
 
                 return $payload;
             })
-            ->bypassPayloadUsing(static function (array $payload): bool {
+            ->payloadUsing(bypass: static function (array $payload): bool {
                 header('X-Payload-Predicates: 1');
 
                 $routing = $payload['routing'] ?? null;

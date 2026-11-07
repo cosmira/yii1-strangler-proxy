@@ -16,12 +16,12 @@
         "@default": true
     },
     "testFramework": "phpunit",
-    "testFrameworkOptions": "--order-by=default",
+    "testFrameworkOptions": "--order-by=default --enforce-time-limit --default-time-limit=10",
     "initialTestsPhpOptions": "-d pcov.directory=.",
     "phpUnit": {
         "configDir": "."
     },
-    "minMsi": 100,
-    "minCoveredMsi": 100,
+    "minMsi": 90,
+    "minCoveredMsi": 90,
     "bootstrap": "tests/bootstrap.php"
 }

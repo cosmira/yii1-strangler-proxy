@@ -6,6 +6,7 @@ namespace Cosmira\Strangler;
 
 use CController;
 use Closure;
+use Cosmira\Strangler\Internal\Payload\BodyParameters;
 use CWebApplication;
 use GuzzleHttp\ClientInterface;
 use InvalidArgumentException;
@@ -14,12 +15,14 @@ use Throwable;
 
 /**
  * @phpstan-import-type Config from Strangler
+ * @phpstan-import-type Route from Strangler
+ * @phpstan-import-type Context from InlineMapping
  * @phpstan-import-type RequestValues from InlineMapping
  *
  * @phpstan-type Prepared array{
  *     outgoing: array{method: string, path: string, query: array<array-key, mixed>,
  *         payload: array<array-key, mixed>, body: string|null},
- *     pathQuery: array<array-key, mixed>, routeId: mixed
+ *     pathQuery: array<array-key, mixed>, routeId: mixed, parameters: array<string, int|string>
  * }
  */
 final readonly class StranglerProxy
@@ -90,11 +93,8 @@ final readonly class StranglerProxy
         if ($bypass !== null && $bypass($controller, $actionKey, $_GET)) {
             return true;
         }
-        $bypassFields = $config['bypassPayloadFields'] ?? [];
-        $fields = $bypassFields[$actionKey] ?? [];
         $predicate = $config['bypassPayload'] ?? null;
-
-        if ($fields === [] && $predicate === null) {
+        if ($predicate === null) {
             return false;
         }
 
@@ -104,13 +104,7 @@ final readonly class StranglerProxy
             $actionKey,
         )['payload'];
 
-        foreach ($fields as $field) {
-            if (array_key_exists($field, $bypassPayload)) {
-                return true;
-            }
-        }
-
-        return $predicate !== null && $predicate($bypassPayload, $actionKey, $_GET);
+        return $predicate($bypassPayload, $actionKey, $_GET);
     }
 
     /**
@@ -141,39 +135,28 @@ final readonly class StranglerProxy
         $inline = isset($config['mappings']) ? new InlineMapping($config['mappings'], [
             'action' => $actionKey, 'query' => $_GET, 'payload' => null,
         ]) : null;
-        $adapterConfig = $config['adapter'] ?? null;
-        $adapter = YiiRuntime::resolveAdapter($adapterConfig);
-        if ($adapter === null && self::hasAdapterConfig($adapterConfig)) {
-            YiiRuntime::logRejection(
-                $config, $actionKey, $route['path'], 'strangler_adapter_not_configured',
-            );
-            $this->emitter->error(500, 'strangler_adapter_not_configured', inline: $inline);
 
-            return true;
-        }
-
-        return $this->forward($controller, $config, $actionKey, $route, $adapter, $inline);
+        return $this->forward($controller, $config, $actionKey, $route, $inline);
     }
 
     /**
      * Prepare one payload snapshot and resolve the upstream route before sending.
      *
-     * @param Config                              $config
-     * @param array{method: string, path: string} $route
+     * @param Config $config
+     * @param Route  $route
      */
     private function forward(
         CController $controller,
         array $config,
         string $actionKey,
         array $route,
-        ?StranglerAdapterInterface $adapter,
         ?InlineMapping $inline,
     ): bool {
         try {
             $snapshot = self::readPayload($controller, $config, $actionKey);
             $payload = $snapshot['payload'];
         } catch (JsonException) {
-            $this->emitter->error(400, 'strangler_invalid_payload', $adapter, $actionKey, $inline);
+            $this->emitter->error(400, 'strangler_invalid_payload', $inline);
 
             return true;
         }
@@ -186,14 +169,14 @@ final readonly class StranglerProxy
         $mapping = $inline?->withPayload($payload, $snapshot['body']);
 
         $prepared = self::prepareRequest(
-            $config, $actionKey, $route, $snapshot, $adapter, $mapping,
+            $config, $actionKey, $route, $snapshot, $mapping,
         );
         if ($prepared === false) {
             YiiRuntime::logDecision($config, $actionKey, 'mapping_unsupported');
 
             return false;
         }
-        $this->sendPrepared($config, $actionKey, $route['path'], $prepared, $adapter, $mapping);
+        $this->sendPrepared($config, $actionKey, $route['path'], $prepared, $mapping);
 
         return true;
     }
@@ -209,7 +192,6 @@ final readonly class StranglerProxy
         string $actionKey,
         string $routeTemplate,
         array $prepared,
-        ?StranglerAdapterInterface $adapter,
         ?InlineMapping $inline,
     ): void {
         $outgoing = $prepared['outgoing'];
@@ -217,19 +199,19 @@ final readonly class StranglerProxy
         try {
             $outgoing['path'] = self::resolvePath(
                 $routeTemplate, $prepared['pathQuery'],
-                $outgoing['payload'], $prepared['routeId'],
+                $outgoing['payload'], $prepared['routeId'], $prepared['parameters'],
             );
         } catch (InvalidArgumentException) {
             YiiRuntime::logRejection(
                 $config, $actionKey, $routeTemplate, 'strangler_route_parameter_missing',
             );
             $this->emitter->error(
-                400, 'strangler_route_parameter_missing', $adapter, $actionKey, $inline,
+                400, 'strangler_route_parameter_missing', $inline,
             );
 
             return;
         }
-        $this->transport->send($config, $actionKey, $outgoing, $adapter, $routeTemplate, $inline);
+        $this->transport->send($config, $actionKey, $outgoing, $routeTemplate, $inline);
     }
 
     /**
@@ -278,14 +260,16 @@ final readonly class StranglerProxy
     /**
      * Substitute encoded request identifiers into a local upstream path.
      *
-     * @param array<array-key, mixed> $query
-     * @param array<array-key, mixed> $body
+     * @param array<array-key, mixed>   $query
+     * @param array<array-key, mixed>   $body
+     * @param array<string, int|string> $parameters
      */
     private static function resolvePath(
         string $pathTemplate,
         array $query,
         array $body,
         mixed $routeId,
+        array $parameters = [],
     ): string {
         if (! str_starts_with($pathTemplate, '/') || str_starts_with($pathTemplate, '//')) {
             throw new InvalidArgumentException('Strangler routes require one leading slash.');
@@ -298,15 +282,17 @@ final readonly class StranglerProxy
         return (string) preg_replace_callback($pattern, static function (array $matches) use (
             $query,
             $body,
-            $identifier
+            $identifier,
+            $parameters,
         ): string {
             $placeholder = $matches[1];
             $upper = strtoupper($placeholder);
 
-            $value = $placeholder === 'id' && $identifier !== null && $identifier !== ''
+            $value = $parameters[$placeholder] ?? (
+                $placeholder === 'id' && $identifier !== null && $identifier !== ''
                 ? $identifier
                 : ($body[$placeholder] ?? $body[$upper]
-                    ?? $query[strtolower($placeholder)] ?? null);
+                    ?? $query[strtolower($placeholder)] ?? null));
 
             if (! is_scalar($value) || in_array((string) $value, ['', '.', '..'], true)) {
                 throw new InvalidArgumentException('Missing Strangler route parameter.');
@@ -344,7 +330,7 @@ final readonly class StranglerProxy
      * Adapt the request contract and preserve original values for route substitution.
      *
      * @param Config                                                     $config
-     * @param array{method: string, path: string}                        $route
+     * @param Route                                                      $route
      * @param array{payload: array<array-key, mixed>, body: string|null} $snapshot
      *
      * @return Prepared|false
@@ -354,17 +340,27 @@ final readonly class StranglerProxy
         string $actionKey,
         array $route,
         array $snapshot,
-        ?StranglerAdapterInterface $adapter,
         ?InlineMapping $inline,
     ): array|false {
+        $bound = self::bodyBindings($route['fromBody'] ?? [], $snapshot, $inline);
+        if ($bound === false) {
+            return false;
+        }
         $payload = $snapshot['payload'];
+        $context = $inline?->context() ?? [
+            'action' => $actionKey, 'query' => $_GET, 'payload' => $payload,
+        ];
+        $parameters = self::routeParameters($config, $context, $bound['parameters']);
+        if ($parameters === false) {
+            return false;
+        }
         $request = self::application()->getRequest();
         $query = $_GET;
         unset($query['r']);
 
         $routeId = self::routeIdentifier($request->getParam('id'), $payload, $config);
         $mapped = self::requestValues(
-            $config, $actionKey, $route['path'], $query, $snapshot, $adapter, $inline,
+            $config, $actionKey, $route['path'], $query, $snapshot, $inline, $bound['payload'],
         );
         if ($mapped === false) {
             return false;
@@ -383,9 +379,77 @@ final readonly class StranglerProxy
                 'payload'      => $mapped['payload'],
                 'body'         => $mapped['body'],
             ],
-            'pathQuery' => $pathQuery,
-            'routeId'   => $routeId,
+            'pathQuery'  => $pathQuery,
+            'routeId'    => $routeId,
+            'parameters' => $parameters,
         ];
+    }
+
+    /**
+     * Bind declared route values without rewriting untouched request bodies.
+     *
+     * @param array<string, string|list<string>>                         $bindings
+     * @param array{payload: array<array-key, mixed>, body: string|null} $snapshot
+     *
+     * @return array{
+     *     parameters: array<string, int|string>, payload: array<array-key, mixed>|\stdClass|null
+     * }|false
+     */
+    private static function bodyBindings(
+        array $bindings, array $snapshot, ?InlineMapping $inline,
+    ): array|false {
+        if ($bindings === []) {
+            return ['parameters' => [], 'payload' => null];
+        }
+
+        return $inline?->bindBodyParameters($bindings, $snapshot['payload'])
+            ?? BodyParameters::resolve(
+                $bindings,
+                BodyParameters::source($snapshot['payload'], $snapshot['body']),
+            );
+    }
+
+    /**
+     * Keep native lookup results separate from transmitted query and body values.
+     *
+     * @param Config                    $config
+     * @param Context                   $context
+     * @param array<string, int|string> $bound
+     *
+     * @return array<string, int|string>|false
+     */
+    private static function routeParameters(
+        array $config, array $context, array $bound,
+    ): array|false {
+        $resolver = $config['routeParameters'] ?? null;
+        if ($resolver === null) {
+            return $bound;
+        }
+        $resolved = $resolver($context);
+        if ($resolved === false) {
+            return false;
+        }
+        $parameters = $bound;
+        foreach ($resolved as $name => $value) {
+            if (! self::validRouteParameter($value)
+                || (isset($bound[$name]) && (string) $bound[$name] !== (string) $value)) {
+                return false;
+            }
+            $parameters[$name] = $value;
+        }
+
+        return $parameters;
+    }
+
+    /**
+     * Reject values that cannot identify one safe route segment.
+     *
+     * @phpstan-assert-if-true int|string $value
+     */
+    private static function validRouteParameter(mixed $value): bool
+    {
+        return (is_string($value) || is_int($value))
+            && ! in_array((string) $value, ['', '.', '..'], true);
     }
 
     /**
@@ -394,6 +458,7 @@ final readonly class StranglerProxy
      * @param Config                                                     $config
      * @param array<array-key, mixed>                                    $query
      * @param array{payload: array<array-key, mixed>, body: string|null} $snapshot
+     * @param array<array-key, mixed>|\stdClass|null                     $remaining
      *
      * @return RequestValues|false
      */
@@ -403,18 +468,22 @@ final readonly class StranglerProxy
         string $path,
         array $query,
         array $snapshot,
-        ?StranglerAdapterInterface $adapter,
         ?InlineMapping $inline,
+        array|\stdClass|null $remaining,
     ): array|false {
-        if ($adapter !== null) {
-            return YiiRuntime::mapRequest(
-                $config, $actionKey, $path, $adapter, $query, $snapshot['payload'],
-            ) + ['body' => null];
+        $requestSnapshot = $snapshot;
+        if ($remaining !== null && $inline === null) {
+            $requestSnapshot = [
+                'payload' => (array) $remaining,
+                'body'    => json_encode(
+                    $remaining, JSON_THROW_ON_ERROR | JSON_PRESERVE_ZERO_FRACTION,
+                ),
+            ];
         }
         if ($inline !== null) {
             try {
                 return $inline->request(
-                    $query, $snapshot['payload'], $snapshot['body'],
+                    $query, $requestSnapshot['payload'], $requestSnapshot['body'], $remaining,
                 );
             } catch (Throwable $exception) {
                 YiiRuntime::logRejection($config, $actionKey, $path, 'request_adaptation_failure');
@@ -422,21 +491,13 @@ final readonly class StranglerProxy
                 throw $exception;
             }
         }
-        $body = $snapshot['body'];
+        $body = $requestSnapshot['body'];
         if ($body !== null && trim($body) === '') {
             $body = '[]';
         }
 
         return [
-            'query' => $query, 'payload' => $snapshot['payload'], 'body' => $body,
+            'query' => $query, 'payload' => $requestSnapshot['payload'], 'body' => $body,
         ];
-    }
-
-    /**
-     * Determine whether an adapter was explicitly configured.
-     */
-    private static function hasAdapterConfig(mixed $adapterConfig): bool
-    {
-        return ! ($adapterConfig === null || $adapterConfig === '' || $adapterConfig === []);
     }
 }

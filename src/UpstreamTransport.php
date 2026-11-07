@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Cosmira\Strangler;
 
 use Closure;
+use Cosmira\Strangler\Internal\Http\HttpHeaders;
 use GuzzleHttp\Client;
 use GuzzleHttp\ClientInterface;
 use GuzzleHttp\Exception\GuzzleException;
@@ -55,7 +56,6 @@ final readonly class UpstreamTransport
         array $config,
         string $actionKey,
         array $outgoing,
-        ?StranglerAdapterInterface $adapter,
         string $routeTemplate,
         ?InlineMapping $inline = null,
     ): void {
@@ -65,13 +65,13 @@ final readonly class UpstreamTransport
             YiiRuntime::logRejection(
                 $config, $actionKey, $routeTemplate, 'strangler_not_configured',
             );
-            $this->emitter->error(500, 'strangler_not_configured', $adapter, $actionKey, $inline);
+            $this->emitter->error(500, 'strangler_not_configured', $inline);
 
             return;
         }
 
         $this->dispatch(
-            $settings, $config, $actionKey, $outgoing, $adapter, $routeTemplate, $inline,
+            $settings, $config, $actionKey, $outgoing, $routeTemplate, $inline,
         );
     }
 
@@ -88,7 +88,6 @@ final readonly class UpstreamTransport
         array $config,
         string $actionKey,
         array $outgoing,
-        ?StranglerAdapterInterface $adapter,
         string $routeTemplate,
         ?InlineMapping $inline,
     ): void {
@@ -112,7 +111,7 @@ final readonly class UpstreamTransport
                 $config, $actionKey, $outgoing, $routeTemplate, ['time_ms' => $timeMs],
             );
             $this->emitFailure(
-                $config, $actionKey, $routeTemplate, $timeMs, $method, $adapter, $inline,
+                $config, $actionKey, $routeTemplate, $timeMs, $method, $inline,
             );
 
             return;
@@ -129,7 +128,7 @@ final readonly class UpstreamTransport
         ]);
         $this->emitResponse(
             $config, $actionKey, $routeTemplate, $timeMs, $responseSnapshot,
-            $method, $adapter, $responseSnapshot['status'], $inline,
+            $method, $responseSnapshot['status'], $inline,
         );
     }
 
@@ -232,7 +231,8 @@ final readonly class UpstreamTransport
      * @param array<array-key, mixed> $payload
      * @param array<string, string>   $files
      *
-     * @return list<array{name: array-key, contents: scalar|resource|null, filename?: string}>
+     * @return list<array{name: array-key, contents: scalar|open-resource|closed-resource|null,
+     *     filename?: string}>
      */
     private static function multipart(array $payload, array $files): array
     {
@@ -325,14 +325,13 @@ final readonly class UpstreamTransport
         string $routeTemplate,
         int $timeMs,
         string $method,
-        ?StranglerAdapterInterface $adapter,
         ?InlineMapping $inline,
     ): void {
         $this->emitResponse($config, $actionKey, $routeTemplate, $timeMs, [
             'status'  => 503,
             'body'    => '{"state":"error","error":"service_temporarily_unavailable"}',
             'headers' => ['Content-Type' => ['application/json; charset=utf-8']],
-        ], $method, $adapter, null, $inline);
+        ], $method, null, $inline);
     }
 
     /**
@@ -348,7 +347,6 @@ final readonly class UpstreamTransport
         int $timeMs,
         array $response,
         string $method,
-        ?StranglerAdapterInterface $adapter,
         ?int $upstreamStatus,
         ?InlineMapping $inline = null,
     ): void {
@@ -368,10 +366,7 @@ final readonly class UpstreamTransport
                     'headers' => $mapped->getHeaders(),
                 ];
             } else {
-                $legacyResponse = $adapter?->transformResponse(
-                    $actionKey, $response['status'],
-                    $response['body'], $response['headers'],
-                ) ?? $response;
+                $legacyResponse = $response;
             }
         } catch (Throwable $exception) {
             YiiRuntime::logResult(

@@ -4,39 +4,34 @@
 [![PHP 8.2–8.5][php-badge]](composer.json)
 [![MIT license][license-badge]](LICENSE)
 
-Migrate a Yii 1.1 application to a new monolith one feature at a time.
-Keep authentication, sessions and access checks in Yii; Strangler forwards enabled
-actions and leaves the remaining actions in the legacy application. When the APIs
-differ, inline maps preserve the existing client's contract inside Yii.
+Move Yii 1.1 API actions to a new backend without changing the existing client.
+Keep authentication, sessions, and access checks in Yii. One fluent filter forwards
+enabled actions and translates differences between the two API contracts.
+Unmapped actions and disabled features continue to run in Yii.
 
-Requires **PHP 8.2+ and Yii 1.1.31+**; upgrade older runtimes first.
-Forward JSON API actions and selected multipart uploads. Map legacy form fields
-to JSON when needed. Binary responses pass through unchanged; response bodies are
-buffered, so this package is not a streaming proxy.
+Requires **PHP 8.2+ and Yii 1.1.31+**. The package supports JSON APIs, form-to-JSON
+mapping, and selected multipart uploads. Responses are buffered, including binary
+responses; this is not a streaming proxy.
 
-## How it works
+- [Installation](#installation)
+- [Forward your first action](#forward-your-first-action)
+- [Describe contract differences](#when-the-apis-differ)
+- [Run the complete example](#run-the-complete-example)
+- [Documentation](#documentation)
 
-```text
-request → controller → security filters → Strangler → new monolith
-                                                   ↘ legacy action
-```
+## Installation
 
-After the security filters allow a request, Strangler checks the feature flag.
-It forwards enabled, mapped actions; otherwise, Yii runs the legacy action.
-
-## Getting started
-
-Install the tagged release directly from its Git repository in your Yii application:
+Install the package in your Yii application:
 
 ```shell
-composer config repositories.yii1-strangler-proxy vcs https://github.com/cosmira/yii1-strangler-proxy
 composer require cosmira/yii1-strangler-proxy:^2.0
 ```
 
-The VCS entry is needed until the package is registered on Packagist.
 Load Composer's `vendor/autoload.php` before the Yii bootstrap. Commit your
 application's `composer.lock` and use `composer install` for deployments.
 For working on the package itself, see [local development](docs/integration.md#local-development).
+
+## Forward your first action
 
 Configure an existing backend endpoint returning `{"ID":42,"NAME":"Desk"}`:
 
@@ -104,23 +99,6 @@ put the complete backend path in each route. Redirects are returned without foll
 them. GET and HEAD send query parameters; POST, PUT, PATCH and DELETE also send JSON.
 Missing URL parameters or invalid JSON return `400` before contacting the backend.
 
-## Run the complete example
-
-The [catalog example](examples/catalog/README.md) supplies a real Yii application,
-backend, JSON/form input, security checks and independent read/write flags.
-It uses a shared SQLite dataset to demonstrate one concrete migration model.
-The example additionally requires `pdo_sqlite`; the library does not require SQLite.
-From this repository, after `composer install`, run:
-
-```shell
-composer example:verify
-```
-
-The verifier starts isolated local servers, checks the published example and removes
-its temporary data. It compares the legacy and proxied client contracts, denied
-requests, read-after-write, tenant isolation and backend idempotency.
-Use its case table as a starting point for your own application's contract checks.
-
 ## When the APIs differ
 
 Describe only the differences from ordinary uppercase/lowercase names:
@@ -139,12 +117,20 @@ Strangler::proxy('catalog')
     ->build();
 ```
 
+This convention expects backend records under `data`. For the `view` action,
+`{"data":{"id":42,"updated_at":"2026-11-08"}}` becomes
+`{"state":"data","data":{"ITEM_ID":42,"CHANGE_DATE":"2026-11-08"}}`.
+Lists also require `meta.total`. These are the convention's defaults; the previous
+pass-through example did not require an envelope. See
+[response configuration](docs/api-adaptation.md#response-defaults) to change them.
+
 Ordinary response attributes become uppercase; input, filter and sort names become
 lowercase. Do not repeat backend permission lists in the proxy: keep input and
 resource access checks before Strangler and validate the new API independently.
 Response exceptions do not change input names. Use `request(fields: [...])` for an actual
 input naming difference, and explicit stage callbacks for different semantics.
-Callbacks replace that stage regardless of fluent call order.
+`mapQuery()`, `mapPayload()`, and `mapJsonResponse()` replace their stage,
+regardless of fluent call order.
 
 A parent formerly supplied in the body can select the new route:
 
@@ -164,104 +150,62 @@ The original callback context still contains the original body.
 See [advanced mappings](docs/api-adaptation.md) for response graphs and real legacy
 exceptions. The package owns JSON, headers and a single HTTP attempt.
 
-For a serialized field value, describe that difference without replacing the body mapper:
+## Run the complete example
 
-```php
-Strangler::proxy('catalog')
-    ->uppercase('ITEM_ID')
-    ->request(values: ['meta' => static fn ($value) => json_encode($value, JSON_THROW_ON_ERROR)])
-    ->response(values: ['meta' => static fn ($value) => json_decode($value, flags: JSON_THROW_ON_ERROR)])
-    ->post('create', '/items')
-    ->build();
+The [catalog example](examples/catalog/README.md) includes a Yii application and a
+backend. It demonstrates reads, writes, JSON and form input, access checks, and
+independent read and write flags. Both applications use one SQLite dataset.
+
+From the package checkout, with `pdo_sqlite` installed:
+
+```shell
+composer install
+composer example:verify
 ```
 
-Value maps use upstream attribute names and leave absent fields alone. A full stage
-callback replaces its value and name conventions too. Use `routeParametersUsing()`
-for parent identifiers requiring a native scoped lookup; its values select only the
-path and are never inserted into the transmitted query or body.
-
-Conventions translate names, not backend capabilities. Every representable filter
-and sort is forwarded; the backend validates the request. For example, `PERSON_ID`
-becomes `person_id` in a filter and `SN` becomes `sn` in ordering, regardless of
-which names the backend accepts. The response identifier alias affects reads only.
-Errors never cause native replay after forwarding.
-
-For a response graph, `response(using: ...)` extends the already configured
-`JsonResource`; its `configureRecord()` method extends the current record schema.
-Naming exceptions and value conversions remain active across configuration calls.
-`mapJsonResponse()` is the explicit full-stage replacement for a different contract.
-
-## Version 2.0
-
-Version 2.0 has one callback-based mapping pipeline. Adapter classes and their
-configuration entry point are removed. Request, response and query differences
-are grouped under `request()`, `response()` and `query()`. The response resource
-only describes responses; write translation belongs to `mapPayload()`.
-Use `payloadUsing(reader: ..., bypass: ...)` for body callbacks and
-`routeParametersUsing()` for custom route identifiers. HEAD and PATCH routes use
-`route($action, $method, $path)`. Public `Fields` and `Includes` schemas now live
-in `Cosmira\Strangler\Schema`. No compatibility aliases are provided.
-
-## File uploads
-
-Use `mapFiles()` to send a multipart request for selected actions:
-
-```php
-Strangler::proxy('directory')
-    ->mapFiles(['files[0]' => 'photo'], ['uploadImage'])
-    ->post('uploadImage', '/api/people/{person_id}/photo')
-    ->build();
-```
-
-Keys are Yii upload names, including bracket paths; values are upstream field names.
-Files are streamed from PHP's temporary upload directory. Other files are not forwarded.
-`mapPayload()` can rename scalar form fields. Without a payload reader, fields come from `$_POST`.
-Nested form values are not supported. Actions without file mappings keep their JSON behavior.
-
-Missing or failed uploads are omitted so the backend can validate required files.
-The backend must validate file size, content and permissions. Multipart requests use the same
-trusted headers, timeouts and single-attempt behavior as JSON requests.
+The verifier starts local servers, compares legacy and proxied responses, and
+removes its temporary data. It also checks denied access, tenant isolation,
+read-after-write, and backend idempotency. No production service is contacted.
 
 ## Sessions and user context
 
-Strangler sends the current Yii identity as `X-User-Id` and the current language as
-`X-Strangler-Locale`. Guests have an empty user identifier. Identity alone does not
-provide roles, tenant context or resource permissions; define those checks for your
-feature before forwarding it.
+Sessions stay in Yii. The package sends the current identity as `X-User-Id` and
+language as `X-Strangler-Locale`. Identity headers do not supply roles, tenant
+context, or resource permissions. Configure a [trusted channel](docs/integration.md#trusted-channel)
+and keep access checks before the proxy.
 
-Sessions stay in Yii: client Cookie and Authorization headers are not forwarded by
-default, and backend Set-Cookie headers are always removed. `X-Strangler: 1` is a
-diagnostic marker. It does not prove authentication; use the
-[trusted-channel instructions](docs/integration.md#trusted-channel).
+Client Cookie and Authorization headers are not forwarded by default. Backend
+Set-Cookie headers are always removed. `X-Strangler: 1` identifies a handled
+response; it is not proof of authentication.
 
 ## Feature flags and errors
 
-Only the boolean `true` enables a feature. Missing flags and unmapped actions stay
-in Yii. Deployment and support teams can set a flag to `false`; configuration reload
-and data compatibility determine whether rollback is possible. See the
-[rollout checklist](docs/integration.md#rollout-and-rollback).
+Only boolean `true` enables a feature. Missing flags and unmapped actions stay in
+Yii. Changing a flag affects routing after configuration reload; it does not undo
+backend writes or restore an old schema.
 
-**Strangler never falls back to Yii after forwarding and never retries requests.**
-The backend may have completed a write before its response was lost. A second
-execution could duplicate data. Backend errors are returned; transport failures
-return `503`, and a missing backend returns `500`. A configured error mapping can
-translate these responses into the old client's format. Configuration and programming errors
-reach the application's Yii error handler.
+**The proxy never retries requests or returns to Yii after forwarding.** A backend
+may commit a write before its response is lost. Transport failures return `503`;
+backend errors are returned to the client. Error mappings can adapt them to the
+existing client's format. See [rollout and recovery](docs/operations.md).
 
-## Quick diagnostics
+## File uploads
 
-Handled responses include `X-Strangler: 1`. In `YII_DEBUG`, backend responses also
-include `X-Strangler-Time` in milliseconds. Enable `log_requests` to record forwarding
-in the Yii `strangler` category with the feature and incoming `X-Request-Id`.
-With request logging enabled, candidate decisions explain disabled flags, unmapped
-actions and bypass rules. With several Strangler filters, a skipped candidate can
-continue to the next filter; it does not yet imply legacy execution. See [logging and callbacks](docs/integration.md#logging-and-callbacks).
+Use [`mapFiles()`](docs/api-adaptation.md#file-uploads) to forward selected uploads
+as multipart requests. File names, scalar fields, and backend validation are
+described in the adaptation guide.
 
-## Development
+## Documentation
 
-See [local development](docs/integration.md#local-development) for tests, static analysis,
-coverage and mutation checks. These checks protect the package; each migration still
-needs tests for its own client contract.
+| Guide | What it covers |
+| --- | --- |
+| [API adaptation](docs/api-adaptation.md) | Naming conventions, query and body differences, response graphs, and uploads. |
+| [Integration](docs/integration.md) | Security filters, trusted headers, configuration, callbacks, and development checks. |
+| [Operations](docs/operations.md) | Deployment, feature flags, diagnostics, rollback, and uncertain writes. |
+| [Runnable catalog](examples/catalog/README.md) | A complete local migration with native and proxied actions. |
+
+For package development, follow the [local checks](docs/integration.md#local-development).
+Report bugs or propose changes in [GitHub issues](https://github.com/cosmira/yii1-strangler-proxy/issues).
 
 [tests-badge]: https://github.com/cosmira/yii1-strangler-proxy/actions/workflows/phpunit.yml/badge.svg?branch=main
 [tests-workflow]: https://github.com/cosmira/yii1-strangler-proxy/actions/workflows/phpunit.yml

@@ -105,9 +105,24 @@ when started manually; push and pull-request runs retain the small suite.
 
 The report contains the actual byte counts, hashes, elapsed time, and PHP allocation.
 Passing this case with a 128 MiB worker proves that PHP did not hold the whole 1 GiB
-body in its heap. It does not measure process RSS, concurrent transfers, or reverse
+body in its heap. The report also records process peak RSS, which includes native
+allocations and the warm-up. It does not measure concurrent transfers or reverse
 proxy buffering. A 2.0.6 baseline can exceed that memory budget on download; such a
 failure is reported, not silently retried with an unlimited memory limit.
+
+### Recorded 1 GiB run
+
+[CI run on PHP 8.4.27](https://github.com/cosmira/yii1-strangler-proxy/actions/runs/42510924534)
+completed both directions with a `128M` worker limit:
+
+| Direction | Verified bytes | Peak PHP heap | Peak process RSS |
+| --- | ---: | ---: | ---: |
+| Download | 1,073,741,824 | 6 MiB | 77.9 MiB |
+| Upload | 1,073,741,824 | 4 MiB | 73.1 MiB |
+
+Each direction had one warm-up and one measured request. These results demonstrate
+bounded memory for this case; a single loopback run does not establish production
+throughput. The default HTTP handler can spool the response to temporary disk.
 
 ## Historical comparison before chunked output
 

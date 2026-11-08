@@ -30,4 +30,5 @@ jobs:
           tar -xzf "$RUNNER_TEMP/typos-v1.50.0-x86_64-unknown-linux-musl.tar.gz" -C "$RUNNER_TEMP/typos"
 
       - name: Check spelling
-        run: "$RUNNER_TEMP/typos/typos" --config .github/typos.toml
+        run: |
+          "$RUNNER_TEMP/typos/typos" --config .github/typos.toml

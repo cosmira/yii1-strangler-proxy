@@ -210,6 +210,7 @@ described in the adaptation guide.
 | --- | --- |
 | [API adaptation](docs/api-adaptation.md) | Naming conventions, query and body differences, response graphs, and uploads. |
 | [Integration](docs/integration.md) | Security filters, trusted headers, configuration, callbacks, and development checks. |
+| [File performance](docs/performance.md) | Upload transport requirements, buffering, and reproducible measurements. |
 | [Operations](docs/operations.md) | Deployment, feature flags, diagnostics, rollback, and uncertain writes. |
 | [Runnable catalog](examples/catalog/README.md) | A complete local migration with native and proxied actions. |
 

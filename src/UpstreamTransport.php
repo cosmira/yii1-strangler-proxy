@@ -356,7 +356,7 @@ final readonly class UpstreamTransport
         }
 
         try {
-            if ($inline !== null) {
+            if ($inline !== null && $inline->mapsResponse($response['status'])) {
                 $mapped = $inline->response(new Response(
                     $response['status'], $response['headers'], $response['body'],
                 ));

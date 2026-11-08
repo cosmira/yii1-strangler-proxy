@@ -215,16 +215,32 @@ final readonly class InlineMapping
      */
     public function response(ResponseInterface $response): ResponseInterface
     {
-        $status = $response->getStatusCode();
-        if ($status >= 300 && $status < 400) {
-            return $response;
-        }
-        $handler = $this->select($this->mappings[$status >= 400 ? 'errors' : 'response'] ?? []);
+        $handler = $this->responseHandler($response->getStatusCode());
         if ($handler === null) {
             return $response;
         }
 
         return $this->mapResponse($response, $handler);
+    }
+
+    /**
+     * Identify responses that need JSON adaptation before materializing them again.
+     */
+    public function mapsResponse(int $status): bool
+    {
+        return $this->responseHandler($status) !== null;
+    }
+
+    /**
+     * Select the configured response stage while leaving redirects untouched.
+     *
+     * @return ResponseMapper|null
+     */
+    private function responseHandler(int $status): ?callable
+    {
+        return $status >= 300 && $status < 400
+            ? null
+            : $this->select($this->mappings[$status >= 400 ? 'errors' : 'response'] ?? []);
     }
 
     /**

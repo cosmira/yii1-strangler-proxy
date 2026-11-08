@@ -67,12 +67,16 @@
             "@php vendor/bin/rector validate-config",
             "@php vendor/bin/rector process --dry-run --no-progress-bar"
         ],
-        "example:verify": "@php examples/catalog/verify.php"
+        "example:verify": "@php examples/catalog/verify.php",
+        "benchmark:files": "@php tools/benchmark-files.php"
     },
     "config": {
         "sort-packages": true,
         "allow-plugins": {
             "infection/extension-installer": true
         }
+    },
+    "suggest": {
+        "ext-curl": "Use the default cURL handler for large multipart uploads without buffering the entire request body."
     }
 }

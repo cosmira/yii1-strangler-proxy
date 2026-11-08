@@ -529,10 +529,16 @@ Strangler::proxy('directory')
 ```
 
 Keys are Yii upload names, including bracket paths; values are upstream field names.
-Files are streamed from PHP's temporary upload directory. Other files are not forwarded.
+Files are passed as read-only streams from PHP's temporary upload directory.
+Use the default Guzzle cURL handler to stream large multipart bodies; it may buffer
+small bodies. Without
+cURL, Guzzle's PHP stream handler materializes that body as a string. Other files
+are not forwarded.
 `mapPayload()` can rename scalar form fields. Without a payload reader, fields come from `$_POST`.
 Nested form values are not supported. Actions without file mappings keep their JSON behavior.
 
 Missing or failed uploads are omitted so the backend can validate required files.
 The backend must validate file size, content and permissions. Multipart requests use the same
 trusted headers, timeouts and single-attempt behavior as JSON requests.
+
+See [file performance](performance.md) for reproducible transfer and memory measurements.

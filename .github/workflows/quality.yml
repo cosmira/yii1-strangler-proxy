@@ -30,7 +30,7 @@ jobs:
         uses: shivammathur/setup-php@v2
         with:
           php-version: '8.4'
-          extensions: mbstring, dom, fileinfo, pdo_sqlite
+          extensions: curl, mbstring, dom, fileinfo, pdo_sqlite
           coverage: none
           tools: composer:v2
 
@@ -42,6 +42,19 @@ jobs:
 
       - name: Verify published HTTP and JavaScript contracts
         run: composer example:verify
+
+      - name: Verify file transfers and record measurements
+        run: |
+          mkdir -p build
+          composer benchmark:files > build/files-benchmark.json
+
+      - name: Upload file measurements
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: files-benchmark
+          path: build/files-benchmark.json
+          if-no-files-found: warn
 
   composer:
     name: Composer

@@ -10,10 +10,13 @@ use Cosmira\Strangler\Tests\Fixtures\ApplicationEnded;
 use Cosmira\Strangler\Tests\Fixtures\Request;
 use Cosmira\Strangler\Tests\Fixtures\User;
 use Cosmira\Strangler\Tests\Fixtures\WebApplication;
+use GuzzleHttp\Psr7\FnStream;
+use GuzzleHttp\Psr7\Utils;
 use PHPUnit\Framework\Attributes\PreserveGlobalState;
 use PHPUnit\Framework\Attributes\RunTestsInSeparateProcesses;
 use PHPUnit\Framework\TestCase;
 use Psr\Http\Message\ResponseInterface;
+use Psr\Http\Message\StreamInterface;
 use Yii;
 
 #[RunTestsInSeparateProcesses]
@@ -41,6 +44,47 @@ final class ResponseEmitterTest extends TestCase
             ],
         ]);
         http_response_code(200);
+    }
+
+    public function testStreamedResponseUsesBoundedReadsAndLeavesTheStreamOpen(): void
+    {
+        $payload = str_repeat("file\x00", 40000);
+        $source = Utils::streamFor($payload);
+        $reads = [];
+        $stream = FnStream::decorate($source, [
+            'read' => static function (int $length) use ($source, &$reads): string {
+                $reads[] = $length;
+
+                return $source->read($length);
+            },
+            '__toString' => static fn () => throw new \RuntimeException('Do not buffer a file.'),
+        ]);
+        $events = [];
+        $emitter = $this->observedEmitter($events);
+
+        self::assertSame($payload, $this->capture(
+            static fn () => $emitter->sendStream(200, $stream, ['X-File' => ['present']], 0),
+        ));
+        self::assertNotEmpty($reads);
+        self::assertGreaterThan(1, count($reads));
+        foreach ($reads as $length) {
+            self::assertLessThanOrEqual(65536, $length);
+        }
+        self::assertTrue($source->isReadable());
+        self::assertSame(['header', 'X-File: present', true], $events[0]);
+    }
+
+    public function testStalledResponseStreamFailsInsteadOfLoopingForever(): void
+    {
+        $stream = $this->createMock(StreamInterface::class);
+        $stream->method('eof')->willReturn(false);
+        $stream->expects(self::once())->method('read')->willReturn('');
+        $events = [];
+        $emitter = $this->observedEmitter($events);
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('The upstream response stream stopped before EOF.');
+        $this->capture(static fn () => $emitter->sendStream(200, $stream, [], 0));
     }
 
     public function testForwardedResponsePreservesRepeatedHeadersAndReplacesItsMarker(): void

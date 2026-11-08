@@ -7,6 +7,8 @@ namespace Cosmira\Strangler;
 use Closure;
 use Cosmira\Strangler\Internal\Http\HttpHeaders;
 use GuzzleHttp\Psr7\Response;
+use Psr\Http\Message\StreamInterface;
+use RuntimeException;
 
 /**
  * Yii's HTTP output boundary; injectable writers make header effects observable.
@@ -51,6 +53,40 @@ final readonly class ResponseEmitter
      */
     public function send(int $status, string $body, array $headers, int $timeMs): void
     {
+        $this->headers($status, $headers, $timeMs);
+        echo $body;
+        StranglerProxy::application()->end();
+    }
+
+    /**
+     * Consume a body from its current position with bounded memory, leaving its stream open.
+     *
+     * @param array<string, array<string>> $headers
+     */
+    public function sendStream(
+        int $status, StreamInterface $body, array $headers, int $timeMs,
+    ): void {
+        $this->headers($status, $headers, $timeMs);
+        while (true) {
+            $chunk = $body->read(65536);
+            if ($chunk === '') {
+                break;
+            }
+            echo $chunk;
+        }
+        if (! $body->eof()) {
+            throw new RuntimeException('The upstream response stream stopped before EOF.');
+        }
+        StranglerProxy::application()->end();
+    }
+
+    /**
+     * Apply the same end-to-end header and diagnostic policy to both output paths.
+     *
+     * @param array<string, array<string>> $headers
+     */
+    private function headers(int $status, array $headers, int $timeMs): void
+    {
         $written = [];
         foreach (HttpHeaders::response($headers) as $name => $values) {
             $normalized = strtolower($name);
@@ -67,8 +103,6 @@ final readonly class ResponseEmitter
         }
 
         ($this->writeStatus)($status);
-        echo $body;
-        StranglerProxy::application()->end();
     }
 
     /**

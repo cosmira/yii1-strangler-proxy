@@ -9,9 +9,11 @@ use Cosmira\Strangler\Internal\Http\HttpHeaders;
 use GuzzleHttp\Client;
 use GuzzleHttp\ClientInterface;
 use GuzzleHttp\Exception\GuzzleException;
+use GuzzleHttp\Psr7\Message;
 use GuzzleHttp\Psr7\Response;
 use GuzzleHttp\Psr7\Utils;
 use GuzzleHttp\RequestOptions;
+use Psr\Http\Message\StreamInterface;
 use Throwable;
 
 /**
@@ -117,15 +119,19 @@ final readonly class UpstreamTransport
             return;
         }
 
+        $mapsResponse = $inline !== null && $inline->mapsResponse($response->getStatusCode());
         $responseSnapshot = [
             'status'  => $response->getStatusCode(),
-            'body'    => (string) $response->getBody(),
+            'body'    => $mapsResponse ? (string) $response->getBody() : $response->getBody(),
             'headers' => $response->getHeaders(),
         ];
         $timeMs = $this->elapsed($startedAt);
         $this->notifyAttempt($config, $actionKey, $outgoing, $routeTemplate, [
             'upstream_status' => $responseSnapshot['status'], 'time_ms' => $timeMs,
         ]);
+        if ($response->getBody()->isSeekable()) {
+            Message::rewindBody($response);
+        }
         $this->emitResponse(
             $config, $actionKey, $routeTemplate, $timeMs, $responseSnapshot,
             $method, $responseSnapshot['status'], $inline,
@@ -337,8 +343,9 @@ final readonly class UpstreamTransport
     /**
      * Translate and log the actual upstream and client statuses before writing output.
      *
-     * @param Config                                                                  $config
-     * @param array{status: int, body: string, headers: array<string, array<string>>} $response
+     * @param Config $config
+     * @param array{status: int, body: string|StreamInterface,
+     *     headers: array<string, array<string>>} $response
      */
     private function emitResponse(
         array $config,
@@ -356,7 +363,7 @@ final readonly class UpstreamTransport
         }
 
         try {
-            if ($inline !== null && $inline->mapsResponse($response['status'])) {
+            if ($inline !== null && is_string($response['body'])) {
                 $mapped = $inline->response(new Response(
                     $response['status'], $response['headers'], $response['body'],
                 ));
@@ -379,10 +386,16 @@ final readonly class UpstreamTransport
         YiiRuntime::logResult($config, $actionKey, $routeTemplate, [
             'reason' => 'forwarded', 'client_status' => $legacyResponse['status'],
         ] + $result);
-        $this->emitter->send(
-            $legacyResponse['status'],
-            $legacyResponse['body'], $legacyResponse['headers'],
-            $upstreamStatus === null ? 0 : $timeMs,
-        );
+        if (is_string($legacyResponse['body'])) {
+            $this->emitter->send(
+                $legacyResponse['status'], $legacyResponse['body'], $legacyResponse['headers'],
+                $upstreamStatus === null ? 0 : $timeMs,
+            );
+        } else {
+            $this->emitter->sendStream(
+                $legacyResponse['status'], $legacyResponse['body'], $legacyResponse['headers'],
+                $upstreamStatus === null ? 0 : $timeMs,
+            );
+        }
     }
 }

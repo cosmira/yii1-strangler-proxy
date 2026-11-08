@@ -68,7 +68,10 @@
             "@php vendor/bin/rector process --dry-run --no-progress-bar"
         ],
         "example:verify": "@php examples/catalog/verify.php",
-        "benchmark:files": "@php tools/benchmark-files.php"
+        "benchmark:files": [
+            "Composer\\Config::disableProcessTimeout",
+            "@php tools/benchmark-files.php"
+        ]
     },
     "config": {
         "sort-packages": true,

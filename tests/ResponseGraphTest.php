@@ -24,7 +24,7 @@ final class ResponseGraphTest extends TestCase
         $mapped = $this->map($builder, $json);
 
         self::assertSame(['state' => 'data', 'data' => [
-            'ITEM_ID' => 'root', 'CHANGE_DATE' => 'today', 'META' => ['originalKey' => true],
+            'ITEM_ID'      => 'root', 'CHANGE_DATE' => 'today', 'META' => ['originalKey' => true],
             'descendants'  => [[
                 'CHILD_ID' => 'child', 'descendants' => [],
                 'owner'    => ['OWNER_ID' => 'owner', 'owner' => null],

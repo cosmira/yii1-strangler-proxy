@@ -73,6 +73,22 @@ final class ApiAdaptationGuideTest extends TestCase
         self::assertSame('{"display_name":"Desk","note":null}', (string) $this->history[0]['request']->getBody());
     }
 
+    public function testPublishedConventionPreservesUnmappedErrorStatusAndBody(): void
+    {
+        $body = '{"errors":{"display_name":["Required"]}}';
+        $result = $this->forward(
+            'edit',
+            $body,
+            422,
+            payload: ['ITEM_ID' => '42'],
+            builder: $this->builder('One fluent proxy'),
+        );
+
+        self::assertSame(422, $this->status);
+        self::assertSame($body, $result);
+        self::assertCount(1, $this->history);
+    }
+
     public function testPublishedDirectionalQueryExampleTranslatesOnlyTheDeclaredExceptions(): void
     {
         $this->forward('get', '{"data":[],"meta":{"total":0}}', query: [

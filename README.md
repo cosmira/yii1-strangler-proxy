@@ -111,7 +111,9 @@ Strangler::proxy('catalog')
 This convention expects backend records under `data`. For the `view` action,
 `{"data":{"id":42,"updated_at":"2026-11-08"}}` becomes
 `{"state":"data","data":{"ITEM_ID":42,"CHANGE_DATE":"2026-11-08"}}`.
-Lists also require `meta.total`. These are the convention's defaults; the previous
+Lists also require `meta.total`. Errors use a
+[separate mapping](docs/api-adaptation.md#preserve-errors-and-headers).
+These are the convention's defaults; the previous
 pass-through example did not require an envelope. See
 [response configuration](docs/api-adaptation.md#response-defaults) to change them.
 

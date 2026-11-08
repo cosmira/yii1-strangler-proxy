@@ -20,7 +20,7 @@ use UnexpectedValueException;
  *
  * @phpstan-type Context array{
  *     action: string, query: array<array-key, mixed>, payload: array<array-key, mixed>|null,
- *     identifier?: string
+ *     identifier?: string, responseFields?: array<string, string>
  * }
  * @phpstan-type QueryMapper array<array-key, string>|callable(
  *     array<array-key, mixed>, Context
@@ -35,7 +35,8 @@ use UnexpectedValueException;
  * }
  * @phpstan-type Settings array{
  *     query?: array<string, QueryMapper>, payload?: array<string, PayloadMapper>,
- *     response?: array<string, ResponseMapper>, errors?: array<string, ResponseMapper>
+ *     response?: array<string, ResponseMapper>, errors?: array<string, ResponseMapper>,
+ *     responseFields?: array<string, string>
  * }
  */
 final readonly class InlineMapping
@@ -94,6 +95,9 @@ final readonly class InlineMapping
     public function context(): array
     {
         $context = $this->context;
+        if (isset($this->mappings['responseFields'])) {
+            $context['responseFields'] = $this->mappings['responseFields'];
+        }
         $context['query'] = self::copy($this->context['query']);
         $context['payload'] = $this->context['payload'] === null
             ? null : self::copy($this->context['payload']);

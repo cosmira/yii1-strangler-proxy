@@ -61,6 +61,111 @@ final class ControllerContractTest extends TestCase
         $_GET = [];
     }
 
+    public function testNativeChecksRunOnceAfterStructuralGuardsBeforeMapping(): void
+    {
+        $_GET = ['id' => 'item'];
+        $_SERVER['REQUEST_METHOD'] = 'PUT';
+        $payload = ['ITEM_ID' => [], 'PARENT_ID' => 'parent', 'META' => (object) ['opaqueKey' => 'original']];
+        $reads = 0;
+        $seen = [];
+        $bodies = [];
+        $config = Strangler::proxy('example')->uppercase('ITEM_ID')
+            ->request(
+                reader: static function () use (&$payload, &$reads): array {
+                    $reads++;
+
+                    return $payload;
+                },
+                required: ['ITEM_ID' => 'identifier', 'PARENT_ID' => 'identifier'],
+                before: static function (array $original, string $action, CController $controller) use (&$seen): void {
+                    $seen[] = [$original['PARENT_ID'], $action, $controller];
+                    $original['PARENT_ID'] = 'must not reach upstream';
+                    self::assertInstanceOf(\stdClass::class, $original['META']);
+                    $original['META']->opaqueKey = 'must not reach upstream';
+                },
+                actions: ['Move'],
+            )
+            ->request(before: static function (): void {
+                self::fail('Another action check must not run.');
+            }, actions: ['other'])
+            ->put('move', '/api/items/{id}/parents')->build()['config'];
+        $client = new Client(['handler' => static function (RequestInterface $request) use (&$bodies) {
+            $bodies[] = json_decode((string) $request->getBody(), true);
+
+            return new FulfilledPromise(new Response(204));
+        }]);
+        $proxy = new StranglerProxy($client);
+        self::assertFalse($proxy->handle($this->controller, $config, 'move'));
+        self::assertSame([], $seen);
+        self::assertSame([], $bodies);
+        $payload['ITEM_ID'] = 'item';
+        ob_start();
+
+        try {
+            self::assertTrue($proxy->handle($this->controller, $config, 'move'));
+        } finally {
+            ob_end_clean();
+        }
+        self::assertSame([['parent', 'move', $this->controller]], $seen);
+        self::assertSame('original', $payload['META']->opaqueKey);
+        self::assertSame([['parent_id' => 'parent', 'meta' => ['opaqueKey' => 'original']]], $bodies);
+        self::assertSame(2, $reads);
+    }
+
+    public function testNativeGuardConfigurationRejectsBlankNamesAndInvalidMethods(): void
+    {
+        foreach ([[''], [' ']] as $names) {
+            try {
+                Strangler::proxy('example')->request(nativeOn: $names);
+                self::fail('An empty native field was accepted.');
+            } catch (InvalidArgumentException $exception) {
+                self::assertStringContainsString('nonempty', $exception->getMessage());
+            }
+        }
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('uppercase HTTP methods');
+        Strangler::proxy('example')->request(methods: ['put bad']);
+    }
+
+    public function testDeclarativeRequestGuardsComposeAcrossActionsAndKeepPayloadUntouched(): void
+    {
+        $_SERVER['REQUEST_METHOD'] = 'PUT';
+        $config = Strangler::proxy('example')->uppercase('ITEM_ID')
+            ->request(bypass: static fn (array $payload): bool => isset($payload['EXPLICIT']))
+            ->request(nativeOn: ['UNSUPPORTED'], actions: ['Move', 'SetStatus'])
+            ->request(required: ['ITEM_ID' => 'identifier', 'PARENT_ID' => 'identifier'], methods: ['put', 'Post'], actions: ['MOVE'])
+            ->request(required: ['ROWS' => 'rows'], actions: ['setstatus'])
+            ->put('move', '/api/items/{id}')->put('setstatus', '/api/items/{id}/statuses')->build()['config'];
+        $bypass = function (array $payload, string $action, array $query) use ($config): bool {
+            $_GET = $query;
+
+            return StranglerProxy::shouldBypass($this->controller, $config, $action, $payload);
+        };
+        $payload = ['PARENT_ID' => 0];
+        self::assertFalse($bypass($payload, 'move', ['id' => 'item']));
+        self::assertSame(['PARENT_ID' => 0], $payload);
+        self::assertTrue($bypass(['PARENT_ID' => false], 'move', ['id' => 'item']));
+        self::assertTrue($bypass(['PARENT_ID' => null], 'move', ['id' => 'item']));
+        self::assertTrue($bypass([], 'move', ['id' => 'item']));
+        self::assertTrue($bypass(['ITEM_ID' => 'other', 'PARENT_ID' => 'parent'], 'move', ['id' => 'item']));
+        self::assertTrue($bypass(['ITEM_ID' => [], 'PARENT_ID' => 'parent'], 'move', ['id' => 'item']));
+        self::assertTrue($bypass(['unsupported' => true], 'setstatus', []));
+        self::assertFalse($bypass(['unsupported' => true], 'view', []));
+        self::assertTrue($bypass(['EXPLICIT' => true], 'view', []));
+        self::assertFalse($bypass(['ROWS' => ['named' => ['id' => 1]]], 'setstatus', []));
+        self::assertFalse($bypass(['ROWS' => []], 'setstatus', []));
+        self::assertTrue($bypass(['ROWS' => [1]], 'setstatus', []));
+        self::assertTrue($bypass(['ROWS' => null], 'setstatus', []));
+        $_SERVER['REQUEST_METHOD'] = 'GET';
+        self::assertTrue($bypass(['PARENT_ID' => 'parent'], 'move', ['id' => 'item']));
+    }
+
+    public function testRequestGuardsRejectUnsupportedConfigurationBeforeBuilding(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        Strangler::proxy('example')->request(required: ['ITEM_ID' => 'object']);
+    }
+
     public function testControllerContractReadsPayloadAndChecksFinalMappedResponse(): void
     {
         $model = $this->finder();
@@ -352,9 +457,11 @@ final class ControllerContractTest extends TestCase
             }
         };
         $config = Strangler::proxy('example')->using($contract)->uppercase('ITEM_ID')
+            ->response(fields: ['name' => 'DISPLAY_NAME', 'contacts' => 'addresses', 'email' => 'MAIL'])
+            ->mapJsonErrors($contract->error(...))
             ->get('get', '/api/items')->build()['config'];
         $client = new Client(['handler' => new MockHandler([
-            new Response(422, [], '{"errors":{"name":["Required"]}}'),
+            new Response(422, [], '{"errors":{"name":["Required"],"contacts.0.email":["Invalid"]}}'),
         ])]);
         ob_start();
 
@@ -362,7 +469,7 @@ final class ControllerContractTest extends TestCase
             self::assertTrue((new StranglerProxy($client))->handle($this->controller, $config, 'get'));
             $body = ob_get_contents();
             self::assertIsString($body);
-            self::assertSame(['state' => 'error', 'error' => 'validation', 'meta' => ['TITLE' => ['Required' => []]]],
+            self::assertSame(['state' => 'error', 'error' => 'validation', 'meta' => ['DISPLAY_NAME' => ['Required' => []], 'addresses.0.MAIL' => ['Invalid' => []]]],
                 json_decode($body, true));
         } finally {
             ob_end_clean();

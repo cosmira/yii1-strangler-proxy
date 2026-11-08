@@ -5,13 +5,18 @@ declare(strict_types=1);
 namespace Cosmira\Strangler\Response;
 
 use Closure;
+use Cosmira\Strangler\Exception\InvalidUpstreamResponse;
 use Cosmira\Strangler\Schema\Fields;
 use Cosmira\Strangler\Schema\Mapping;
 use InvalidArgumentException;
 use Psr\Http\Message\ResponseInterface;
 use stdClass;
 
-/** Callable Yii-style resource configuration for Strangler::mapJsonResponse(). */
+/**
+ * Callable Yii-style resource configuration for Strangler::mapJsonResponse().
+ *
+ * @phpstan-type ProjectionContext array{action: string, query?: array<array-key, mixed>}
+ */
 final class JsonResource
 {
     /**
@@ -22,6 +27,13 @@ final class JsonResource
      * ): mixed
      */
     private array|Fields|Record|Closure $record;
+
+    /**
+     * Request selection resolved once before mapping the response records.
+     *
+     * @var (Closure(ProjectionContext): ?array<string, mixed>)|null
+     */
+    private ?Closure $projection = null;
     /**
      * Application-owned response fields surrounding mapped data.
      *
@@ -64,6 +76,20 @@ final class JsonResource
     private array $validators = [];
 
     /**
+     * Require an explicit upstream data member even for envelope-only actions.
+     */
+    private bool $requiresData = false;
+
+    /**
+     * Operation result paths whose empty lists become native error responses.
+     *
+     * @var list<array{
+     *     path: list<string|int>, error: string, status: int, actions: list<string>
+     * }>
+     */
+    private array $emptyResults = [];
+
+    /**
      * Preserve upstream records until a field map or callback is configured.
      */
     private function __construct()
@@ -103,6 +129,21 @@ final class JsonResource
     {
         $copy = clone $this;
         $copy->record = $mapper instanceof Record ? $mapper : Closure::fromCallable($mapper);
+
+        return $copy;
+    }
+
+    /**
+     * Resolve request selection at the envelope, without changing a reusable record schema.
+     *
+     * @internal
+     *
+     * @param callable(ProjectionContext): ?array<string, mixed> $resolver
+     */
+    public function projectionUsing(callable $resolver): self
+    {
+        $copy = clone $this;
+        $copy->projection = $resolver(...);
 
         return $copy;
     }
@@ -189,6 +230,43 @@ final class JsonResource
     }
 
     /**
+     * Reject successful non-204 responses that omit the upstream data member.
+     */
+    public function requireData(): self
+    {
+        $copy = clone $this;
+        $copy->requiresData = true;
+
+        return $copy;
+    }
+
+    /**
+     * Translate an empty list at the exact upstream path into an operation error.
+     *
+     * @param list<string|int> $path
+     * @param list<string>     $actions
+     */
+    public function rejectEmpty(array $path, string $error, int $status, array $actions = []): self
+    {
+        $selectedActions = array_map(strtolower(...), $actions);
+        if ($path === [] || $error === '' || $status < 400 || $status > 599) {
+            throw new InvalidArgumentException('Invalid empty result rejection.');
+        }
+        if (in_array('', $path, true)) {
+            throw new InvalidArgumentException('Invalid result path segment.');
+        }
+        if (in_array('', $selectedActions, true)) {
+            throw new InvalidArgumentException('Invalid result action.');
+        }
+        $copy = clone $this;
+        $copy->emptyResults[] = [
+            'path' => $path, 'error' => $error, 'status' => $status, 'actions' => $selectedActions,
+        ];
+
+        return $copy;
+    }
+
+    /**
      * Choose a mapped status, or preserve nonempty upstream statuses with null.
      */
     public function status(?int $status): self
@@ -202,13 +280,17 @@ final class JsonResource
     /**
      * Restore the legacy response contract or reject unusable upstream data.
      *
-     * @param array{action: string} $context
+     * @param array{action: string, query?: array<array-key, mixed>} $context
      */
     public function __invoke(
         mixed $json,
         ResponseInterface $response,
         array $context,
     ): ResponseInterface {
+        $rejected = $this->operationResult($json, $response, $context['action']);
+        if ($rejected !== null) {
+            return $this->validate($rejected);
+        }
         if ($response->getStatusCode() === 204
             || in_array($context['action'], $this->emptyActions, true)) {
             return $this->validate(Json::response(
@@ -216,21 +298,93 @@ final class JsonResource
             ));
         }
 
-        $mapper = match (true) {
-            $this->record instanceof Fields => fn (
-                array|stdClass $record,
-            ): array|stdClass => Mapping::fields($record, $this->record),
-            is_array($this->record)         => $this->record,
-            default                         => fn (
-                array|stdClass $record,
-            ): mixed => ($this->record)($record, $context),
-        };
+        $mapper = $this->recordMapper($context);
         $body = in_array($context['action'], $this->collectionActions, true)
             ? Mapping::collection($json, $mapper, $this->responseEnvelope,
                 totalFrom: $this->totalSource, totalTo: $this->totalTarget)
             : Mapping::item($json, $mapper, $this->responseEnvelope);
 
         return $this->validate(Json::response($response, $body, $this->responseStatus));
+    }
+
+    /**
+     * Validate the success envelope before evaluating action-specific empty results.
+     */
+    private function operationResult(
+        mixed $json, ResponseInterface $response, string $action,
+    ): ?ResponseInterface {
+        if ($response->getStatusCode() === 204) {
+            return null;
+        }
+        $this->validateSuccessEnvelope($json);
+        foreach ($this->emptyResults as $rule) {
+            if ($rule['actions'] !== [] && ! in_array($action, $rule['actions'], true)) {
+                continue;
+            }
+            if ($this->resultValue($json, $rule['path']) === []) {
+                return Json::response(
+                    $response, ['state' => 'error', 'error' => $rule['error']], $rule['status'],
+                );
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Require the configured upstream data member before empty-action handling.
+     */
+    private function validateSuccessEnvelope(mixed $json): void
+    {
+        if ($this->requiresData
+            && (! $json instanceof stdClass || ! property_exists($json, 'data'))) {
+            throw new InvalidUpstreamResponse('Missing upstream response data.');
+        }
+    }
+
+    /**
+     * Bind the root request selection while retaining custom record transformations.
+     *
+     * @param array{action: string, query?: array<array-key, mixed>} $context
+     *
+     * @return array<array-key, mixed>|callable(array<array-key, mixed>|stdClass): mixed
+     */
+    private function recordMapper(array $context): array|callable
+    {
+        $record = $this->record;
+        $resolve = $this->projection;
+        $schema = $record instanceof Record && $resolve !== null
+            ? $record->defaultProjectionUsing(static fn (): ?array => $resolve($context))
+            : $record;
+
+        return match (true) {
+            $schema instanceof Fields => fn (
+                array|stdClass $record,
+            ): array|stdClass => Mapping::fields($record, $schema),
+            is_array($schema)               => $schema,
+            default                         => fn (
+                array|stdClass $record,
+            ): mixed => ($schema)($record, $context),
+        };
+    }
+
+    /**
+     * Traverse literal result path segments without interpreting dotted names.
+     *
+     * @param list<string|int> $path
+     */
+    private function resultValue(mixed $value, array $path): mixed
+    {
+        $record = $value;
+        foreach ($path as $segment) {
+            $record = match (true) {
+                $record instanceof stdClass => $record->$segment ?? null,
+                is_array($record)           => $record[$segment] ?? null,
+                default                     => null,
+            };
+        }
+
+        return $record;
     }
 
     /**

@@ -1,11 +1,46 @@
-# Upgrade to 3.0
+# Upgrade to 4.0
+
+Version 4.0 keeps resource-specific response callbacks on their owning resource.
+It also adds reusable controller-backed relations and declarative request,
+selection and operation-result rules. No additional application builder is needed.
+
+```shell
+composer require cosmira/yii1-strangler-proxy:^4.0
+```
+
+Commit `composer.json` and `composer.lock` together. Keep feature flags disabled
+until the application's compatibility tests pass.
+
+## Scope resource callbacks
+
+Filter-level `response(attributes: ...)` and `response(after: ...)` now run only on
+the resource they configure. They no longer run on identifier-only nested records.
+Resource attribute callbacks run before shared `ControllerContract::responseAttributes()`;
+shared null omission or date presentation therefore cannot erase input needed to
+resolve a resource-specific alias.
+
+For application-wide conventions, retain the shared controller-contract hooks.
+For one resource, declare its differences in its existing filter. Reuse that
+filter with `response(relations: ['items' => ItemController::class])` rather than
+repeating its mapping in the parent or branching on identifiers in a shared hook.
+Related record declarations do not execute root selection, routes or actions.
+
+A payload reader can now receive the normalized action as its second argument.
+Readers that need only the controller remain valid. Move authorization side
+effects out of readers into `request(before: ..., actions: [...])`: structural
+guards run first, then native checks, then mapping and one upstream attempt.
+
+See [contract adaptation](api-adaptation.md#reuse-related-resource-declarations)
+for role-specific relation metadata, selection, guards and operation results.
+
+## Earlier upgrade: 2.x to 3.0
 
 Version 3.0 consolidates application integration into the existing `Strangler`
 fluent object and an optional shared `ControllerContract`. It removes the previous
 request callback methods and moves response helpers into dedicated namespaces.
 There are no compatibility aliases for the removed API.
 
-## Update the dependency
+### Update the dependency
 
 ```shell
 composer require cosmira/yii1-strangler-proxy:^3.0
@@ -14,7 +49,7 @@ composer require cosmira/yii1-strangler-proxy:^3.0
 Commit `composer.json` and `composer.lock` together. Keep migrated features disabled
 until your application contract tests pass with the new configuration.
 
-## Replace request callback methods
+### Replace request callback methods
 
 Move callbacks into `request()` named arguments:
 
@@ -35,7 +70,7 @@ controller contract instead of writing a scoped lookup callback. The package
 looks up the parent only when the selected route contains `{parent_id}`. A missing
 or out-of-scope record keeps the request in Yii without contacting the backend.
 
-## Update imports
+### Update imports
 
 | 2.x namespace | 3.0 namespace |
 | --- | --- |
@@ -49,7 +84,7 @@ or out-of-scope record keeps the request in Yii without contacting the backend.
 is in the same namespace. `Fields` and `Includes` remain in
 `Cosmira\Strangler\Schema`; the new `Format` helper is also in that namespace.
 
-## Replace repeated application adapters
+### Replace repeated application adapters
 
 Connect your existing controller's native model and payload methods through one
 [`ControllerContract`](../README.md#connect-existing-rest-controllers). Continue

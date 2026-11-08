@@ -26,7 +26,7 @@ bodies. The HTTP handler may spool upstream responses to disk before output.
 Install the package in your Yii application:
 
 ```shell
-composer require cosmira/yii1-strangler-proxy:^3.0
+composer require cosmira/yii1-strangler-proxy:^4.0
 ```
 
 Load Composer's `vendor/autoload.php` before the Yii bootstrap. Commit your
@@ -210,6 +210,30 @@ scope. Shared relation names and value conversions belong in the same
 than another builder or one adapter class per resource.
 
 For an existing 2.x integration, follow the [3.0 upgrade guide](docs/upgrading.md).
+
+### Reuse a related resource
+
+Declare a resource's differences in its existing controller filter. Related records
+can reuse that declaration instead of repeating field maps or branching on record IDs:
+
+```php
+return Strangler::proxy('catalog')
+    ->using(new ApiContract())
+    ->uppercase('CATALOG_ID')
+    ->response(relations: [
+        'items' => ItemController::class,
+        'owner' => ['controller' => PersonController::class, 'many' => false],
+    ])
+    ->get('view', '/api/catalogs/{id}')
+    ->build();
+```
+
+`ItemController` and `PersonController` are existing Yii controllers with their own
+Strangler filters. The package resolves their record declarations only for present,
+selected relations. It does not execute their actions or `init()`. Field names and
+collection cardinality follow conventions; declare an output name or `many: false`
+only where they differ. See [related resource declarations](docs/api-adaptation.md#reuse-related-resource-declarations)
+for constructor requirements, metadata overrides and scope.
 
 ## Run the complete example
 

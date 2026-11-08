@@ -245,7 +245,7 @@ final class StranglerProxyTest extends TestCase
         self::assertCount(1, $this->history);
     }
 
-    public function testUnmappedFileResponseReadsTheBodyOnce(): void
+    public function testUnmappedFileResponseNeverMaterializesItsBody(): void
     {
         $reads = 0;
         $source = Utils::streamFor("file\x00bytes");
@@ -256,6 +256,7 @@ final class StranglerProxyTest extends TestCase
                 return (string) $source;
             },
         ]);
+        $source->seek(4);
         $config = Strangler::proxy('example')
             ->mapQuery(static fn (): array => [])
             ->get('download', '/file')
@@ -267,7 +268,7 @@ final class StranglerProxyTest extends TestCase
         self::assertSame("file\x00bytes", $this->capture(
             fn () => $proxy->handle($this->controller, $config, 'download'),
         ));
-        self::assertSame(1, $reads);
+        self::assertSame(0, $reads);
         self::assertCount(1, $this->history);
     }
 

@@ -12,11 +12,12 @@ use Cosmira\Strangler\Tests\Fixtures\User;
 use Cosmira\Strangler\Tests\Fixtures\WebApplication;
 use Cosmira\Strangler\UpstreamTransport;
 use GuzzleHttp\Client;
+use GuzzleHttp\Psr7\Utils;
 
 if (PHP_SAPI === 'cli-server') {
     $directory = getenv('STRANGLER_BENCH_DIR');
     $size = $_GET['size'] ?? '';
-    if (! is_string($directory) || ! in_array($size, ['1', '16'], true)) {
+    if (! is_string($directory) || ! in_array($size, explode(',', getenv('STRANGLER_BENCH_SIZES') ?: '1,16'), true)) {
         http_response_code(400);
 
         return;
@@ -66,7 +67,7 @@ if (($argv[1] ?? '') === '--worker') {
     new WebApplication([
         'basePath'   => dirname(__DIR__).'/tests', 'runtimePath' => sys_get_temp_dir(),
         'components' => ['request' => ['class' => Request::class], 'user' => ['class' => User::class]],
-        'params'     => ['strangler' => ['base_uri' => $address, 'features' => ['files' => true]]],
+        'params'     => ['strangler' => ['base_uri' => $address, 'features' => ['files' => true], 'timeout' => 300]],
     ]);
     $builder = Strangler::proxy('files')->mapQuery(static fn (array $query): array => $query);
     if ($operation === 'upload') {
@@ -87,7 +88,7 @@ if (($argv[1] ?? '') === '--worker') {
     if ($transportFile !== realpath($source.'/src/UpstreamTransport.php')) {
         throw new RuntimeException('The benchmark loaded a different package source.');
     }
-    $run = static function () use ($proxy, $config, &$status, $operation, $file): array {
+    $run = static function () use ($proxy, $config, &$status, $operation, $file, $size): array {
         $hash = hash_init('sha256');
         $bytes = 0;
         $reply = '';
@@ -126,18 +127,32 @@ if (($argv[1] ?? '') === '--worker') {
             $bytes = $result['bytes'];
             $digest = $result['sha256'];
         }
-        if ($status !== 200 || $bytes !== filesize($file) || $digest !== hash_file('sha256', $file)) {
+        if ($status !== 200 || $bytes !== (int) $size * 1048576 || $bytes !== filesize($file) || $digest !== hash_file('sha256', $file)) {
             throw new RuntimeException('File transfer failed status, size or SHA-256 validation.');
         }
 
-        return ['ms' => $elapsed, 'cpu_ms' => $cpu, 'peak_bytes' => $peak, 'extra_peak_bytes' => $extra, 'bytes' => $bytes, 'sha256' => $digest];
+        return ['ms'         => $elapsed, 'cpu_ms' => $cpu, 'peak_bytes' => $peak,
+            'peak_rss_bytes' => $finished['ru_maxrss'] * (PHP_OS_FAMILY === 'Darwin' ? 1 : 1024),
+            'memory_limit'   => ini_get('memory_limit'), 'extra_peak_bytes' => $extra, 'bytes' => $bytes, 'sha256' => $digest];
     };
     $run();
     echo json_encode($run(), JSON_THROW_ON_ERROR);
     exit;
 }
 
-$baseline = $argv[1] ?? null;
+$options = getopt('', ['size-mib:', 'rounds:'], $argumentIndex);
+$rounds = filter_var($options['rounds'] ?? 5, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+$size = filter_var($options['size-mib'] ?? 16, FILTER_VALIDATE_INT, [
+    'options' => ['min_range' => 1, 'max_range' => intdiv(PHP_INT_MAX, 1048576)],
+]);
+if ($rounds === false || $size === false) {
+    throw new InvalidArgumentException('Size and rounds must be positive integers.');
+}
+$sizes = isset($options['size-mib']) ? [$size] : [1, 16];
+$baseline = $argv[$argumentIndex] ?? null;
+if (count($argv) > $argumentIndex + 1) {
+    throw new InvalidArgumentException('Expected options followed by one optional baseline checkout.');
+}
 if ($baseline !== null && ! is_file($baseline.'/src/UpstreamTransport.php')) {
     throw new InvalidArgumentException('The baseline must be an extracted package checkout.');
 }
@@ -153,17 +168,27 @@ $server = null;
 
 try {
     $block = str_repeat('0123456789abcdef', 65536);
-    foreach ([1, 16] as $size) {
-        $file = fopen($directory.'/'.$size.'.bin', 'wb');
-        for ($i = 0; $i < $size; $i++) {
-            fwrite($file, $block);
+    foreach ($sizes as $size) {
+        $file = Utils::tryFopen($directory.'/'.$size.'.bin', 'wb');
+
+        try {
+            for ($i = 0; $i < $size; $i++) {
+                if (fwrite($file, $block) !== strlen($block)) {
+                    throw new RuntimeException('Cannot write the complete benchmark fixture.');
+                }
+            }
+        } finally {
+            fclose($file);
         }
-        fclose($file);
     }
-    $server = proc_open([PHP_BINARY, '-d', 'post_max_size=64M', '-d', 'upload_max_filesize=64M',
+
+    $uploadLimit = max(64, max($sizes));
+    $server = proc_open([PHP_BINARY, '-d', 'post_max_size='.($uploadLimit + 1).'M',
+        '-d', 'upload_max_filesize='.$uploadLimit.'M', '-d', 'max_input_time=300',
         '-S', $address, __FILE__], [0 => ['file', '/dev/null', 'r'],
             1                         => ['file', $directory.'/server.log', 'a'], 2 => ['file', $directory.'/server.log', 'a']],
-        $pipes, null, array_merge(getenv(), ['STRANGLER_BENCH_DIR' => $directory]));
+        $pipes, null, array_merge(getenv(), ['STRANGLER_BENCH_DIR' => $directory,
+            'STRANGLER_BENCH_SIZES'                                => implode(',', $sizes)]));
     if (! is_resource($server)) {
         throw new RuntimeException('Cannot start the benchmark server.');
     }
@@ -182,13 +207,13 @@ try {
     }
     $sources = $baseline === null ? ['current' => dirname(__DIR__)]
         : ['baseline' => $baseline, 'current' => dirname(__DIR__)];
-    $report = ['php' => PHP_VERSION, 'rounds' => 5, 'warmups_per_worker' => 1, 'cases' => []];
+    $report = ['php' => PHP_VERSION, 'rounds' => $rounds, 'sizes_mib' => $sizes, 'worker_memory_limit' => '128M', 'warmups_per_worker' => 1, 'cases' => []];
     foreach (['download', 'upload'] as $operation) {
-        foreach ([1, 16] as $size) {
+        foreach ($sizes as $size) {
             $runs = [];
-            for ($round = 0; $round < 5; $round++) {
+            for ($round = 0; $round < $rounds; $round++) {
                 foreach ($sources as $label => $source) {
-                    $process = proc_open([PHP_BINARY, '-d', 'pcov.enabled=0', '-d', 'opcache.enable_cli=1', '-d', 'display_errors=stderr', __FILE__, '--worker',
+                    $process = proc_open([PHP_BINARY, '-d', 'memory_limit=128M', '-d', 'pcov.enabled=0', '-d', 'opcache.enable_cli=1', '-d', 'display_errors=stderr', __FILE__, '--worker',
                         $source, 'http://'.$address, $directory.'/'.$size.'.bin', $operation, (string) $size],
                         [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
                     if (! is_resource($process)) {

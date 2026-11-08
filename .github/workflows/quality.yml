@@ -6,6 +6,15 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      file-size-mib:
+        description: 'File size in MiB for both directions; empty uses the small suite'
+        required: false
+        default: ''
+      file-rounds:
+        description: 'Measured runs per direction (each worker also warms up once)'
+        required: false
+        default: '1'
 
 permissions:
   contents: read
@@ -18,7 +27,7 @@ jobs:
   catalog:
     name: Published catalog example
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 20
     env:
       CATALOG_REQUIRE_NODE: '1'
       STRANGLER_TOKEN: ci-example-token
@@ -44,9 +53,16 @@ jobs:
         run: composer example:verify
 
       - name: Verify file transfers and record measurements
+        env:
+          FILE_SIZE_MIB: ${{ inputs.file-size-mib }}
+          FILE_ROUNDS: ${{ inputs.file-rounds }}
         run: |
           mkdir -p build
-          composer benchmark:files > build/files-benchmark.json
+          if [ -n "$FILE_SIZE_MIB" ]; then
+            composer benchmark:files -- --size-mib="$FILE_SIZE_MIB" --rounds="$FILE_ROUNDS" > build/files-benchmark.json
+          else
+            composer benchmark:files > build/files-benchmark.json
+          fi
 
       - name: Upload file measurements
         if: always()

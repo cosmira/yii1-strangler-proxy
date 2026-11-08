@@ -10,8 +10,9 @@ enabled actions and translates differences between the two API contracts.
 Unmapped actions and disabled features continue to run in Yii.
 
 Requires **PHP 8.2+ and Yii 1.1.31+**. The package supports JSON APIs, form-to-JSON
-mapping, and selected multipart uploads. Responses are buffered, including binary
-responses; this is not a streaming proxy.
+mapping, and selected multipart uploads. Unmapped response bodies are forwarded
+in bounded chunks. JSON response mappings still buffer and decode their selected
+bodies. The HTTP handler may spool upstream responses to disk before output.
 
 - [Installation](#installation)
 - [Forward your first action](#forward-your-first-action)

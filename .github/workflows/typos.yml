@@ -20,6 +20,14 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
-      - uses: crate-ci/typos@v1.50.0
-        with:
-          config: ./.github/typos.toml
+      - name: Download typos 1.50.0
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/typos"
+          gh release download v1.50.0 --repo crate-ci/typos \
+            --pattern typos-v1.50.0-x86_64-unknown-linux-musl.tar.gz --dir "$RUNNER_TEMP"
+          tar -xzf "$RUNNER_TEMP/typos-v1.50.0-x86_64-unknown-linux-musl.tar.gz" -C "$RUNNER_TEMP/typos"
+
+      - name: Check spelling
+        run: "$RUNNER_TEMP/typos/typos" --config .github/typos.toml

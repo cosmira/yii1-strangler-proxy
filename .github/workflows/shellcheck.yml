@@ -20,4 +20,15 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
-      - uses: ludeeus/action-shellcheck@master
+      - name: Download ShellCheck 0.11.0
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download v0.11.0 --repo koalaman/shellcheck \
+            --pattern shellcheck-v0.11.0.linux.x86_64.tar.xz --dir "$RUNNER_TEMP"
+          tar -xJf "$RUNNER_TEMP/shellcheck-v0.11.0.linux.x86_64.tar.xz" -C "$RUNNER_TEMP"
+
+      - name: Check shell scripts
+        run: |
+          "$RUNNER_TEMP/shellcheck-v0.11.0/shellcheck" --version
+          git ls-files -z -- '*.sh' | xargs -0 -r "$RUNNER_TEMP/shellcheck-v0.11.0/shellcheck"

@@ -93,18 +93,38 @@ final readonly class StranglerProxy
         if ($bypass !== null && $bypass($controller, $actionKey, $_GET)) {
             return true;
         }
+
+        return self::payloadIsNative($controller, $config, $actionKey, $payload);
+    }
+
+    /**
+     * Evaluate payload eligibility once against the original native request snapshot.
+     *
+     * @param Config                       $config
+     * @param array<array-key, mixed>|null $payload
+     */
+    private static function payloadIsNative(
+        CController $controller, array $config, string $actionKey, ?array $payload,
+    ): bool {
         $predicate = $config['bypassPayload'] ?? null;
-        if ($predicate === null) {
+        $guards = $config['requestGuards'] ?? [];
+        if ($predicate === null && $guards === []) {
             return false;
         }
+        $original = $payload ?? self::readPayload($controller, $config, $actionKey)['payload'];
+        if ($predicate !== null && $predicate($original, $actionKey, $_GET)) {
+            return true;
+        }
+        $method = self::application()->getRequest()->getRequestType();
+        foreach ($guards as $guard) {
+            if ($guard->bypass(
+                $original, $actionKey, $_GET, $method, $config['bodyIdentifier'] ?? null,
+            )) {
+                return true;
+            }
+        }
 
-        $bypassPayload = $payload ?? self::readPayload(
-            $controller,
-            $config,
-            $actionKey,
-        )['payload'];
-
-        return $predicate($bypassPayload, $actionKey, $_GET);
+        return false;
     }
 
     /**
@@ -171,6 +191,9 @@ final readonly class StranglerProxy
             YiiRuntime::logDecision($config, $actionKey, 'bypass_payload');
 
             return false;
+        }
+        if (isset($config['beforeRequest'])) {
+            ($config['beforeRequest'])($payload, $actionKey, $controller);
         }
         $mapping = $inline?->withPayload($payload, $snapshot['body']);
 
@@ -249,7 +272,7 @@ final readonly class StranglerProxy
         }
 
         if ($reader !== null) {
-            return ['payload' => $reader($controller), 'body' => null];
+            return ['payload' => $reader($controller, $actionKey), 'body' => null];
         }
 
         if (YiiRuntime::fileMappings($config, $actionKey) !== null) {

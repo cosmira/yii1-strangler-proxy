@@ -8,12 +8,61 @@ use CActiveRecord;
 use CController;
 use Cosmira\Strangler\Response\ErrorResponse;
 use Cosmira\Strangler\Response\Json;
+use Cosmira\Strangler\Response\Record;
 use InvalidArgumentException;
 use Psr\Http\Message\ResponseInterface;
 
-/** Connect application controller conventions without coupling transport to the application. */
+/**
+ * Connect application controller conventions without coupling transport to the application.
+ *
+ * @phpstan-import-type Relation from \Cosmira\Strangler\Response\ResponseGraph
+ */
 abstract class ControllerContract
 {
+    /**
+     * Read a related controller's record declaration without executing its lifecycle.
+     *
+     * @internal
+     */
+    public static function responseRecord(string $class): Record
+    {
+        if (! is_a($class, CController::class, true)) {
+            throw new InvalidArgumentException('Related controller must extend CController.');
+        }
+        $application = \Yii::app();
+        $current = $application instanceof \CWebApplication ? $application->getController() : null;
+        $controller = new $class('strangler', $current?->getModule());
+        $records = self::declaredRecords($controller);
+        if (count($records) !== 1) {
+            throw new InvalidArgumentException(
+                'Related controller '.$class.' must declare exactly one Strangler response record.',
+            );
+        }
+
+        return $records[0];
+    }
+
+    /**
+     * Find compiled record declarations while ignoring native controller filters.
+     *
+     * @return list<Record>
+     */
+    private static function declaredRecords(CController $controller): array
+    {
+        $records = [];
+        foreach ($controller->filters() as $filter) {
+            if (! is_array($filter) || ($filter[0] ?? null) !== StranglerFilter::class) {
+                continue;
+            }
+            $config = $filter['config'] ?? null;
+            if (is_array($config) && ($config['responseRecord'] ?? null) instanceof Record) {
+                $records[] = $config['responseRecord'];
+            }
+        }
+
+        return $records;
+    }
+
     /**
      * Resolve the controller's native model with its existing scope.
      */
@@ -37,7 +86,7 @@ abstract class ControllerContract
     /**
      * Declare shared relationship differences without enumerating ordinary attributes.
      *
-     * @return array<string, array{identifier: string, name: string, many: bool}>
+     * @return array<string, Relation>
      */
     public function relations(): array
     {
@@ -142,15 +191,18 @@ abstract class ControllerContract
     /**
      * Preserve native validation codes without re-reading or saving the request payload.
      *
-     * @param array{action?: string, query?: array<array-key, mixed>,
-     *     payload?: array<array-key, mixed>|null, identifier?: string} $context
+     * @param array{
+     *     action?: string, query?: array<array-key, mixed>,
+     *     payload?: array<array-key, mixed>|null, identifier?: string,
+     *     responseFields?: array<string, string>
+     * } $context
      */
     public function error(
         mixed $json, ResponseInterface $response, array $context,
     ): ResponseInterface {
-        $controller = StranglerProxy::application()->getController();
-        $fields = [];
-        if ($response->getStatusCode() === 422) {
+        $fields = $context['responseFields'] ?? [];
+        if ($response->getStatusCode() === 422 && ! isset($context['responseFields'])) {
+            $controller = StranglerProxy::application()->getController();
             $identifier = $context['identifier'] ?? $this->identifier()
                 ?? $this->model($controller)->primaryKey();
             $fields = $this->responseFields(is_string($identifier) ? $identifier : '');
@@ -159,7 +211,9 @@ abstract class ControllerContract
         $action = $context['action'] ?? '';
         if ($response->getStatusCode() === 422
             && in_array($action, ['create', 'edit'], true)) {
-            $errors = $this->validationErrors($controller, $action, $context['payload'] ?? []);
+            $errors = $this->validationErrors(
+                StranglerProxy::application()->getController(), $action, $context['payload'] ?? [],
+            );
             if ($errors !== null) {
                 return Json::response($mapped, $errors);
             }

@@ -18,6 +18,13 @@ final class Record
      * Source identifier required before mapping a record.
      */
     private ?string $identifier = null;
+
+    /**
+     * Required source attributes and their accepted PHP scalar or array types.
+     *
+     * @var array<string, string>
+     */
+    private array $required = [];
     /**
      * Upstream metadata omitted from the legacy representation.
      *
@@ -94,6 +101,24 @@ final class Record
     {
         $copy = $this->rename([$source => $nativeName]);
         $copy->identifier = $source;
+
+        return $copy;
+    }
+
+    /**
+     * Require source attribute types before application callbacks can normalize their values.
+     *
+     * @param array<string, string> $fields
+     */
+    public function required(array $fields): self
+    {
+        foreach ($fields as $type) {
+            if (! in_array($type, ['string', 'int', 'bool', 'array'], true)) {
+                throw new InvalidArgumentException('Unsupported required attribute type.');
+            }
+        }
+        $copy = clone $this;
+        $copy->required = $fields;
 
         return $copy;
     }
@@ -185,6 +210,18 @@ final class Record
         $copy->projection = Closure::fromCallable($resolver);
 
         return $copy;
+    }
+
+    /**
+     * Keep a record owner's explicit projection ahead of envelope selection defaults.
+     *
+     * @internal
+     *
+     * @param callable(array<array-key, mixed>): ?array<string, mixed> $resolver
+     */
+    public function defaultProjectionUsing(callable $resolver): self
+    {
+        return $this->projection === null ? $this->projectionUsing($resolver) : $this;
     }
 
     /**
@@ -285,7 +322,24 @@ final class Record
             }
         }
 
+        $this->validateRequiredAttributes($raw);
+
         return $raw;
+    }
+
+    /**
+     * Reject missing, null or mismatched required source values before any transformation.
+     *
+     * @param array<array-key, mixed> $attributes
+     */
+    private function validateRequiredAttributes(array $attributes): void
+    {
+        foreach ($this->required as $field => $type) {
+            if (! array_key_exists($field, $attributes)
+                || get_debug_type($attributes[$field]) !== $type) {
+                throw new InvalidUpstreamResponse('Invalid required record attribute: '.$field.'.');
+            }
+        }
     }
 
     /**

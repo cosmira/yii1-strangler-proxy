@@ -217,15 +217,16 @@ return Strangler::proxy('catalog')
     ->response(
         fields: ['updated_at' => 'CHANGE_DATE'],
         relations: [
-            'items' => ['identifier' => 'ITEM_ID', 'name' => 'items', 'many' => true],
+            'items' => ['identifier' => 'ITEM_ID'],
         ],
     )
     ->get('view', '/catalogs/{id}')
     ->build();
 ```
 
-A relation declaration contains its upstream name, native identifier, output name,
-and cardinality. Ordinary child attributes follow the same uppercase convention.
+A relation declaration supplies its native identifier. Its output name defaults
+to the source name and its cardinality defaults to a collection. Set `name` or
+`many: false` only for a difference. Ordinary child attributes follow the uppercase convention.
 Unknown opaque JSON attributes are left intact; only declared relations are
 traversed.
 
@@ -233,9 +234,11 @@ traversed.
 attribute only when the native projection selects it. `projection:` receives the
 original response context and returns a canonical relation tree, or `null` to
 retain all present declared relations. An empty tree omits all declared relations.
-`attributes:` transforms values before naming. `after:` appends derived fields
-after related records are mapped. Both receive the resource identifier and the
-source relation name; the root relation name is `null`.
+`attributes:` transforms the resource's root record before shared presentation
+rules and naming. `after:` appends root-derived fields after related records are
+mapped. Neither callback runs on a different resource. Common field names, value
+formatters and omissions still apply to identifier-only child declarations;
+controller-backed children use their own configuration.
 
 For shared rules, put these differences in one controller contract. For an unusual
 envelope, `response(using: ...)` still accepts a `Response\JsonResource`
@@ -263,6 +266,141 @@ attribute naming remains independent. Lazy child factories run only for present,
 selected relations containing data. A null to-one or an empty list does not build
 a child schema; a populated list resolves its factory once for that list.
 
+### Reuse related resource declarations
+
+A controller-backed relation uses the referenced controller's record declaration,
+including its required attributes, field aliases and native presentation callbacks:
+
+```php
+return Strangler::proxy('catalog')
+    ->uppercase('CATALOG_ID')
+    ->response(relations: [
+        'items' => ItemController::class,
+        'owner' => ['controller' => PersonController::class, 'name' => 'manager', 'many' => false],
+    ])
+    ->get('view', '/api/catalogs/{id}')
+    ->build();
+```
+
+The referenced class must extend `CController`, accept the standard Yii controller
+constructor, and declare exactly one Strangler filter with `uppercase()`. The
+constructor receives the current controller module. The
+package constructs it and reads `filters()` lazily. It does not call `init()` or
+run an action, but the constructor and attached behaviors still execute. Keep
+filter declarations free of queries and other side effects. Missing or ambiguous
+record declarations are configuration errors.
+
+Only present, selected relations resolve a controller. Its routes, query defaults,
+root projection, response envelope and operation results are not executed for a
+nested record. The parent supplies that record's projection. Recursive relations
+follow the finite response data; opaque JSON attributes are not traversed.
+
+A relationship can carry fields that do not belong to the standalone resource.
+Use `fields`, `except` or `after` on that edge to describe the difference. For example,
+`'statuses' => ['controller' => StatusController::class, 'except' => ['usage_count']]`
+replaces that role's omission list without changing `StatusController`'s schema.
+These overrides produce a separate immutable schema; they do not alter other uses.
+
+### Keep query and response selection together
+
+Use `query(defaults: ...)` when native actions have relation defaults that differ from an
+explicit `with` tree:
+
+```php
+Strangler::proxy('catalog')
+    ->uppercase('ITEM_ID')
+    ->query(
+        defaults: ['owner' => []],
+        replaceFor: ['edit'],
+        emptyFor: ['delete'],
+        extendFor: ['get' => ['labels']],
+    )
+    ->response(relations: [
+        'owner' => ['identifier' => 'OWNER_ID', 'many' => false],
+        'labels' => ['identifier' => 'LABEL_ID'],
+    ])
+    ->get('get', '/items')
+    ->put('edit', '/items/{id}')
+    ->delete('delete', '/items/{id}')
+    ->build();
+```
+
+`defaults` accepts a canonical include tree or a callback receiving the original
+action and query context. The callback returns a tree, or `null`; it can call an
+existing model's default projection. Use `defaults: []` when only action overrides
+are needed. With no `defaults`, ordinary query translation and the existing
+response projection remain unchanged. Selection rules require explicit defaults.
+The package knows no application-specific action names.
+
+- `replaceFor` uses native defaults even when `with` is present.
+- `emptyFor` selects no relations.
+- `extendFor` combines the listed defaults with `with`; explicit `with=[]` stays empty.
+- Other actions use a nonempty `with`, otherwise native defaults. `merge_with` is
+  appended to those defaults only for `mergeFor` actions, which default to `['view']`.
+
+Malformed `with` or `merge_with` keeps the request in Yii before HTTP. A `null`
+selection also keeps it in Yii. The upstream query contains the selected top-level
+relation names. Nested branches remain in the response projection; this setting
+does not turn them into dotted upstream includes. No result is cached between requests.
+
+### Declare request guards and native checks
+
+Structural differences can keep a request in Yii without a procedural adapter:
+
+```php
+Strangler::proxy('catalog')
+    ->uppercase('ITEM_ID')
+    ->request(nativeOn: ['ATTACHMENTS'], actions: ['edit'])
+    ->request(
+        required: ['ITEM_ID' => 'identifier', 'PARENT_ID' => 'identifier'],
+        methods: ['PUT', 'POST'],
+        actions: ['move'],
+    )
+    ->request(before: [$controller, 'checkParentAccess'], actions: ['move'])
+    ->put('move', '/items/{id}/parents')
+    ->build();
+```
+
+`nativeOn` matches payload field names case-insensitively. `required` accepts
+`identifier` (a nonblank scalar, including numeric zero) and `rows` (an array whose
+values are arrays). A missing body identifier can use the original query's `id`;
+conflicting identities retain Yii. `methods` checks the incoming method, while
+the route method defines the outgoing request. `actions=[]` applies a registration
+to every mapped action. Repeated guard registrations compose. Action names are
+case-insensitive, like route declarations; configured method names are normalized
+to uppercase.
+
+After structural guards pass, `before` receives the original payload, normalized
+action name and native controller. Use it for existing authorization checks, not
+payload conversion. Checks run in registration order before mapping and HTTP;
+changing their array argument does not change the forwarded snapshot. Exceptions
+propagate through the native Yii error handling. Readers receive the native
+controller and normalized action; keep them for parsing an input envelope or file.
+
+`response(required: ['id' => 'string', 'enabled' => 'bool'])` checks upstream
+attributes before value conversion. Types are `string`, `int`, `bool` and `array`;
+missing, null or wrong-type values produce `502 invalid_upstream_response`.
+
+Envelope checks use the existing `response(using: ...)` configurator:
+
+```php
+use Cosmira\Strangler\Response\JsonResource;
+
+Strangler::proxy('catalog')
+    ->uppercase('ITEM_ID')
+    ->response(using: static fn (JsonResource $resource) => $resource
+        ->requireData()
+        ->rejectEmpty(['meta', 'added_ids'], 'already_exists', 400, ['attach'])
+    )
+    ->route('attach', 'PATCH', '/items/{id}/labels')
+    ->build();
+```
+
+`requireData()` requires a successful JSON envelope to have a `data` property,
+including operations with an empty mapped response. HTTP 204 remains valid.
+`rejectEmpty()` matches an explicit empty array at the literal path for the selected
+actions. A missing path or another value does not match. Neither rule replays a write.
+
 ## Share a controller contract
 
 A `ControllerContract` connects existing application methods to the package.
@@ -283,7 +421,7 @@ Override only the shared differences your application needs:
 | Hook | Result |
 | --- | --- |
 | `identifier()` | Optional native identifier used by `uppercase()` without an argument. |
-| `relations()` | Upstream relation names mapped to `identifier`, output `name`, and `many` cardinality. |
+| `relations()` | Shared relation declarations, including controller-backed schemas and native name differences. |
 | `responseFields($identifier)` | Upstream-to-native field exceptions for that root or related resource. |
 | `responseAttributes($attributes, $identifier, $relation)` | Attribute values before naming and relation traversal. |
 | `responseAfter($mapped, $raw, $projection, $identifier, $relation)` | Derived attributes after related records are mapped. |
@@ -302,7 +440,9 @@ Response conventions apply to root and related records. Use the identifier and
 relation arguments when a value has different representations in those positions.
 Explicit filter-level relation declarations override shared declarations with the
 same upstream name. A filter-level `projection:` replaces the contract projection;
-attribute and derived-field callbacks run after their shared contract hooks.
+attribute callbacks run on their root record before the shared attribute hook;
+derived-field callbacks run on their root record after shared finalizers. Shared
+hooks are for application-wide conventions, not resource dispatch by identifier.
 
 `Format::timestamp()` in `Cosmira\Strangler\Schema` formats full ISO 8601
 source timestamps with seconds and a timezone, with optional fractional seconds.

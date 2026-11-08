@@ -199,7 +199,7 @@ final readonly class Fields
     /**
      * Return declared response names; automatic fields resolve against each record.
      *
-     * @return array<array-key, string>
+     * @return array<string, string>
      */
     public function names(): array
     {

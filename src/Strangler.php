@@ -7,9 +7,12 @@ namespace Cosmira\Strangler;
 use CController;
 use Closure;
 use Cosmira\Strangler\Internal\Payload\BodyParameters;
+use Cosmira\Strangler\Internal\Payload\NativeRequestGuard;
 use Cosmira\Strangler\Response\JsonResource;
+use Cosmira\Strangler\Response\Record;
 use Cosmira\Strangler\Response\ResponseGraph;
 use Cosmira\Strangler\Schema\Mapping;
+use Cosmira\Strangler\Schema\Selection;
 use InvalidArgumentException;
 
 /**
@@ -19,11 +22,30 @@ use InvalidArgumentException;
  * @phpstan-import-type AttributeMapper from ResponseGraph
  * @phpstan-import-type Finalizer from ResponseGraph
  * @phpstan-import-type Projection from ResponseGraph
+ * @phpstan-import-type Context from InlineMapping
  * @phpstan-import-type Settings from InlineMapping
  * @phpstan-import-type QueryMapper from InlineMapping
  * @phpstan-import-type CustomPayloadMapper from InlineMapping
  * @phpstan-import-type ResponseMapper from InlineMapping
  *
+ * @phpstan-type QueryAdapter callable(
+ *     array<array-key, mixed>, array{action: string}, Query
+ * ): (array<array-key, mixed>|false)
+ * @phpstan-type PayloadReader callable(CController, string): array<array-key, mixed>
+ * @phpstan-type RequestBypass callable(
+ *     array<array-key, mixed>, string, array<array-key, mixed>
+ * ): bool
+ * @phpstan-type RouteParameters callable(Context): (array<string, mixed>|false)
+ * @phpstan-type PayloadAdapter callable(
+ *     array<array-key, mixed>, array{action: string}, Convention
+ * ): (array<array-key, mixed>|\stdClass|false)
+ * @phpstan-type RequestCheck callable(array<array-key, mixed>, string, CController): void
+ * @phpstan-type RelationDefaults array<string, mixed>|callable(
+ *     array<array-key, mixed>
+ * ): ?array<string, mixed>
+ * @phpstan-type ProjectionClosure Closure(
+ *     array{action: string, query?: array<array-key, mixed>}
+ * ): ?array<string, mixed>
  * @phpstan-type Route array{
  *     method: string, path: string, fromBody?: array<string, string|list<string>>
  * }
@@ -33,8 +55,11 @@ use InvalidArgumentException;
  *     mappings?: Settings,
  *     bodyIdentifier?: string,
  *     controllerContract?: ControllerContract,
+ *     responseRecord?: Record,
  *     nativeParent?: string,
- *     payloadReader?: callable(CController): array<array-key, mixed>,
+ *     payloadReader?: callable(CController, string): array<array-key, mixed>,
+ *     requestGuards?: list<NativeRequestGuard>,
+ *     beforeRequest?: callable(array<array-key, mixed>, string, CController): void,
  *     routeParameters?: callable(array{action: string, query: array<array-key, mixed>,
  *         payload: array<array-key, mixed>|null}): (array<string, mixed>|false),
  *     bypass?: callable(CController, string, array<array-key, mixed>): bool,
@@ -52,6 +77,20 @@ final class Strangler
      * @var Config
      */
     private array $config;
+
+    /**
+     * Structural native-eligibility rules compiled without reading request state.
+     *
+     * @var list<NativeRequestGuard>
+     */
+    private array $requestGuards = [];
+
+    /**
+     * Native checks executed after structural guards, before mapping or HTTP.
+     *
+     * @var list<array{actions: list<string>, check: RequestCheck}>
+     */
+    private array $requestChecks = [];
 
     /**
      * Upstream routes indexed by normalized legacy action names.
@@ -169,9 +208,21 @@ final class Strangler
     /**
      * Root selection; nested records inherit their portion of this tree.
      *
-     * @var (Closure(array<array-key, mixed>): ?array<string, mixed>)|null
+     * @var ProjectionClosure|null
      */
     private ?Closure $projection = null;
+
+    /**
+     * One action policy shared by the outgoing query and root response projection.
+     */
+    private ?Selection $selection = null;
+
+    /**
+     * Upstream attribute types required before normalizing the root resource.
+     *
+     * @var array<string, string>
+     */
+    private array $required = [];
 
     /**
      * Supported relation differences; null keeps ordinary include names automatic.
@@ -251,28 +302,33 @@ final class Strangler
     }
 
     /**
-     * Declare input naming, shape and value differences without replacing ordinary translation.
+     * Declare structural input differences and native checks on the original payload.
      *
-     * @param array<string, string>                                 $fields
-     * @param array<string, callable(mixed): mixed>                 $values
-     * @param (callable(CController): array<array-key, mixed>)|null $reader
-     * @param (callable(
-     *     array<array-key, mixed>, string, array<array-key, mixed>
-     * ): bool)|null $bypass
-     * @param (callable(
-     *     array{
-     *         action: string, query: array<array-key, mixed>,
-     *         payload: array<array-key, mixed>|null
-     *     }
-     * ): (array<string, mixed>|false))|null $parameters
-     * @param (callable(
-     *     array<array-key, mixed>, array{action: string}, Convention
-     * ): (array<array-key, mixed>|\stdClass|false))|null $using
+     * @param array<string, string>                 $fields
+     * @param array<string, callable(mixed): mixed> $values
+     * @param PayloadReader|null                    $reader
+     * @param RequestBypass|null                    $bypass
+     * @param RouteParameters|null                  $parameters
+     * @param PayloadAdapter|null                   $using
+     * @param list<string>                          $nativeOn
+     * @param array<string, string>                 $required
+     * @param list<string>                          $methods
+     * @param list<string>                          $actions
+     * @param RequestCheck|null                     $before
      */
     public function request(
         array $fields = [], array $values = [], ?callable $reader = null,
         ?callable $bypass = null, ?callable $parameters = null, ?callable $using = null,
+        array $nativeOn = [], array $required = [], array $methods = [], array $actions = [],
+        ?callable $before = null,
     ): self {
+        $actionNames = array_map(strtolower(...), $actions);
+        $nativeMethods = array_map(strtoupper(...), $methods);
+        if ($nativeOn !== [] || $required !== [] || $nativeMethods !== []) {
+            $this->requestGuards[] = new NativeRequestGuard(
+                $nativeOn, $required, $nativeMethods, $actionNames,
+            );
+        }
         foreach ($fields as $source => $target) {
             self::validateFieldMap([$source => $target]);
         }
@@ -280,19 +336,7 @@ final class Strangler
         $this->requestFields = array_replace($this->requestFields, $fields);
         $this->requestValues = array_replace($this->requestValues, $values);
 
-        if ($reader !== null) {
-            $this->config['payloadReader'] = $reader;
-        }
-        if ($bypass !== null) {
-            $this->config['bypassPayload'] = $bypass;
-        }
-        if ($parameters !== null) {
-            $this->config['routeParameters'] = $parameters;
-        }
-
-        if ($using !== null) {
-            $this->payloadAdapter = $using(...);
-        }
+        $this->requestCallbacks($reader, $bypass, $parameters, $using, $before, $actionNames);
 
         return $this;
     }
@@ -309,12 +353,15 @@ final class Strangler
      * @param Finalizer|null                              $after
      * @param Projection|null                             $projection
      * @param array<string, Relation>                     $relations
+     * @param array<string, string>                       $required
      */
     public function response(
         array $fields = [], array $values = [], ?callable $using = null,
         array $except = [], array $optional = [], ?callable $attributes = null,
         ?callable $after = null, ?callable $projection = null, array $relations = [],
+        array $required = [],
     ): self {
+        $this->required = array_replace($this->required, $required);
         self::validateFieldMap($fields);
         self::validateFormatters($values);
         $this->responseFields = array_replace($this->responseFields, $fields);
@@ -343,20 +390,28 @@ final class Strangler
     }
 
     /**
-     * Declare query differences while retaining automatic ordinary field names.
+     * Translate query differences and keep upstream includes aligned with response selection.
      *
-     * @param array<string, callable(mixed): mixed> $values
-     * @param array<string, string>                 $filters  Upstream filter aliases.
-     * @param array<string, string>                 $sorts    Upstream sort aliases.
+     * @param array<string, string>                 $filters
+     * @param array<string, string>                 $sorts
      * @param array<string, string>|null            $includes
-     * @param callable(
-     *     array<array-key, mixed>, array{action: string}, Query
-     * ): (array<array-key, mixed>|false)|null $using
+     * @param QueryAdapter|null                     $using
+     * @param array<string, callable(mixed): mixed> $values
+     * @param RelationDefaults|null                 $defaults
+     * @param list<string>                          $replaceFor
+     * @param list<string>                          $emptyFor
+     * @param array<string, list<string>>           $extendFor
+     * @param list<string>                          $mergeFor
      */
     public function query(
         array $filters = [], array $sorts = [], ?array $includes = null, ?callable $using = null,
-        array $values = [],
+        array $values = [], array|callable|null $defaults = null,
+        array $replaceFor = [], array $emptyFor = [], array $extendFor = [],
+        array $mergeFor = ['view'],
     ): self {
+        $this->selection = self::selectionRules(
+            $defaults, $replaceFor, $emptyFor, $extendFor, $mergeFor,
+        ) ?? $this->selection;
         foreach ([$filters, $sorts] as $aliases) {
             foreach ($aliases as $field => $name) {
                 if ($field === '' || $name === '') {
@@ -541,6 +596,26 @@ final class Strangler
     public function build(): array
     {
         $config = $this->compiled();
+        if ($this->requestChecks !== []) {
+            $checks = $this->requestChecks;
+            $config['beforeRequest'] = static function (
+                array $payload, string $action, CController $controller,
+            ) use ($checks): void {
+                $snapshot = new InlineMapping(
+                    [], ['action' => $action, 'query' => [], 'payload' => $payload],
+                );
+                foreach ($checks as $entry) {
+                    if ($entry['actions'] === [] || in_array($action, $entry['actions'], true)) {
+                        ($entry['check'])(
+                            $snapshot->context()['payload'] ?? [], $action, $controller,
+                        );
+                    }
+                }
+            };
+        }
+        if ($this->requestGuards !== []) {
+            $config['requestGuards'] = $this->requestGuards;
+        }
         $contract = $config['controllerContract'] ?? null;
         if ($contract !== null) {
             $mappings = $config['mappings'] ?? [];
@@ -569,6 +644,7 @@ final class Strangler
                 $this->optionalAttributes, $this->attributeMappers, $this->recordFinalizers,
                 $this->includes !== null, $this->queryAdapter !== null, $this->projection !== null,
                 $this->payloadAdapter !== null, $this->queryValues,
+                $this->selection !== null, $this->required,
             ];
             if (array_filter($fieldSettings) !== []) {
                 throw new InvalidArgumentException('Field exceptions require uppercase().');
@@ -578,16 +654,13 @@ final class Strangler
         }
 
         $identifier = $this->nativeIdentifier();
-        $convention = $this->convention($identifier);
+        $record = $this->record($identifier, $this->config['controllerContract'] ?? null);
+        $convention = $this->convention($identifier, $record);
         $actions = array_values(array_diff(array_keys($this->routes), $this->except));
-        $query = $convention->queryMapper()->values($this->queryValues);
-        if ($this->includes !== null) {
-            $query = $query->includes($this->includes);
-        }
-        $adapter = $this->queryAdapter;
-        $queryMapper = $adapter === null ? $query : $query->adapt($adapter);
         $mappings = $this->config['mappings'] ?? [];
-        $mappings['query'] = self::defaults($mappings['query'] ?? [], $queryMapper, $actions);
+        $mappings['query'] = self::defaults(
+            $mappings['query'] ?? [], $this->queryMapper($convention), $actions,
+        );
         $payloadAdapter = $this->payloadAdapter;
         $payloadMapper = $payloadAdapter === null
             ? $convention : $convention->adapt($payloadAdapter);
@@ -597,8 +670,91 @@ final class Strangler
         );
 
         return array_replace($this->config, [
-            'bodyIdentifier' => $identifier, 'mappings' => $mappings,
+            'bodyIdentifier' => $identifier,
+            'mappings'       => $mappings + ['responseFields' => $record->schema()->names()],
+            'responseRecord' => $record,
         ]);
+    }
+
+    /**
+     * Bind parsing, native checks and semantic adapters without inspecting a live request.
+     *
+     * @param PayloadReader|null   $reader
+     * @param RequestBypass|null   $bypass
+     * @param RouteParameters|null $parameters
+     * @param PayloadAdapter|null  $using
+     * @param RequestCheck|null    $before
+     * @param list<string>         $actions
+     */
+    private function requestCallbacks(
+        ?callable $reader, ?callable $bypass, ?callable $parameters,
+        ?callable $using, ?callable $before, array $actions,
+    ): void {
+        if ($before !== null) {
+            $this->requestChecks[] = ['actions' => $actions, 'check' => $before];
+        }
+        if ($reader !== null) {
+            $this->config['payloadReader'] = $reader;
+        }
+        if ($bypass !== null) {
+            $this->config['bypassPayload'] = $bypass;
+        }
+        if ($parameters !== null) {
+            $this->config['routeParameters'] = $parameters;
+        }
+
+        if ($using !== null) {
+            $this->payloadAdapter = $using(...);
+        }
+    }
+
+    /**
+     * Compile field aliases, application query semantics and root relation selection once.
+     */
+    private function queryMapper(Convention $convention): Query
+    {
+        $query = $convention->queryMapper()->values($this->queryValues);
+        if ($this->includes !== null) {
+            $query = $query->includes($this->includes);
+        }
+        $adapter = $this->queryAdapter;
+        $query = $adapter === null ? $query : $query->adapt($adapter);
+        if ($this->selection !== null) {
+            $query = $query->adapt($this->selection->query(...));
+        }
+
+        return $query;
+    }
+
+    /**
+     * Resolve explicit native defaults and action-specific selection rules as one policy.
+     *
+     * @param RelationDefaults|null       $defaults
+     * @param list<string>                $replaceFor
+     * @param list<string>                $emptyFor
+     * @param array<string, list<string>> $extendFor
+     * @param list<string>                $mergeFor
+     */
+    private static function selectionRules(
+        array|callable|null $defaults, array $replaceFor, array $emptyFor,
+        array $extendFor, array $mergeFor,
+    ): ?Selection {
+        $replace = array_map(strtolower(...), $replaceFor);
+        $empty = array_map(strtolower(...), $emptyFor);
+        $extend = array_change_key_case($extendFor, CASE_LOWER);
+        $merge = array_map(strtolower(...), $mergeFor);
+        if ($defaults === null) {
+            if ($replace !== [] || $empty !== [] || $extend !== [] || $merge !== ['view']) {
+                throw new InvalidArgumentException('Selection rules require query(defaults: ...).');
+            }
+
+            return null;
+        }
+
+        return new Selection(
+            is_callable($defaults) ? $defaults : static fn (): array => $defaults,
+            $replace, $empty, $extend, $merge,
+        );
     }
 
     /**
@@ -620,7 +776,7 @@ final class Strangler
     /**
      * Bind application extension points once, leaving mapping execution stateless.
      */
-    private function convention(string $identifier): Convention
+    private function convention(string $identifier, Record $record): Convention
     {
         $contract = $this->config['controllerContract'] ?? null;
         $resultUsing = null;
@@ -630,7 +786,7 @@ final class Strangler
 
         return new Convention(
             identifier: $identifier,
-            output: $this->resource($identifier, $contract),
+            output: $this->resource($record, $contract),
             requestFields: $this->requestFields,
             requestValues: $this->requestValues,
             filterAliases: $this->filterAliases,
@@ -642,31 +798,48 @@ final class Strangler
     /**
      * Compile one response graph and layer explicit resource differences over contract defaults.
      */
-    private function resource(string $identifier, ?ControllerContract $contract): JsonResource
+    private function record(string $identifier, ?ControllerContract $contract): Record
     {
         $fieldsUsing = null;
-        $projection = $this->projection;
         if ($contract !== null) {
             $fieldsUsing = $contract->responseFields(...);
-            $projection ??= $contract->responseProjection(...);
         }
         $graph = new ResponseGraph(
-            fields: $this->responseFields,
+            prototype: Record::uppercase()->rename($this->responseFields)
+                ->required($this->required)
+                ->except($this->excludedAttributes)
+                ->optional($this->optionalAttributes),
             values: $this->responseValues,
             relations: array_replace($contract?->relations() ?? [], $this->relations),
-            except: $this->excludedAttributes,
-            optional: $this->optionalAttributes,
-            attributes: $contract === null ? $this->attributeMappers
-                : [$contract->responseAttributes(...), ...$this->attributeMappers],
-            after: $contract === null ? $this->recordFinalizers
-                : [$contract->responseAfter(...), ...$this->recordFinalizers],
+            attributes: $contract === null ? [] : [$contract->responseAttributes(...)],
+            after: $contract === null ? [] : [$contract->responseAfter(...)],
             fieldsUsing: $fieldsUsing,
+            controllerUsing: ControllerContract::responseRecord(...),
+            rootCallbacks: [
+                'attributes' => $this->attributeMappers,
+                'after'      => $this->recordFinalizers,
+            ],
         );
-        $record = $graph->record($identifier);
-        if ($projection !== null) {
-            $record = $record->projectionUsing($projection);
+
+        return $graph->record($identifier);
+    }
+
+    /**
+     * Apply root request selection and envelope settings to an immutable record schema.
+     */
+    private function resource(Record $record, ?ControllerContract $contract): JsonResource
+    {
+        $projection = $this->projection;
+        if ($this->selection !== null) {
+            $projection = $this->selection->projection(...);
+        }
+        if ($projection === null && $contract !== null) {
+            $projection = $contract->responseProjection(...);
         }
         $resource = JsonResource::make()->recordUsing($record);
+        if ($projection !== null) {
+            $resource = $resource->projectionUsing($projection);
+        }
         foreach ($this->responseConfigurators as $configure) {
             $resource = $configure($resource);
         }

@@ -7,17 +7,41 @@ use Cosmira\Soda\Config\Soda;
 use Cosmira\Soda\Rules\Architecture\ForbiddenDependencies;
 use Cosmira\Soda\Rules\Architecture\NoStaticMutableProperties;
 use Cosmira\Soda\Rules\Documentation\NoVacuousDocblocks;
+use Cosmira\Soda\Rules\Usage\NoUnusedParameters;
+use Cosmira\Strangler\ControllerContract;
 
 return Soda::configure()
     ->withPaths([__DIR__.'/src'])
     ->with([
-        ...RuleCatalog::standard(),
+        ...array_map(
+            static fn ($rule) => $rule instanceof NoUnusedParameters
+                ? new NoUnusedParameters(contracts: [
+                    ControllerContract::class.'::responseFields',
+                    ControllerContract::class.'::responseAttributes',
+                    ControllerContract::class.'::responseAfter',
+                    ControllerContract::class.'::responseProjection',
+                    ControllerContract::class.'::responseResult',
+                    ControllerContract::class.'::validateResponse',
+                    ControllerContract::class.'::validationErrors',
+                ])
+                : $rule,
+            RuleCatalog::standard(),
+        ),
         new ForbiddenDependencies([
             'Cosmira\\Strangler' => [
                 'App', 'strangler', 'Illuminate', 'Symfony', 'Cosmira\\Strangler\\Tests',
             ],
             'Cosmira\\Strangler\\Schema' => [
                 'GuzzleHttp', 'Psr\\Http', 'Cosmira\\Strangler\\Internal',
+                'CActiveRecord', 'CController', 'Yii',
+                'Cosmira\\Strangler\\ControllerContract',
+            ],
+            'Cosmira\\Strangler\\Response' => [
+                'CActiveRecord', 'CController', 'Yii',
+                'Cosmira\\Strangler\\ControllerContract',
+                'Cosmira\\Strangler\\StranglerProxy',
+                'Cosmira\\Strangler\\YiiRuntime',
+                'Cosmira\\Strangler\\Internal',
             ],
             'Cosmira\\Strangler\\Internal\\Payload' => [
                 'GuzzleHttp', 'Psr\\Http',

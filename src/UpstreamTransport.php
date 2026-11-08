@@ -367,6 +367,7 @@ final readonly class UpstreamTransport
                 $mapped = $inline->response(new Response(
                     $response['status'], $response['headers'], $response['body'],
                 ));
+                ($config['controllerContract'] ?? null)?->validateResponse($mapped);
                 $legacyResponse = [
                     'status'  => $mapped->getStatusCode(),
                     'body'    => (string) $mapped->getBody(),

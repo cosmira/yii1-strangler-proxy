@@ -4,10 +4,10 @@ declare(strict_types=1);
 
 namespace Cosmira\Strangler\Tests;
 
-use Cosmira\Strangler\JsonResource;
-use Cosmira\Strangler\Mapping;
 use Cosmira\Strangler\Query;
+use Cosmira\Strangler\Response\JsonResource;
 use Cosmira\Strangler\Schema\Fields;
+use Cosmira\Strangler\Schema\Mapping;
 use GuzzleHttp\Psr7\Response;
 use InvalidArgumentException;
 use PHPUnit\Framework\TestCase;

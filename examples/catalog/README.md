@@ -105,7 +105,7 @@ curl -i -b "$CATALOG_RUNTIME_DIR/cookies.txt" \
 Create returns `201`; update returns `200`. Both use the legacy item envelope.
 `catalog` explicitly accepts JSON; `catalogForm` explicitly accepts `item[...]`.
 The host validation filter parses once and stores `validatedInput`; both the
-legacy action and `payloadUsing()` consume that same checked value. Invalid form
+legacy action and `request(reader: ...)` consume that same checked value. Invalid form
 structure, malformed JSON, missing fields and conflicting query/body IDs return
 `400`. Incoming writes must use POST (`405` otherwise); upstream update uses PUT.
 Empty names return `422` with errors under `NAME`. Backend aliases such as

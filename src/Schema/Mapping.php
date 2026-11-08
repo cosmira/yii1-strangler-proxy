@@ -2,9 +2,9 @@
 
 declare(strict_types=1);
 
-namespace Cosmira\Strangler;
+namespace Cosmira\Strangler\Schema;
 
-use Cosmira\Strangler\Schema\Fields;
+use Cosmira\Strangler\Exception\InvalidUpstreamResponse;
 use InvalidArgumentException;
 use stdClass;
 
@@ -140,7 +140,10 @@ final class Mapping
      * @param array<array-key, mixed> $sorts
      * @param array<array-key, mixed> $includes
      *
-     * @return array<array-key, mixed>|false
+     * @return array{
+     *     filter?: array<string, string|int|float|bool>, sort?: string, include?: string,
+     *     page: int, per_page: int
+     * }|false
      */
     public static function legacyQuery(
         array $query,
@@ -179,6 +182,167 @@ final class Mapping
     }
 
     /**
+     * Index every source name by its alias without losing many-to-one mappings.
+     *
+     * @param array<string, string> $aliases
+     *
+     * @return array<string, list<string>>
+     */
+    public static function reverseAliases(array $aliases): array
+    {
+        $sources = [];
+        foreach ($aliases as $source => $alias) {
+            $names = $sources[$alias] ?? [];
+            $names[] = $source;
+            $sources[$alias] = $names;
+        }
+
+        return $sources;
+    }
+
+    /**
+     * Read one of several legacy keys from each list item without hiding malformed scalar input.
+     *
+     * @param list<string> $fields Keys in preference order.
+     */
+    public static function pluck(mixed $records, array $fields): mixed
+    {
+        if (! is_array($records)) {
+            return $records;
+        }
+
+        return array_map(static function (mixed $record) use ($fields): mixed {
+            if (! is_array($record) && ! $record instanceof stdClass) {
+                return $record;
+            }
+            $attributes = (array) $record;
+            foreach ($fields as $field) {
+                if (isset($attributes[$field])) {
+                    return $attributes[$field];
+                }
+            }
+
+            return null;
+        }, $records);
+    }
+
+    /**
+     * Translate nested input records while retaining invalid containers for normal validation.
+     *
+     * @param array<array-key, string>|Fields $fields
+     * @param array<string, mixed>            $defaults
+     * @param list<string>                    $required
+     */
+    public static function requestRecords(
+        mixed $records, array|Fields $fields, array $defaults = [], array $required = [],
+    ): mixed {
+        if (! is_array($records)) {
+            return $records;
+        }
+        $result = [];
+        foreach ($records as $key => $record) {
+            $mapped = self::requestRecord($record, $fields, $defaults);
+            if (self::hasRequiredFields($mapped, $required)) {
+                $result[$key] = $mapped;
+            }
+        }
+
+        return array_is_list($records) ? array_values($result) : $result;
+    }
+
+    /**
+     * Keep opaque nested values untouched while translating one input record's own keys.
+     *
+     * @param array<array-key, string>|Fields $fields
+     * @param array<string, mixed>            $defaults
+     */
+    private static function requestRecord(
+        mixed $record, array|Fields $fields, array $defaults,
+    ): mixed {
+        if (! is_array($record) && ! $record instanceof stdClass) {
+            return $record;
+        }
+        $attributes = (array) $record;
+        $names = $fields instanceof Fields ? $fields->writes(array_keys($attributes)) : $fields;
+        $mapped = (array) self::fields($record, $names) + $defaults;
+
+        return $record instanceof stdClass ? (object) $mapped : $mapped;
+    }
+
+    /**
+     * Apply an explicit selection without converting malformed values into valid records.
+     *
+     * @param list<string> $required
+     */
+    private static function hasRequiredFields(mixed $record, array $required): bool
+    {
+        if (! is_array($record) && ! $record instanceof stdClass) {
+            return true;
+        }
+        $attributes = (array) $record;
+        foreach ($required as $field) {
+            if (! isset($attributes[$field])) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * Pivot field-oriented changes into named snapshots, preserving unrecognized shapes.
+     *
+     * @param array<array-key, mixed>               $changes
+     * @param array<string, string>                 $sides
+     * @param list<string>                          $except
+     * @param array<string, callable(mixed): mixed> $values
+     *
+     * @return array<array-key, mixed>
+     */
+    public static function changes(
+        array $changes, array $sides, Fields $fields, array $except = [], array $values = [],
+    ): array {
+        if (! self::isChangeSet($changes, $sides)) {
+            return $changes;
+        }
+        $selected = array_diff_key($changes, array_flip($except));
+        $snapshots = [];
+        foreach ($sides as $source => $target) {
+            $snapshot = [];
+            foreach ($selected as $field => $change) {
+                $value = $change[$source];
+                if ($value !== null) {
+                    $snapshot[$fields->legacyName($field)] = isset($values[$field])
+                        ? $values[$field]($value) : $value;
+                }
+            }
+            $snapshots[$target] = (object) $snapshot;
+        }
+
+        return $snapshots;
+    }
+
+    /**
+     * Accept only complete snapshots; opaque business payloads keep their original representation.
+     *
+     * @param array<array-key, mixed> $changes
+     * @param array<string, string>   $sides
+     *
+     * @phpstan-assert-if-true array<string, array<array-key, mixed>> $changes
+     */
+    private static function isChangeSet(array $changes, array $sides): bool
+    {
+        foreach ($changes as $field => $change) {
+            if (! is_string($field) || ! is_array($change)
+                || array_diff_key($sides, $change) !== []) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
      * Rename validation fields and collect unknown fields without changing messages.
      *
      * @param array<array-key, mixed> $fields
@@ -188,6 +352,21 @@ final class Mapping
         array $fields,
         string $unknown = '_general',
     ): stdClass {
+        return (object) self::validationMessages($errors, $fields, $unknown);
+    }
+
+    /**
+     * Normalize validation messages once for both JSON objects and native error envelopes.
+     *
+     * @param array<array-key, mixed> $fields
+     *
+     * @return array<array-key, list<string>>
+     */
+    public static function validationMessages(
+        mixed $errors,
+        array $fields,
+        string $unknown = '_general',
+    ): array {
         $names = self::names($fields);
         $result = [];
         $record = self::record($errors);
@@ -205,7 +384,7 @@ final class Mapping
             $result[$target] = array_merge($result[$target] ?? [], $messages);
         }
 
-        return (object) $result;
+        return $result;
     }
 
     /**

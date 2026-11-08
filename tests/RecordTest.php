@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace Cosmira\Strangler\Tests;
 
-use Cosmira\Strangler\InvalidUpstreamResponse;
-use Cosmira\Strangler\Record;
+use Cosmira\Strangler\Exception\InvalidUpstreamResponse;
+use Cosmira\Strangler\Response\Record;
 use Cosmira\Strangler\Schema\Fields;
 use PHPUnit\Framework\TestCase;
 

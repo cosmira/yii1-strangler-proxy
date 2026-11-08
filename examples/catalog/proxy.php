@@ -2,9 +2,9 @@
 
 declare(strict_types=1);
 
-use Cosmira\Strangler\InvalidUpstreamResponse;
-use Cosmira\Strangler\Json;
-use Cosmira\Strangler\Mapping;
+use Cosmira\Strangler\Exception\InvalidUpstreamResponse;
+use Cosmira\Strangler\Response\Json;
+use Cosmira\Strangler\Schema\Mapping;
 use Cosmira\Strangler\Strangler;
 use Psr\Http\Message\ResponseInterface;
 
@@ -59,8 +59,8 @@ function catalogProxyFilters(): array
 
                 return Json::response($response, catalogErrorBody($invalid ? 'internal_error' : $code, (array) $fields), $invalid ? 500 : null);
             })
-            ->payloadUsing(reader: static fn (CController $controller): array => $controller->validatedInput)
-            ->routeParametersUsing(static function (array $context): array {
+            ->request(reader: static fn (CController $controller): array => $controller->validatedInput)
+            ->request(parameters: static function (array $context): array {
                 $id = $context['query']['id'] ?? $context['payload']['ID'] ?? null;
 
                 return $id === null ? [] : ['id' => $id];

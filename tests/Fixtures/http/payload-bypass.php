@@ -25,7 +25,7 @@ final class PayloadBypassController extends CController
     public function filters(): array
     {
         return [Strangler::proxy('example')->post('get', '/backend')
-            ->payloadUsing(static function (): array {
+            ->request(reader: static function (): array {
                 header('X-Payload-Reads: 1');
 
                 $payload = json_decode(StranglerProxy::application()->getRequest()->getRawBody(), true, flags: JSON_THROW_ON_ERROR);
@@ -35,7 +35,7 @@ final class PayloadBypassController extends CController
 
                 return $payload;
             })
-            ->payloadUsing(bypass: static function (array $payload): bool {
+            ->request(bypass: static function (array $payload): bool {
                 header('X-Payload-Predicates: 1');
 
                 $routing = $payload['routing'] ?? null;

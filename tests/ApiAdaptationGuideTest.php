@@ -104,16 +104,16 @@ final class ApiAdaptationGuideTest extends TestCase
 
     public function testPublishedResponseGraphKeepsItsConfiguredNamingExceptions(): void
     {
-        $body = $this->forward('view', '{"data":{"id":"p","updated_at":"2026-11-07","contacts":[{"id":"c","value":"user@example.test"}]}}',
+        $body = $this->forward('view', '{"data":{"id":"p","updated_at":"2026-11-07","items":[{"id":"c","value":"user@example.test"}]}}',
             query: ['id' => 'p'], builder: $this->builder('Different semantics and response graphs'));
 
         self::assertSame([
             'state' => 'data', 'data' => [
-                'PERIMETER_ID' => 'p', 'CHANGE_DATE' => '2026-11-07',
-                'contacts'     => [['CONTACT_ID' => 'c', 'VALUE' => 'user@example.test']],
+                'CATALOG_ID' => 'p', 'CHANGE_DATE' => '2026-11-07',
+                'items'      => [['ITEM_ID' => 'c', 'VALUE' => 'user@example.test']],
             ],
         ], json_decode($body, true));
-        self::assertSame('/perimeters/p', $this->history[0]['request']->getUri()->getPath());
+        self::assertSame('/catalogs/p', $this->history[0]['request']->getUri()->getPath());
         self::assertCount(1, $this->history);
     }
 
@@ -191,7 +191,7 @@ final class ApiAdaptationGuideTest extends TestCase
         $client = new Client(['handler' => HandlerStack::create(new MockHandler([]))]);
         self::assertFalse((new StranglerProxy($client))->handle($controller, $this->builder()->build()['config'], 'get'));
         $_GET = [];
-        $config = $this->builder()->payloadUsing(static fn (): array => ['OPTIONS' => ['MODE' => 'legacy']])->build()['config'];
+        $config = $this->builder()->request(reader: static fn (): array => ['OPTIONS' => ['MODE' => 'legacy']])->build()['config'];
         self::assertFalse((new StranglerProxy($client))->handle($controller, $config, 'update'));
     }
 
@@ -207,7 +207,7 @@ final class ApiAdaptationGuideTest extends TestCase
         $stack->push(Middleware::tap(function (RequestInterface $request, array $options): void {
             $this->history[] = ['request' => $request, 'options' => $options];
         }));
-        $config = ($builder ?? $this->builder())->payloadUsing(static fn (): array => $payload)->build()['config'];
+        $config = ($builder ?? $this->builder())->request(reader: static fn (): array => $payload)->build()['config'];
         $emitter = new ResponseEmitter(function (string $header): void {
             $this->headers[] = $header;
         }, function (int $status): void {
@@ -228,7 +228,7 @@ final class ApiAdaptationGuideTest extends TestCase
         }
     }
 
-    private function builder(string $section = 'Define and connect one feature'): Strangler
+    private function builder(string $section = 'Advanced: adapt a different envelope'): Strangler
     {
         $guide = file_get_contents(dirname(__DIR__).'/docs/api-adaptation.md');
         self::assertIsString($guide);

@@ -4,7 +4,10 @@ declare(strict_types=1);
 
 namespace Cosmira\Strangler;
 
+use Cosmira\Strangler\Exception\InvalidUpstreamResponse;
 use Cosmira\Strangler\Internal\Payload\BodyParameters;
+use Cosmira\Strangler\Response\Json;
+use Cosmira\Strangler\Schema\Mapping;
 use JsonException;
 use Psr\Http\Message\ResponseInterface;
 use stdClass;
@@ -16,7 +19,8 @@ use UnexpectedValueException;
  * @internal
  *
  * @phpstan-type Context array{
- *     action: string, query: array<array-key, mixed>, payload: array<array-key, mixed>|null
+ *     action: string, query: array<array-key, mixed>, payload: array<array-key, mixed>|null,
+ *     identifier?: string
  * }
  * @phpstan-type QueryMapper array<array-key, string>|callable(
  *     array<array-key, mixed>, Context
@@ -89,13 +93,12 @@ final readonly class InlineMapping
      */
     public function context(): array
     {
-        return [
-            'action'  => $this->context['action'],
-            'query'   => self::copy($this->context['query']),
-            'payload' => $this->context['payload'] === null
-                ? null
-                : self::copy($this->context['payload']),
-        ];
+        $context = $this->context;
+        $context['query'] = self::copy($this->context['query']);
+        $context['payload'] = $this->context['payload'] === null
+            ? null : self::copy($this->context['payload']);
+
+        return $context;
     }
 
     /**
@@ -202,7 +205,7 @@ final readonly class InlineMapping
         array|callable|Convention $mapper, array $original, array|stdClass $source,
     ): mixed {
         if ($mapper instanceof Convention) {
-            return $mapper->payload($source);
+            return $mapper->payload($source, $this->context());
         }
 
         return is_callable($mapper)

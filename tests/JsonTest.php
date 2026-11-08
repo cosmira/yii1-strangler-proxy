@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Cosmira\Strangler\Tests;
 
-use Cosmira\Strangler\Json;
+use Cosmira\Strangler\Response\Json;
 use GuzzleHttp\Psr7\Response;
 use InvalidArgumentException;
 use JsonException;

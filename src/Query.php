@@ -6,10 +6,18 @@ namespace Cosmira\Strangler;
 
 use Closure;
 use Cosmira\Strangler\Schema\Fields;
+use Cosmira\Strangler\Schema\Mapping;
 
 /** Callable legacy query configuration for Strangler::mapQuery(). */
 final class Query
 {
+    /**
+     * Value differences applied after query names and list values are normalized.
+     *
+     * @var array<string, callable(mixed): mixed>
+     */
+    private array $valueFormatters = [];
+
     /**
      * Legacy filter names mapped to upstream filter names.
      *
@@ -76,6 +84,19 @@ final class Query
     public static function legacy(?Fields $convention = null): self
     {
         return new self($convention ?? Fields::uppercase([]));
+    }
+
+    /**
+     * Format declared filter values while forwarding every other filter unchanged.
+     *
+     * @param array<string, callable(mixed): mixed> $formatters
+     */
+    public function values(array $formatters): self
+    {
+        $copy = clone $this;
+        $copy->valueFormatters = $formatters;
+
+        return $copy;
     }
 
     /**
@@ -203,11 +224,37 @@ final class Query
         }
         $mapped = Mapping::legacyQuery($values, $filters, $sorts,
             $includes, $this->defaultLimit, $this->maxLimit);
-        if ($mapped !== false && ! $list) {
+        if ($mapped === false) {
+            return false;
+        }
+        if (! $list) {
             unset($mapped['page'], $mapped['per_page']);
+        }
+        $filterValues = $mapped['filter'] ?? [];
+        if ($filterValues !== []) {
+            $mapped['filter'] = $this->formatValues($filterValues);
         }
 
         return $mapped;
+    }
+
+    /**
+     * Apply value differences to the normalized filter representation.
+     *
+     * @param array<string, string|int|float|bool> $filters
+     *
+     * @return array<string, mixed>
+     */
+    private function formatValues(array $filters): array
+    {
+        $formatted = $filters;
+        foreach ($this->valueFormatters as $field => $format) {
+            if (array_key_exists($field, $filters)) {
+                $formatted[$field] = $format($filters[$field]);
+            }
+        }
+
+        return $formatted;
     }
 
     /**

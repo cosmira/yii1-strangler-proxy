@@ -23,6 +23,18 @@ final class IncludesTest extends TestCase
         self::assertNull($includes->normalize('contacts'));
     }
 
+    public function testUnrestrictedTreesPreserveUnknownNamesAndNestedSelections(): void
+    {
+        $includes = Includes::all();
+        self::assertSame(['unknown' => [], 'owner' => ['company' => ['address' => []]]], $includes->normalize([
+            'unknown', 'owner' => ['company' => ['address']],
+        ]));
+        self::assertSame([], $includes->normalize([]));
+        self::assertNull($includes->normalize(['owner' => 'company']));
+        self::assertNull($includes->normalize(['owner' => [false]]));
+        self::assertNull($includes->normalize(['']));
+    }
+
     public function testRepeatedRelationNamesUseTheLastSelection(): void
     {
         $includes = Includes::only(['groups' => ['NAME_PATH']]);

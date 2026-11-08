@@ -6,23 +6,28 @@ namespace Cosmira\Strangler\Schema;
 
 use InvalidArgumentException;
 
-/** Validates legacy list/object include trees against the supported relation graph. */
+/** Normalizes include trees with optional application-owned relation restrictions. */
 final class Includes
 {
     /**
      * Compiled child schemas indexed by native relation names.
      *
-     * @var array<string, self>
+     * @var array<string, self>|null
      */
-    private array $allowed = [];
+    private ?array $allowed = [];
 
     /**
      * Compile the supported relation tree and reject malformed configuration.
      *
-     * @param array<array-key, mixed> $relations
+     * @param array<array-key, mixed>|null $relations
      */
-    private function __construct(array $relations)
+    private function __construct(?array $relations)
     {
+        if ($relations === null) {
+            $this->allowed = null;
+
+            return;
+        }
         foreach ($relations as $key => $value) {
             $name = is_int($key) ? $value : $key;
             $children = is_int($key) ? [] : $value;
@@ -34,6 +39,14 @@ final class Includes
 
             $this->allowed[$name] = new self($children);
         }
+    }
+
+    /**
+     * Accept every well-formed relation tree without imposing backend capabilities.
+     */
+    public static function all(): self
+    {
+        return new self(null);
     }
 
     /**
@@ -61,11 +74,15 @@ final class Includes
         foreach ($relations as $key => $value) {
             $name = is_int($key) ? $value : $key;
             $children = is_int($key) ? [] : $value;
-            if (! is_string($name) || ! isset($this->allowed[$name])) {
+            if (! is_string($name)) {
+                return null;
+            }
+            $schema = $this->relationSchema($name);
+            if ($schema === null) {
                 return null;
             }
 
-            $nested = $this->allowed[$name]->normalize($children);
+            $nested = $schema->normalize($children);
             if ($nested === null) {
                 return null;
             }
@@ -74,5 +91,17 @@ final class Includes
         }
 
         return $normalized;
+    }
+
+    /**
+     * Resolve known relations or reuse the unrestricted schema at every nested depth.
+     */
+    private function relationSchema(string $name): ?self
+    {
+        if ($name === '') {
+            return null;
+        }
+
+        return $this->allowed === null ? $this : ($this->allowed[$name] ?? null);
     }
 }

@@ -4,9 +4,9 @@ declare(strict_types=1);
 
 namespace Cosmira\Strangler\Tests;
 
-use Cosmira\Strangler\Json;
-use Cosmira\Strangler\JsonResource;
-use Cosmira\Strangler\Record;
+use Cosmira\Strangler\Response\Json;
+use Cosmira\Strangler\Response\JsonResource;
+use Cosmira\Strangler\Response\Record;
 use Cosmira\Strangler\ResponseEmitter;
 use Cosmira\Strangler\Strangler;
 use Cosmira\Strangler\StranglerProxy;
@@ -51,17 +51,19 @@ final class ConventionTest extends TestCase
         ]);
     }
 
-    public function testConflictingRequestAliasesAreRejectedWhenConfigurationsAreCombined(): void
+    public function testAlternativeInputAliasesAreAllowedButAnAmbiguousPayloadIsNot(): void
     {
-        $builder = Strangler::proxy('catalog')
-            ->uppercase('ITEM_ID')
-            ->request(fields: ['NAME' => 'name'])
-            ->request(fields: ['TITLE' => 'name'])
-            ->post('create', '/items');
+        $config = Strangler::proxy('catalog')->uppercase('ITEM_ID')
+            ->request(fields: ['NAME' => 'name', 'TITLE' => 'name'])
+            ->post('create', '/items')->build()['config'];
+        $result = $this->forward($config, 'create', '{"NAME":"alice","TITLE":"bob"}',
+            new Response(201, [], '{"data":{"id":"a"}}'));
+        self::assertFalse($result);
+        self::assertSame([], $this->history);
 
-        $this->expectException(\InvalidArgumentException::class);
-
-        $builder->build();
+        $this->forward($config, 'create', '{"NAME":"alice"}',
+            new Response(201, [], '{"data":{"id":"a"}}'));
+        self::assertSame(['name' => 'alice'], $this->decoded((string) $this->lastRequest()->getBody()));
     }
 
     public function testResponseAliasesCannotOverwriteTheIdentifier(): void
@@ -358,7 +360,7 @@ final class ConventionTest extends TestCase
     public function testCallbackMutationCannotChangeLaterOriginalSnapshots(): void
     {
         $config = Strangler::proxy('catalog')->uppercase('ITEM_ID')
-            ->routeParametersUsing(static function (array $context): array {
+            ->request(parameters: static function (array $context): array {
                 self::assertIsArray($context['payload']);
                 self::assertInstanceOf(\stdClass::class, $context['payload']['META']);
                 $context['payload']['META']->name = 'changed by route callback';
@@ -418,7 +420,7 @@ final class ConventionTest extends TestCase
     public function testNativeParentLookupValuesAreRouteOnlyAndMissingScopeStaysNative(): void
     {
         $config = Strangler::proxy('catalog')->uppercase('ITEM_ID')
-            ->routeParametersUsing(static function (array $context): array|false {
+            ->request(parameters: static function (array $context): array|false {
                 return ($context['query']['id'] ?? null) === 'missing' ? false : ['parent' => 'owner/a'];
             })
             ->put('edit', '/owners/{parent}/items/{id}')->build()['config'];
@@ -437,7 +439,7 @@ final class ConventionTest extends TestCase
     {
         foreach (['', '.', '..', 'different'] as $parent) {
             $config = Strangler::proxy('catalog')
-                ->routeParametersUsing(static fn (): array => ['parent' => $parent])
+                ->request(parameters: static fn (): array => ['parent' => $parent])
                 ->post('create', '/parents/{parent}', fromBody: ['parent' => 'PARENT_ID'])
                 ->build()['config'];
 
@@ -446,7 +448,7 @@ final class ConventionTest extends TestCase
         self::assertSame([], $this->history);
 
         $config = Strangler::proxy('catalog')
-            ->routeParametersUsing(static fn (): array => ['parent' => 'original'])
+            ->request(parameters: static fn (): array => ['parent' => 'original'])
             ->post('create', '/parents/{parent}', fromBody: ['parent' => 'PARENT_ID'])
             ->build()['config'];
         self::assertSame('saved', $this->forward($config, 'create', '{"PARENT_ID":"original"}', new Response(200, [], 'saved')));
@@ -529,7 +531,6 @@ final class ConventionTest extends TestCase
         $formatter = static fn (mixed $value): mixed => $value;
         foreach ([
             static fn (): Strangler => Strangler::proxy('catalog')->response(fields: ['name' => 'TITLE', 'title' => 'TITLE']),
-            static fn (): Strangler => Strangler::proxy('catalog')->request(fields: ['NAME' => 'title', 'TITLE' => 'title']),
             static fn (): Strangler => Strangler::proxy('catalog')->request(values: ['' => $formatter]),
             static fn (): Strangler => Strangler::proxy('catalog')->response(values: ['' => $formatter]),
         ] as $configure) {

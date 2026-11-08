@@ -168,15 +168,15 @@ use Cosmira\Strangler\ControllerContract;
 
 class ApiContract extends ControllerContract
 {
-	public function model(CController $controller): CActiveRecord
-	{
-		return $controller->getModel();
-	}
+    public function model(CController $controller): CActiveRecord
+    {
+        return $controller->getModel();
+    }
 
-	public function payload(CController $controller): array
-	{
-		return $controller->data();
-	}
+    public function payload(CController $controller): array
+    {
+        return $controller->data();
+    }
 }
 ```
 
@@ -187,15 +187,15 @@ and differences from your shared contract:
 use Cosmira\Strangler\Strangler;
 
 Strangler::proxy('catalog')
-	->using(new ApiContract())
-	->uppercase('ITEM_ID')
-	->response(fields: ['updated_at' => 'CHANGE_DATE'])
-	->get('get', '/api/items')
-	->get('view', '/api/items/{id}')
-	->post('create', '/api/items')
-	->put('edit', '/api/items/{id}')
-	->delete('delete', '/api/items/{id}')
-	->build();
+    ->using(new ApiContract())
+    ->uppercase('ITEM_ID')
+    ->response(fields: ['updated_at' => 'CHANGE_DATE'])
+    ->get('get', '/api/items')
+    ->get('view', '/api/items/{id}')
+    ->post('create', '/api/items')
+    ->put('edit', '/api/items/{id}')
+    ->delete('delete', '/api/items/{id}')
+    ->build();
 ```
 
 The package reads the payload once, applies ordinary naming rules, and formats

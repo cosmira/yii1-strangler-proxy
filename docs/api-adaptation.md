@@ -107,12 +107,12 @@ use Cosmira\Strangler\Schema\Format;
 use Cosmira\Strangler\Strangler;
 
 Strangler::proxy('catalog')
-	->uppercase('ITEM_ID')
-	->query(values: [
-		'kind' => static fn ($value) => Format::expand($value, ['legacy' => ['modern']]),
-	])
-	->get('get', '/api/items')
-	->build();
+    ->uppercase('ITEM_ID')
+    ->query(values: [
+        'kind' => static fn ($value) => Format::expand($value, ['legacy' => ['modern']]),
+    ])
+    ->get('get', '/api/items')
+    ->build();
 ```
 
 `filter[KIND]=legacy,custom` becomes `filter[kind]=legacy,modern,custom`.
@@ -132,7 +132,6 @@ receives the remaining payload, the original context, and the compiled conventio
 Call the supplied convention's `payload($payload)` method to retain automatic
 input naming before applying an application-specific structural change. A full
 `mapPayload()` callback replaces both that convention and its semantic adapter.
-
 
 ### Body values in routes
 
@@ -179,12 +178,12 @@ contract and name the native parent attribute:
 
 ```php
 Strangler::proxy('catalog')
-	->using(new ApiContract())
-	->uppercase('ITEM_ID')
-	->within('CATALOG_ID')
-	->get('view', '/catalogs/{catalog_id}/items/{id}')
-	->put('edit', '/catalogs/{catalog_id}/items/{id}')
-	->build();
+    ->using(new ApiContract())
+    ->uppercase('ITEM_ID')
+    ->within('CATALOG_ID')
+    ->get('view', '/catalogs/{catalog_id}/items/{id}')
+    ->put('edit', '/catalogs/{catalog_id}/items/{id}')
+    ->build();
 ```
 
 `within()` runs a scoped native lookup only when the selected outgoing path
@@ -214,15 +213,15 @@ only present, selected relations and reuses the compiled record graph:
 use Cosmira\Strangler\Strangler;
 
 return Strangler::proxy('catalog')
-	->uppercase('CATALOG_ID')
-	->response(
-		fields: ['updated_at' => 'CHANGE_DATE'],
-		relations: [
-			'items' => ['identifier' => 'ITEM_ID', 'name' => 'items', 'many' => true],
-		],
-	)
-	->get('view', '/catalogs/{id}')
-	->build();
+    ->uppercase('CATALOG_ID')
+    ->response(
+        fields: ['updated_at' => 'CHANGE_DATE'],
+        relations: [
+            'items' => ['identifier' => 'ITEM_ID', 'name' => 'items', 'many' => true],
+        ],
+    )
+    ->get('view', '/catalogs/{id}')
+    ->build();
 ```
 
 A relation declaration contains its upstream name, native identifier, output name,
@@ -278,7 +277,6 @@ The default hook returns `null`. An explicit `uppercase('ITEM_ID')` takes
 precedence. Both fluent call orders resolve the identifier when `build()` runs;
 neither reads model metadata or queries the database. If neither source provides
 an identifier, `build()` rejects the configuration.
-
 
 Override only the shared differences your application needs:
 

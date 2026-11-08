@@ -15,7 +15,7 @@ final class ResponseGraphTest extends TestCase
     {
         $builder = Strangler::proxy('catalog')->uppercase('ITEM_ID')
             ->response(fields: ['updated_at' => 'CHANGE_DATE'], except: ['internal'], relations: [
-                'children' => ['identifier' => 'CHILD_ID', 'name' => 'childs', 'many' => true],
+                'children' => ['identifier' => 'CHILD_ID', 'name' => 'descendants', 'many' => true],
                 'owner'    => ['identifier' => 'OWNER_ID', 'name' => 'owner', 'many' => false],
             ])
             ->get('view', '/items/{id}');
@@ -25,10 +25,10 @@ final class ResponseGraphTest extends TestCase
 
         self::assertSame(['state' => 'data', 'data' => [
             'ITEM_ID' => 'root', 'CHANGE_DATE' => 'today', 'META' => ['originalKey' => true],
-            'childs'  => [[
-                'CHILD_ID' => 'child', 'childs' => [],
+            'descendants'  => [[
+                'CHILD_ID' => 'child', 'descendants' => [],
                 'owner'    => ['OWNER_ID' => 'owner', 'owner' => null],
-            ], ['CHILD_ID' => 'second', 'childs' => [], 'owner' => ['OWNER_ID' => 'second-owner', 'owner' => null]]],
+            ], ['CHILD_ID' => 'second', 'descendants' => [], 'owner' => ['OWNER_ID' => 'second-owner', 'owner' => null]]],
         ]], $mapped);
     }
 

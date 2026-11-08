@@ -33,7 +33,8 @@ For working on the package itself, see [local development](docs/integration.md#l
 
 ## Forward your first action
 
-Configure an existing backend endpoint returning `{"ID":42,"NAME":"Desk"}`:
+In your application's Yii configuration array, add `params.strangler`.
+This example uses an existing backend endpoint returning `{"ID":42,"NAME":"Desk"}`:
 
 ```php
 'params' => [
@@ -50,33 +51,23 @@ HTTPS certificates are verified by default. Protect the backend with a trusted
 channel before enabling the feature; the [integration guide](docs/integration.md)
 includes a server-owned token example.
 
-Add the Strangler filter block **after all security checks**, starting with one existing
-read-only action:
+Import the builder at the top of your existing controller file:
 
 ```php
 use Cosmira\Strangler\Strangler;
-
-class CatalogController extends CController
-{
-    public function filters()
-    {
-        return [
-            'initLanguage',
-            'validateOpenAPI',
-            'accessControl',
-            Strangler::proxy('catalog') // After all security checks.
-                ->get('view', '/api/items/{id}')
-                ->build(),
-        ];
-    }
-
-    // Keep the existing actionView() implementation for disabled features.
-}
 ```
 
-Use your application's actual authentication, access and input checks. The builder
-method sets the **outgoing** HTTP method; it does not restrict the incoming method.
-Write actions still require preceding HTTP verb, CSRF and resource-access checks.
+Append this entry to the array returned by `filters()`, after the existing
+security filters. Keep those entries and `actionView()` in place.
+
+```php
+Strangler::proxy('catalog')
+    ->get('view', '/api/items/{id}')
+    ->build(),
+```
+
+The builder method sets the **outgoing** HTTP method; it does not restrict the incoming
+method. Write actions still require preceding HTTP verb, CSRF, and resource-access checks.
 
 > Only checks completed before Strangler protect forwarded requests. Checks inside
 > the action or `beforeAction()` are skipped. `afterAction()` and previous filters'
@@ -84,7 +75,7 @@ Write actions still require preceding HTTP verb, CSRF and resource-access checks
 > and cleanup before enabling the feature.
 
 First verify that direct backend calls without the trusted token fail, and that
-all Yii access checks run before Strangler. Then set `features.catalog` to the
+all Yii access checks run before Strangler. Then set `params.strangler.features.catalog` to the
 boolean `true`, reload your application's configuration and, with a permitted
 legacy session, request the existing API:
 
@@ -93,7 +84,7 @@ curl -i --cookie yii-session.txt 'https://legacy.example/index.php?r=catalog/vie
 ```
 
 Expect the backend body `{"ID":42,"NAME":"Desk"}`, its status, and `X-Strangler: 1`.
-Turn `features.catalog` off and repeat: Yii should run `actionView()` instead.
+Set `params.strangler.features.catalog` to `false` and repeat: Yii should run `actionView()` instead.
 Configure `base_uri` as a trusted HTTP(S) origin with no path, query or credentials;
 put the complete backend path in each route. Redirects are returned without following
 them. GET and HEAD send query parameters; POST, PUT, PATCH and DELETE also send JSON.
@@ -143,6 +134,18 @@ Strangler::proxy('directory')
     ->build();
 ```
 
+For a legacy create body:
+
+```json
+{"GROUPS":[{"GROUP_ID":7}],"DISPLAY_NAME":"Ada"}
+```
+
+The proxy sends `POST /groups/7/people` with this JSON body:
+
+```json
+{"display_name":"Ada"}
+```
+
 The wildcard requires exactly one list item. Missing, invalid, conflicting or
 ambiguous bindings keep the request in Yii before HTTP. Only selected leaves and
 containers made empty by their removal are consumed; neighboring metadata is kept.
@@ -156,16 +159,20 @@ The [catalog example](examples/catalog/README.md) includes a Yii application and
 backend. It demonstrates reads, writes, JSON and form input, access checks, and
 independent read and write flags. Both applications use one SQLite dataset.
 
-From the package checkout, with `pdo_sqlite` installed:
+To run it outside your application, install `pdo_sqlite` and clone the package:
 
 ```shell
+git clone https://github.com/cosmira/yii1-strangler-proxy.git
+cd yii1-strangler-proxy
 composer install
 composer example:verify
 ```
 
 The verifier starts local servers, compares legacy and proxied responses, and
 removes its temporary data. It also checks denied access, tenant isolation,
-read-after-write, and backend idempotency. No production service is contacted.
+read-after-write, and backend idempotency. A successful run exits with code 0 and
+prints `All catalog contracts passed.` followed by the check count. No production
+service is contacted.
 
 ## Sessions and user context
 

@@ -15,7 +15,11 @@ complex contracts through the same mapping pipeline.
 
 ## One fluent proxy
 
-Use the naming convention once, then describe only directional exceptions:
+Without mappings, Strangler forwards the request and returns the backend response
+without translating its JSON contract. Use that mode when the two APIs already match.
+
+Use `uppercase()` when the client expects uppercase attributes and the success
+envelope shown below. Describe only directional exceptions:
 
 ```php
 use Cosmira\Strangler\Strangler;
@@ -38,11 +42,36 @@ For a backend item `{"data":{"id":42,"updated_at":"2026-11-08"}}`, this returns
 `{"state":"data","data":{"ITEM_ID":42,"CHANGE_DATE":"2026-11-08"}}`.
 The convention reads records under `data`; list responses also require `meta.total`.
 It uses HTTP 200 for mapped success responses. See [response defaults](#response-defaults)
-for empty actions and custom envelopes.
+for empty actions and custom envelopes. This convention maps successful responses;
+[error contracts](#preserve-errors-and-headers) require separate configuration.
 
 `response(fields: [...])` maps upstream to legacy names. `request(fields: [...])` maps legacy to
 upstream names. The two directions are deliberately independent: a Person may
 return `given_name` while accepting `givenname`.
+
+### Identifiers in routes and bodies
+
+`uppercase('ITEM_ID')` maps the response's `id` to `ITEM_ID`. For a route containing
+`{id}`, it also reads `ITEM_ID` from the original body when the request identifier
+is absent or empty. The conventional payload mapper removes `ITEM_ID` from the body
+sent upstream.
+
+For the `edit` action above, a body of:
+
+```json
+{"ITEM_ID":42,"DISPLAY_NAME":"Desk"}
+```
+
+selects `PUT /items/42` and sends:
+
+```json
+{"display_name":"Desk"}
+```
+
+A nonempty request identifier takes precedence over the body identifier. Check
+conflicting identifiers in the [preceding input filter](integration.md#write-action-validation).
+This routing rule does not rename `filter[ITEM_ID]` to `filter[id]`; query aliases
+remain independent of the response identifier.
 
 ### Directional query differences
 
@@ -299,7 +328,12 @@ includes; the default convention resolves ordinary names automatically.
 
 ## Preserve errors and headers
 
-`mapJsonErrors()` receives backend errors and synthetic package errors. Validation
+`uppercase()` does not rename error fields or change error envelopes. Without an
+error mapper, backend errors keep their original status and body. For example,
+`{"errors":{"display_name":["Required"]}}` returned with HTTP 422 stays unchanged.
+
+Use `mapJsonErrors()` when the existing client requires a different error contract.
+It receives backend errors and synthetic package errors. Validation
 messages keep the old form names through `Mapping::validationErrors()`. Unknown
 fields collect under `_general`; aliases merge their messages. The application
 continues to choose business error codes and any status translation.

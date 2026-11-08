@@ -2,8 +2,8 @@
 
 declare(strict_types=1);
 
-use Cosmira\Strangler\Json;
-use Cosmira\Strangler\Mapping;
+use Cosmira\Strangler\Response\Json;
+use Cosmira\Strangler\Schema\Mapping;
 use Cosmira\Strangler\Strangler;
 use Cosmira\Strangler\Tests\Fixtures\User;
 use Psr\Http\Message\ResponseInterface;

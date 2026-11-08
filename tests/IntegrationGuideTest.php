@@ -67,7 +67,7 @@ final class IntegrationGuideTest extends TestCase
         $history = [];
         $handler = HandlerStack::create(new MockHandler([new Response(200, [], 'mapped')]));
         $handler->push(Middleware::history($history));
-        $filter = Strangler::proxy('catalog')->routeParametersUsing(static fn (array $context): array => ['id' => $context['query']['id'] ?? $context['payload']['ID'] ?? null])
+        $filter = Strangler::proxy('catalog')->request(parameters: static fn (array $context): array => ['id' => $context['query']['id'] ?? $context['payload']['ID'] ?? null])
             ->put('update', '/api/items/{id}')->build();
         $filter['client'] = new Client(['handler' => $handler]);
         $chain = CFilterChain::create($controller, $controller->createAction('update'), [

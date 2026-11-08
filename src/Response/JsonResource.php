@@ -2,10 +2,11 @@
 
 declare(strict_types=1);
 
-namespace Cosmira\Strangler;
+namespace Cosmira\Strangler\Response;
 
 use Closure;
 use Cosmira\Strangler\Schema\Fields;
+use Cosmira\Strangler\Schema\Mapping;
 use InvalidArgumentException;
 use Psr\Http\Message\ResponseInterface;
 use stdClass;

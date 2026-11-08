@@ -70,10 +70,10 @@ final class PayloadBypassTest extends TestCase
     {
         $this->application->getParams()->add('strangler', ['features' => ['example' => $enabled]]);
         $filter = Strangler::proxy('example')->get($action, '/items')
-            ->payloadUsing(static function (): array {
+            ->request(reader: static function (): array {
                 self::fail('Unselected filter must not read the body.');
             })
-            ->payloadUsing(bypass: static function (): bool {
+            ->request(bypass: static function (): bool {
                 self::fail('Unselected filter must not evaluate the predicate.');
             })
             ->build();
@@ -95,10 +95,10 @@ final class PayloadBypassTest extends TestCase
     {
         $config = Strangler::proxy('example')->get('get', '/items')
             ->bypassUsing(static fn (): bool => true)
-            ->payloadUsing(static function (): array {
+            ->request(reader: static function (): array {
                 self::fail('Early bypass must not read the body.');
             })
-            ->payloadUsing(bypass: static function (): bool {
+            ->request(bypass: static function (): bool {
                 self::fail('Early bypass must not evaluate the predicate.');
             })
             ->build()['config'];
@@ -115,12 +115,12 @@ final class PayloadBypassTest extends TestCase
         $reads = 0;
         $calls = 0;
         $filter = Strangler::proxy('example')->post('get', '/items')
-            ->payloadUsing(static function () use (&$reads, $payload): array {
+            ->request(reader: static function () use (&$reads, $payload): array {
                 $reads++;
 
                 return $payload;
             })
-            ->payloadUsing(bypass: static function (array $body, string $action, array $query) use (&$calls, $payload, $bypass): bool {
+            ->request(bypass: static function (array $body, string $action, array $query) use (&$calls, $payload, $bypass): bool {
                 $calls++;
                 self::assertSame($payload, $body);
                 self::assertSame('get', $action);
@@ -152,8 +152,8 @@ final class PayloadBypassTest extends TestCase
     public function testPayloadPredicateCanShortCircuitForAPresentNullField(): void
     {
         $filter = Strangler::proxy('example')->get('get', '/items')
-            ->payloadUsing(static fn (): array => ['legacy_only' => null])
-            ->payloadUsing(bypass: static function (array $payload): bool {
+            ->request(reader: static fn (): array => ['legacy_only' => null])
+            ->request(bypass: static function (array $payload): bool {
                 return array_key_exists('legacy_only', $payload)
                     || throw new RuntimeException('Matching payload must short-circuit.');
             })
@@ -172,7 +172,7 @@ final class PayloadBypassTest extends TestCase
     {
         $failure = new $exceptionClass('predicate failed');
         $filter = Strangler::proxy('example')->get('get', '/items')
-            ->payloadUsing(bypass: static function () use ($failure): bool {
+            ->request(bypass: static function () use ($failure): bool {
                 throw $failure;
             })
             ->build();
@@ -200,15 +200,15 @@ final class PayloadBypassTest extends TestCase
         $reads = 0;
         $calls = 0;
         $config = Strangler::proxy('example')
-            ->payloadUsing(static function () use (&$reads): array {
+            ->request(reader: static function () use (&$reads): array {
                 $reads++;
 
                 return ['source' => 'reader'];
             })
-            ->payloadUsing(bypass: static function (): bool {
+            ->request(bypass: static function (): bool {
                 self::fail('The last predicate must replace the first.');
             })
-            ->payloadUsing(bypass: static function (array $payload, string $action, array $query) use (&$calls): bool {
+            ->request(bypass: static function (array $payload, string $action, array $query) use (&$calls): bool {
                 $calls++;
                 self::assertSame('get', $action);
                 self::assertSame([], $query);

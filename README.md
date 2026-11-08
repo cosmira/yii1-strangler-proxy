@@ -17,6 +17,7 @@ bodies. The HTTP handler may spool upstream responses to disk before output.
 - [Installation](#installation)
 - [Forward your first action](#forward-your-first-action)
 - [Describe contract differences](#when-the-apis-differ)
+- [Connect existing REST controllers](#connect-existing-rest-controllers)
 - [Run the complete example](#run-the-complete-example)
 - [Documentation](#documentation)
 
@@ -25,7 +26,7 @@ bodies. The HTTP handler may spool upstream responses to disk before output.
 Install the package in your Yii application:
 
 ```shell
-composer require cosmira/yii1-strangler-proxy:^2.0
+composer require cosmira/yii1-strangler-proxy:^3.0
 ```
 
 Load Composer's `vendor/autoload.php` before the Yii bootstrap. Commit your
@@ -67,8 +68,8 @@ Strangler::proxy('catalog')
     ->build(),
 ```
 
-The builder method sets the **outgoing** HTTP method; it does not restrict the incoming
-method. Write actions still require preceding HTTP verb, CSRF, and resource-access checks.
+A route declaration sets the **outgoing** HTTP method; on its own, it does not
+restrict the incoming method. Write actions still require preceding HTTP verb, CSRF, and resource-access checks.
 
 > Only checks completed before Strangler protect forwarded requests. Checks inside
 > the action or `beforeAction()` are skipped. `afterAction()` and previous filters'
@@ -112,8 +113,8 @@ Strangler::proxy('catalog')
 This convention expects backend records under `data`. For the `view` action,
 `{"data":{"id":42,"updated_at":"2026-11-08"}}` becomes
 `{"state":"data","data":{"ITEM_ID":42,"CHANGE_DATE":"2026-11-08"}}`.
-Lists also require `meta.total`. Errors use a
-[separate mapping](docs/api-adaptation.md#preserve-errors-and-headers).
+Lists also require `meta.total`. A controller contract supplies the native error
+envelope; without one, errors use a [separate mapping](docs/api-adaptation.md#preserve-errors-and-headers).
 These are the convention's defaults; the previous
 pass-through example did not require an envelope. See
 [response configuration](docs/api-adaptation.md#response-defaults) to change them.
@@ -155,6 +156,60 @@ containers made empty by their removal are consumed; neighboring metadata is kep
 The original callback context still contains the original body.
 See [advanced mappings](docs/api-adaptation.md) for response graphs and real legacy
 exceptions. The package owns JSON, headers and a single HTTP attempt.
+
+## Connect existing REST controllers
+
+If your controllers share a model accessor and a parsed request envelope, connect
+those existing methods once. Put this class where Composer or Yii can autoload it.
+This example assumes the controllers expose `getModel()` and `data()`:
+
+```php
+use Cosmira\Strangler\ControllerContract;
+
+class ApiContract extends ControllerContract
+{
+	public function model(CController $controller): CActiveRecord
+	{
+		return $controller->getModel();
+	}
+
+	public function payload(CController $controller): array
+	{
+		return $controller->data();
+	}
+}
+```
+
+Keep one fluent filter in each controller. Declare only the identifier, routes,
+and differences from your shared contract:
+
+```php
+use Cosmira\Strangler\Strangler;
+
+Strangler::proxy('catalog')
+	->using(new ApiContract())
+	->uppercase('ITEM_ID')
+	->response(fields: ['updated_at' => 'CHANGE_DATE'])
+	->get('get', '/api/items')
+	->get('view', '/api/items/{id}')
+	->post('create', '/api/items')
+	->put('edit', '/api/items/{id}')
+	->delete('delete', '/api/items/{id}')
+	->build();
+```
+
+The package reads the payload once, applies ordinary naming rules, and formats
+errors. Conventional `get`, `view`, `create`, `edit`, and `delete` actions also check
+the incoming method and request shape. Authentication, permissions, CSRF, and
+application-specific rules remain in your existing Yii filters.
+
+Use [`within()`](docs/api-adaptation.md#value-differences-and-scoped-identifiers)
+when an outgoing nested route needs a parent loaded through the native model's
+scope. Shared relation names and value conversions belong in the same
+[controller contract](docs/api-adaptation.md#share-a-controller-contract), rather
+than another builder or one adapter class per resource.
+
+For an existing 2.x integration, follow the [3.0 upgrade guide](docs/upgrading.md).
 
 ## Run the complete example
 
@@ -210,6 +265,7 @@ described in the adaptation guide.
 | Guide | What it covers |
 | --- | --- |
 | [API adaptation](docs/api-adaptation.md) | Naming conventions, query and body differences, response graphs, and uploads. |
+| [Upgrade to 3.0](docs/upgrading.md) | Changed methods, namespaces, and shared controller integration. |
 | [Integration](docs/integration.md) | Security filters, trusted headers, configuration, callbacks, and development checks. |
 | [File performance](docs/performance.md) | Upload transport requirements, buffering, and reproducible measurements. |
 | [Operations](docs/operations.md) | Deployment, feature flags, diagnostics, rollback, and uncertain writes. |

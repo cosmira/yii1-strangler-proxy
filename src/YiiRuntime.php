@@ -6,6 +6,7 @@ namespace Cosmira\Strangler;
 
 use CLogger;
 use Cosmira\Strangler\Internal\Http\HttpHeaders;
+use Cosmira\Strangler\Response\Record;
 use CWebApplication;
 use InvalidArgumentException;
 use LogicException;

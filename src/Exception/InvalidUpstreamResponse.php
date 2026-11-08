@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace Cosmira\Strangler;
+namespace Cosmira\Strangler\Exception;
 
 use UnexpectedValueException;
 

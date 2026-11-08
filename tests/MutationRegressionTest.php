@@ -110,7 +110,7 @@ final class MutationRegressionTest extends TestCase
 
             return new Response(202, ['X-Mapped' => ['one', 'two']], 'changed');
         })
-            ->payloadUsing(static function (CController $controller) use (&$receivedController): array {
+            ->request(reader: static function (CController $controller) use (&$receivedController): array {
                 $receivedController = $controller;
 
                 return ['name' => 'original'];
@@ -236,11 +236,11 @@ final class MutationRegressionTest extends TestCase
                 $callbacks++;
 
                 return false;
-            })->payloadUsing(static function () use (&$reads): array {
+            })->request(reader: static function () use (&$reads): array {
                 $reads++;
 
                 return ['unsupported' => true];
-            })->payloadUsing(bypass: static fn (array $payload, string $action): bool => $action === 'get' && array_intersect_key($payload, array_flip(['unsupported'])) !== [])->build()['config'];
+            })->request(bypass: static fn (array $payload, string $action): bool => $action === 'get' && array_intersect_key($payload, array_flip(['unsupported'])) !== [])->build()['config'];
         $proxy = new StranglerProxy($this->client([]));
 
         self::assertFalse($proxy->handle($this->controller, $config, 'GET'));

@@ -132,9 +132,12 @@ final readonly class StranglerProxy
         }
         unset($config['bypass']);
 
-        $inline = isset($config['mappings']) ? new InlineMapping($config['mappings'], [
-            'action' => $actionKey, 'query' => $_GET, 'payload' => null,
-        ]) : null;
+        $context = ['action' => $actionKey, 'query' => $_GET, 'payload' => null];
+        if (isset($config['bodyIdentifier'])) {
+            $context['identifier'] = $config['bodyIdentifier'];
+        }
+        $inline = isset($config['mappings'])
+            ? new InlineMapping($config['mappings'], $context) : null;
 
         return $this->forward($controller, $config, $actionKey, $route, $inline);
     }
@@ -161,7 +164,10 @@ final readonly class StranglerProxy
             return true;
         }
 
-        if (self::shouldBypass($controller, $config, $actionKey, $payload)) {
+        $contract = $config['controllerContract'] ?? null;
+        $nativeBypass = $contract !== null
+            && $contract->shouldBypass($controller, $actionKey, $_GET, $payload);
+        if ($nativeBypass || self::shouldBypass($controller, $config, $actionKey, $payload)) {
             YiiRuntime::logDecision($config, $actionKey, 'bypass_payload');
 
             return false;
@@ -169,7 +175,7 @@ final readonly class StranglerProxy
         $mapping = $inline?->withPayload($payload, $snapshot['body']);
 
         $prepared = self::prepareRequest(
-            $config, $actionKey, $route, $snapshot, $mapping,
+            $controller, $config, $actionKey, $route, $snapshot, $mapping,
         );
         if ($prepared === false) {
             YiiRuntime::logDecision($config, $actionKey, 'mapping_unsupported');
@@ -235,6 +241,12 @@ final readonly class StranglerProxy
         string $actionKey,
     ): array {
         $reader = $config['payloadReader'] ?? null;
+        if ($reader === null && isset($config['controllerContract'])) {
+            return [
+                'payload' => $config['controllerContract']->payload($controller),
+                'body'    => null,
+            ];
+        }
 
         if ($reader !== null) {
             return ['payload' => $reader($controller), 'body' => null];
@@ -336,6 +348,7 @@ final readonly class StranglerProxy
      * @return Prepared|false
      */
     private static function prepareRequest(
+        CController $controller,
         array $config,
         string $actionKey,
         array $route,
@@ -350,7 +363,9 @@ final readonly class StranglerProxy
         $context = $inline?->context() ?? [
             'action' => $actionKey, 'query' => $_GET, 'payload' => $payload,
         ];
-        $parameters = self::routeParameters($config, $context, $bound['parameters']);
+        $parameters = self::routeParameters(
+            $controller, $config, $route, $context, $bound['parameters'],
+        );
         if ($parameters === false) {
             return false;
         }
@@ -413,22 +428,64 @@ final readonly class StranglerProxy
      * Keep native lookup results separate from transmitted query and body values.
      *
      * @param Config                    $config
+     * @param Route                     $route
      * @param Context                   $context
      * @param array<string, int|string> $bound
      *
      * @return array<string, int|string>|false
      */
     private static function routeParameters(
-        array $config, array $context, array $bound,
+        CController $controller, array $config, array $route, array $context, array $bound,
     ): array|false {
         $resolver = $config['routeParameters'] ?? null;
-        if ($resolver === null) {
-            return $bound;
-        }
-        $resolved = $resolver($context);
+        $resolved = $resolver === null ? [] : $resolver($context);
         if ($resolved === false) {
             return false;
         }
+        $native = self::nativeParentParameters($controller, $config, $route, $context);
+        if ($native === false) {
+            return false;
+        }
+        $parameters = self::mergeRouteParameters($bound, $native);
+
+        return $parameters === false ? false : self::mergeRouteParameters($parameters, $resolved);
+    }
+
+    /**
+     * Resolve scoped ownership only when the selected outgoing route requires it.
+     *
+     * @param Config  $config
+     * @param Route   $route
+     * @param Context $context
+     *
+     * @return array<string, int|string>|false
+     */
+    private static function nativeParentParameters(
+        CController $controller, array $config, array $route, array $context,
+    ): array|false {
+        $parent = $config['nativeParent'] ?? null;
+        if ($parent === null || ! str_contains($route['path'], '{'.strtolower($parent).'}')) {
+            return [];
+        }
+        $contract = $config['controllerContract']
+            ?? throw new InvalidArgumentException('within() requires a controller contract.');
+
+        return $contract->parentParameters(
+            $controller, $parent, $context['query'], $context['payload'] ?? [],
+            $config['bodyIdentifier'] ?? null,
+        );
+    }
+
+    /**
+     * Merge declared and native route values without hiding conflicting identifiers.
+     *
+     * @param array<string, int|string> $bound
+     * @param array<string, mixed>      $resolved
+     *
+     * @return array<string, int|string>|false
+     */
+    private static function mergeRouteParameters(array $bound, array $resolved): array|false
+    {
         $parameters = $bound;
         foreach ($resolved as $name => $value) {
             if (! self::validRouteParameter($value)

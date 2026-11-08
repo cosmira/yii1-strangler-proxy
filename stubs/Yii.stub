@@ -49,3 +49,16 @@ class CAction
     /** @return string */
     public function getId() {}
 }
+
+class CModel {}
+class CDbCriteria {}
+
+class CActiveRecord extends CModel
+{
+    /**
+     * @param bool $createIfNull
+     *
+     * @return ($createIfNull is true ? CDbCriteria : CDbCriteria|null)
+     */
+    public function getDbCriteria($createIfNull = true) {}
+}

@@ -5,8 +5,8 @@ declare(strict_types=1);
 namespace Cosmira\Strangler\Tests;
 
 use Cosmira\Strangler\InlineMapping;
-use Cosmira\Strangler\JsonResource;
-use Cosmira\Strangler\Record;
+use Cosmira\Strangler\Response\JsonResource;
+use Cosmira\Strangler\Response\Record;
 use Cosmira\Strangler\Strangler;
 use GuzzleHttp\Psr7\Response;
 use PHPUnit\Framework\TestCase;

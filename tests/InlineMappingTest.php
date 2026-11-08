@@ -5,10 +5,10 @@ declare(strict_types=1);
 namespace Cosmira\Strangler\Tests;
 
 use CFilterChain;
+use Cosmira\Strangler\Exception\InvalidUpstreamResponse;
 use Cosmira\Strangler\InlineMapping;
-use Cosmira\Strangler\InvalidUpstreamResponse;
-use Cosmira\Strangler\Json;
-use Cosmira\Strangler\Mapping;
+use Cosmira\Strangler\Response\Json;
+use Cosmira\Strangler\Schema\Mapping;
 use Cosmira\Strangler\Strangler;
 use Cosmira\Strangler\Tests\Fixtures\ApplicationEnded;
 use Cosmira\Strangler\Tests\Fixtures\Controller;
@@ -101,7 +101,7 @@ final class InlineMappingTest extends TestCase
         $_GET = ['r' => 'example/get', 'start' => 20];
         $this->request->body = '{"ID":"a/b","NAME":"Desk","nullable":null}';
         $context = ['action' => 'get', 'query' => $_GET, 'payload' => ['ID' => 'a/b', 'NAME' => 'Desk', 'nullable' => null]];
-        $filter = Strangler::proxy('example')->post('get', '/items/{id}')->routeParametersUsing(static fn (array $context): array => ['id' => $context['query']['id'] ?? $context['payload']['ID'] ?? null])
+        $filter = Strangler::proxy('example')->post('get', '/items/{id}')->request(parameters: static fn (array $context): array => ['id' => $context['query']['id'] ?? $context['payload']['ID'] ?? null])
             ->mapQuery(static function (array $query, array $request) use ($context): array {
                 self::assertSame(['start' => 20], $query);
                 self::assertSame($context, $request);
@@ -201,7 +201,7 @@ final class InlineMappingTest extends TestCase
             self::assertNull($payload['nullable']);
         };
         $filter = Strangler::proxy('example')->post('get', '/items')
-            ->payloadUsing(bypass: static function (array $payload): bool {
+            ->request(bypass: static function (array $payload): bool {
                 self::assertSame([
                     'options' => [], 'list' => [],
                     'nested'  => ['id' => '9223372036854775808', 'empty' => []], 'nullable' => null,
@@ -249,7 +249,7 @@ final class InlineMappingTest extends TestCase
         $this->request->body = 'not JSON, ignored by the custom reader';
         $payload = ['options' => ['mode' => 'reader'], 'empty' => []];
         $filter = Strangler::proxy('example')->post('get', '/items')
-            ->payloadUsing(static fn (): array => $payload)
+            ->request(reader: static fn (): array => $payload)
             ->mapPayload(static function (array $value, array $context) use ($payload): array {
                 self::assertSame($payload, $value);
                 self::assertSame($payload, $context['payload']);

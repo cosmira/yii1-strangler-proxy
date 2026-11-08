@@ -147,8 +147,8 @@ final class StranglerProxyTest extends TestCase
     public function testBypassRetainsFieldsWhoseValueIsNull(): void
     {
         $config = Strangler::proxy('example')
-            ->payloadUsing(static fn () => ['special' => null])
-            ->payloadUsing(bypass: static fn (array $payload, string $action): bool => $action === 'put' && array_intersect_key($payload, array_flip(['special'])) !== [])
+            ->request(reader: static fn () => ['special' => null])
+            ->request(bypass: static fn (array $payload, string $action): bool => $action === 'put' && array_intersect_key($payload, array_flip(['special'])) !== [])
             ->build()['config'];
 
         self::assertTrue(StranglerProxy::shouldBypass($this->controller, $config, 'put'));
@@ -171,8 +171,8 @@ final class StranglerProxyTest extends TestCase
 
                 return new Response(202, $response->getHeaders(), 'mapped:'.(is_string($json) ? $json : json_encode($json, JSON_THROW_ON_ERROR)));
             })
-            ->payloadUsing(static fn () => ['ID' => 'a/b c', 'NAME' => 'Alice'])
-            ->routeParametersUsing(static fn (array $context): array => ['id' => $context['query']['id'] ?? $context['payload']['ID'] ?? null])
+            ->request(reader: static fn () => ['ID' => 'a/b c', 'NAME' => 'Alice'])
+            ->request(parameters: static fn (array $context): array => ['id' => $context['query']['id'] ?? $context['payload']['ID'] ?? null])
             ->put('update', '/api/items/{id}')
             ->afterAttempt(static function (string $method, string $path) use (&$events, &$transformed): void {
                 $events[] = [$method, $path, $transformed];
@@ -198,8 +198,8 @@ final class StranglerProxyTest extends TestCase
     public function testUrlIdentifierTakesPrecedenceOverPayload(): void
     {
         $_GET = ['id' => 'url-id'];
-        $config = Strangler::proxy('example')->routeParametersUsing(static fn (array $context): array => ['id' => $context['query']['id'] ?? $context['payload']['ID'] ?? null])
-            ->payloadUsing(static fn () => ['ID' => 'body-id'])
+        $config = Strangler::proxy('example')->request(parameters: static fn (array $context): array => ['id' => $context['query']['id'] ?? $context['payload']['ID'] ?? null])
+            ->request(reader: static fn () => ['ID' => 'body-id'])
             ->put('update', '/api/items/{id}')->build()['config'];
         $proxy = $this->proxy($this->client([new Response(204)]));
 
@@ -440,7 +440,7 @@ final class StranglerProxyTest extends TestCase
     public function testNestedMultipartFieldsFailBeforeAnyAttempt(): void
     {
         $config = Strangler::proxy('example')->mapFiles([])
-            ->payloadUsing(static fn (): array => ['nested' => ['value']])
+            ->request(reader: static fn (): array => ['nested' => ['value']])
             ->post('upload', '/photo')->build()['config'];
         $proxy = $this->proxy($this->client([]));
 
@@ -710,8 +710,8 @@ final class StranglerProxyTest extends TestCase
     public function testBypassCanDeclineAndFallsThroughToOtherPayloadFields(): void
     {
         $config = Strangler::proxy('example')->bypassUsing(static fn (): bool => false)
-            ->payloadUsing(static fn (): array => ['second' => false])
-            ->payloadUsing(bypass: static fn (array $payload, string $action): bool => $action === 'get' && array_intersect_key($payload, array_flip(['first', 'second'])) !== [])->build()['config'];
+            ->request(reader: static fn (): array => ['second' => false])
+            ->request(bypass: static fn (array $payload, string $action): bool => $action === 'get' && array_intersect_key($payload, array_flip(['first', 'second'])) !== [])->build()['config'];
         self::assertTrue(StranglerProxy::shouldBypass($this->controller, $config, 'GET'));
         $config['payloadReader'] = static fn (): array => [];
         self::assertFalse(StranglerProxy::shouldBypass($this->controller, $config, 'get'));
@@ -726,7 +726,7 @@ final class StranglerProxyTest extends TestCase
     public function testPlaceholderPrecedenceAndEncoding(array $query, array $payload, string $path, string $expected): void
     {
         $_GET = $query;
-        $config = Strangler::proxy('example')->payloadUsing(static fn (): array => $payload)
+        $config = Strangler::proxy('example')->request(reader: static fn (): array => $payload)
             ->put('update', $path)->build()['config'];
         $proxy = $this->proxy($this->client([new Response(200)]));
         $this->capture(fn () => $proxy->handle($this->controller, $config, 'update'));
@@ -901,7 +901,7 @@ final class StranglerProxyTest extends TestCase
     #[DataProvider('dotSegments')]
     public function testPayloadPlaceholdersCannotNavigateToAnotherResource(string $value): void
     {
-        $config = Strangler::proxy('example')->payloadUsing(static fn (): array => ['slug' => $value])
+        $config = Strangler::proxy('example')->request(reader: static fn (): array => ['slug' => $value])
             ->delete('delete', '/items/{slug}')->build()['config'];
         $proxy = $this->proxy($this->client([]));
         self::assertSame('{"state":"error","error":"strangler_route_parameter_missing"}',
@@ -1003,8 +1003,8 @@ final class StranglerProxyTest extends TestCase
     public function testPayloadBypassKeepsTheOriginalActionAndNeverCallsTheBackend(): void
     {
         $filter = Strangler::proxy('example')->get('get', '/items')
-            ->payloadUsing(static fn (): array => ['legacy_only' => true])
-            ->payloadUsing(bypass: static fn (array $payload, string $action): bool => $action === 'get' && array_intersect_key($payload, array_flip(['legacy_only'])) !== [])->build();
+            ->request(reader: static fn (): array => ['legacy_only' => true])
+            ->request(bypass: static fn (array $payload, string $action): bool => $action === 'get' && array_intersect_key($payload, array_flip(['legacy_only'])) !== [])->build();
         $filter['client'] = $this->client([]);
         $chain = CFilterChain::create($this->controller, $this->controller->createAction('get'), [$filter]);
         $chain->run();
@@ -1223,7 +1223,7 @@ final class StranglerProxyTest extends TestCase
     public function testPayloadReaderProgrammingFailuresAreNotInvalidClientPayloads(): void
     {
         $config = Strangler::proxy('example')->get('get', '/items')
-            ->payloadUsing(static function (): array {
+            ->request(reader: static function (): array {
                 throw new InvalidArgumentException('Broken application reader');
             })->build()['config'];
         $proxy = $this->proxy($this->client([]));
@@ -1388,11 +1388,11 @@ final class StranglerProxyTest extends TestCase
     {
         $reads = 0;
         $filter = Strangler::proxy('example')->get('get', '/items')
-            ->payloadUsing(static function () use (&$reads): array {
+            ->request(reader: static function () use (&$reads): array {
                 $reads++;
 
                 return ['name' => 'first'];
-            })->payloadUsing(bypass: static fn (array $payload, string $action): bool => $action === 'get' && array_intersect_key($payload, array_flip(['legacy_only'])) !== [])->build();
+            })->request(bypass: static fn (array $payload, string $action): bool => $action === 'get' && array_intersect_key($payload, array_flip(['legacy_only'])) !== [])->build();
         $filter['client'] = $this->client([new Response(200, [], 'upstream')]);
         $chain = CFilterChain::create($this->controller, $this->controller->createAction('get'), [$filter]);
         self::assertSame('upstream', $this->capture(static fn () => $chain->run()));

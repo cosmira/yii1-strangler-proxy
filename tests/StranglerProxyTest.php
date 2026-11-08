@@ -22,8 +22,11 @@ use GuzzleHttp\Exception\ConnectException;
 use GuzzleHttp\Handler\MockHandler;
 use GuzzleHttp\HandlerStack;
 use GuzzleHttp\Middleware;
+use GuzzleHttp\Psr7\FnStream;
+use GuzzleHttp\Psr7\NoSeekStream;
 use GuzzleHttp\Psr7\Request as HttpRequest;
 use GuzzleHttp\Psr7\Response;
+use GuzzleHttp\Psr7\Utils;
 use InvalidArgumentException;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\PreserveGlobalState;
@@ -240,6 +243,77 @@ final class StranglerProxyTest extends TestCase
         self::assertSame(['state' => 'error', 'error' => 'service_temporarily_unavailable'], json_decode($body, true));
         self::assertSame([['POST', '/api/items']], $events);
         self::assertCount(1, $this->history);
+    }
+
+    public function testUnmappedFileResponseReadsTheBodyOnce(): void
+    {
+        $reads = 0;
+        $source = Utils::streamFor("file\x00bytes");
+        $stream = FnStream::decorate($source, [
+            '__toString' => static function () use ($source, &$reads): string {
+                $reads++;
+
+                return (string) $source;
+            },
+        ]);
+        $config = Strangler::proxy('example')
+            ->mapQuery(static fn (): array => [])
+            ->get('download', '/file')
+            ->build()['config'];
+        $proxy = $this->proxy($this->client([
+            new Response(200, ['Content-Type' => 'application/octet-stream'], $stream),
+        ]));
+
+        self::assertSame("file\x00bytes", $this->capture(
+            fn () => $proxy->handle($this->controller, $config, 'download'),
+        ));
+        self::assertSame(1, $reads);
+        self::assertCount(1, $this->history);
+    }
+
+    public function testNonSeekableJsonResponseRemainsReadableAfterMapping(): void
+    {
+        $body = '{"data":{"id":42}}';
+        $stream = new NoSeekStream(Utils::streamFor($body));
+        $config = Strangler::proxy('example')
+            ->mapJsonResponse(static function ($json, ResponseInterface $response): ResponseInterface {
+                self::assertEquals((object) ['data' => (object) ['id' => 42]], $json);
+
+                return $response->withHeader('X-Mapped', '1');
+            })
+            ->afterAttempt(static function () use ($stream, $body): void {
+                self::assertSame(strlen($body), $stream->tell());
+            })
+            ->get('get', '/file')
+            ->build()['config'];
+        $proxy = $this->proxy($this->client([new Response(200, [], $stream)]));
+
+        self::assertSame($body, $this->capture(
+            fn () => $proxy->handle($this->controller, $config, 'get'),
+        ));
+        self::assertCount(1, $this->history);
+    }
+
+    public function testMappedResponseCanTransformAReadOnlyUpstreamStream(): void
+    {
+        $config = Strangler::proxy('example')
+            ->mapJsonResponse(static function ($json, ResponseInterface $response): ResponseInterface {
+                $response->getBody()->rewind();
+                $response->getBody()->write('{"data":2}');
+
+                return $response;
+            })
+            ->get('get', '/file')
+            ->build()['config'];
+        $stream = Utils::streamFor(
+            Utils::tryFopen('data://text/plain,{"data":1}', 'rb'),
+        );
+        self::assertFalse($stream->isWritable());
+        $proxy = $this->proxy($this->client([new Response(200, [], $stream)]));
+
+        self::assertSame('{"data":2}', $this->capture(
+            fn () => $proxy->handle($this->controller, $config, 'get'),
+        ));
     }
 
     public function testMappedUploadAndFormFieldsReachOneMultipartRequest(): void

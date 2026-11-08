@@ -53,6 +53,17 @@ final class InlineMappingTest extends TestCase
 
     private \CLogger $logger;
 
+    public function testUnconfiguredResponsesKeepTheirOriginalStreamAndMetadata(): void
+    {
+        $inline = new InlineMapping([], ['action' => 'view', 'query' => [], 'payload' => null]);
+
+        foreach ([200, 302, 422] as $status) {
+            $response = new Response($status, ['X-File' => 'unchanged'], "binary\x00data");
+
+            self::assertSame($response, $inline->response($response));
+        }
+    }
+
     protected function setUp(): void
     {
         define('YII_DEBUG', false);

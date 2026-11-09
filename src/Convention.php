@@ -14,6 +14,8 @@ use stdClass;
 /**
  * Compile the ordinary naming and envelope rules behind the public builder.
  *
+ * @phpstan-type RequestRule array{lists: array<string, string>, defaults: array<string, mixed>}
+ * @phpstan-type RequestRules array<string, RequestRule>
  *
  * @internal
  */
@@ -59,6 +61,7 @@ final class Convention
      * @param (callable(
      *     mixed, ResponseInterface, array{action: string}
      * ): ?ResponseInterface)|null $resultUsing
+     * @param RequestRules $rules
      */
     public function __construct(
         /**
@@ -71,6 +74,7 @@ final class Convention
         array $filterAliases = [],
         array $sortAliases = [],
         ?callable $resultUsing = null,
+        private array $rules = [],
     ) {
         $input = Fields::uppercase()->rename(array_flip($requestFields));
         foreach ($filterAliases as $field => $name) {
@@ -82,6 +86,55 @@ final class Convention
         $this->input = $input;
         $this->output = $output;
         $this->resultUsing = $resultUsing === null ? null : $resultUsing(...);
+    }
+
+    /**
+     * Accumulate shared or action-specific request differences without replacing other rules.
+     *
+     * @param RequestRules          $registered
+     * @param array<string, string> $lists
+     * @param array<string, mixed>  $defaults
+     * @param list<string>          $actions
+     *
+     * @return RequestRules
+     */
+    public static function requestRules(
+        array $registered, array $lists, array $defaults, array $actions,
+    ): array {
+        if ($lists === [] && $defaults === []) {
+            return $registered;
+        }
+        Mapping::fields([], $lists);
+        self::validateDefaultNames($defaults);
+        foreach ($actions ?: ['*'] as $action) {
+            if ($action === '') {
+                throw new InvalidArgumentException('Mapping actions must not be empty.');
+            }
+            $action = strtolower($action);
+            $rules = $registered[$action] ?? ['lists' => [], 'defaults' => []];
+            $rules['lists'] = array_replace($rules['lists'], $lists);
+            Mapping::fields([], $rules['lists']);
+            $rules['defaults'] = array_replace($rules['defaults'], $defaults);
+            $registered[$action] = $rules;
+        }
+
+        return $registered;
+    }
+
+    /**
+     * Reject malformed upstream default names at the configuration boundary.
+     *
+     * @param array<array-key, mixed> $defaults
+     */
+    private static function validateDefaultNames(array $defaults): void
+    {
+        foreach (array_keys($defaults) as $field) {
+            if (! is_string($field) || $field === '') {
+                throw new InvalidArgumentException(
+                    'Request default names must be nonempty strings.',
+                );
+            }
+        }
     }
 
     /**
@@ -126,13 +179,28 @@ final class Convention
         unset($values[$this->identifier]);
 
         try {
+            $shared = $this->rules['*'] ?? ['lists' => [], 'defaults' => []];
+            $scoped = $this->rules[strtolower($context['action'])]
+                ?? ['lists' => [], 'defaults' => []];
+            $lists = array_replace($shared['lists'], $scoped['lists']);
+            $defaults = array_replace($shared['defaults'], $scoped['defaults']);
+            $lists = array_filter(
+                $lists, static fn (string $source): bool => isset($values[$source]),
+                ARRAY_FILTER_USE_KEY,
+            );
+            foreach ($lists as $source => $target) {
+                $values[$source] = [$values[$source]];
+            }
             $names = array_replace(
                 $this->input->writes(array_keys($values)),
                 array_intersect_key($this->requestFields, $values),
+                array_intersect_key($lists, $values),
             );
-            $mapped = Mapping::fields($payload, $names);
+            $record = $payload instanceof stdClass ? (object) $values : $values;
+            $mapped = (array) Mapping::fields($record, $names) + $defaults;
+            $record = $payload instanceof stdClass ? (object) $mapped : $mapped;
 
-            return self::values($mapped, $this->requestValues);
+            return self::values($record, $this->requestValues);
         } catch (InvalidArgumentException) {
             return false;
         }

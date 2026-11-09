@@ -11,6 +11,9 @@ use Closure;
  *
  * @internal
  *
+ * @phpstan-type NativeDefaults array<string, mixed>|callable(
+ *     array<array-key, mixed>
+ * ): ?array<string, mixed>
  * @phpstan-type SelectionMapper callable(
  *     array<array-key, mixed>, array{action: string}
  * ): (array<array-key, mixed>|false)
@@ -41,6 +44,40 @@ final readonly class Selection
         private array $mergeFor = ['view'],
     ) {
         $this->defaults = $defaults(...);
+    }
+
+    /**
+     * Resolve explicit native defaults and action-specific selection rules as one policy.
+     *
+     * @param NativeDefaults|null         $defaults
+     * @param list<string>                $replaceFor
+     * @param list<string>                $emptyFor
+     * @param array<string, list<string>> $extendFor
+     * @param list<string>                $mergeFor
+     */
+    public static function make(
+        array|callable|null $defaults, array $replaceFor, array $emptyFor,
+        array $extendFor, array $mergeFor, ?self $current = null,
+    ): ?self {
+        $replace = array_map(strtolower(...), $replaceFor);
+        $empty = array_map(strtolower(...), $emptyFor);
+        $extend = array_change_key_case($extendFor, CASE_LOWER);
+        $merge = array_map(strtolower(...), $mergeFor);
+        $nativeDefaults = $defaults;
+        if ($nativeDefaults === null) {
+            if ($replace === [] && $empty === [] && $extend === [] && $merge === ['view']) {
+                return null;
+            }
+            $nativeDefaults = $current->defaults
+                ?? throw new \InvalidArgumentException(
+                    'Selection rules require query(defaults: ...).',
+                );
+        }
+
+        return new self(
+            is_callable($nativeDefaults) ? $nativeDefaults : static fn (): array => $nativeDefaults,
+            $replace, $empty, $extend, $merge,
+        );
     }
 
     /**

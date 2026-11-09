@@ -7,6 +7,7 @@ namespace Cosmira\Strangler;
 use CController;
 use Closure;
 use Cosmira\Strangler\Internal\Payload\BodyParameters;
+use Cosmira\Strangler\Internal\Payload\NativeRequestGuard;
 use CWebApplication;
 use GuzzleHttp\ClientInterface;
 use InvalidArgumentException;
@@ -89,14 +90,29 @@ final readonly class StranglerProxy
         ?array $payload = null,
     ): bool {
         $actionKey = self::normalizeActionKey($actionId);
-        $bypass = $config['bypass'] ?? null;
-        if ($bypass !== null && $bypass($controller, $actionKey, $_GET)) {
+        if (self::queryIsNative($controller, $config, $actionKey)) {
             return true;
         }
 
         $bound = ControllerContract::resolveConfig($config, $controller);
 
         return self::payloadIsNative($controller, $bound, $actionKey, $payload);
+    }
+
+    /**
+     * Resolve declared native searches and application bypasses before model binding.
+     *
+     * @param Config $config
+     */
+    private static function queryIsNative(
+        CController $controller, array $config, string $action,
+    ): bool {
+        if (NativeRequestGuard::hasNativeFilter($config['nativeQueryFilters'] ?? [], $_GET)) {
+            return true;
+        }
+        $bypass = $config['bypass'] ?? null;
+
+        return $bypass !== null && $bypass($controller, $action, $_GET);
     }
 
     /**
@@ -177,14 +193,13 @@ final readonly class StranglerProxy
             return false;
         }
 
-        $bypass = $config['bypass'] ?? null;
-        if ($bypass !== null && $bypass($controller, $actionKey, $_GET)) {
+        if (self::queryIsNative($controller, $config, $actionKey)) {
             YiiRuntime::logDecision($config, $actionKey, 'bypass_callback');
 
             return false;
         }
         $bound = ControllerContract::resolveConfig($config, $controller);
-        unset($bound['bypass']);
+        unset($bound['bypass'], $bound['nativeQueryFilters']);
 
         $context = ['action' => $actionKey, 'query' => $_GET, 'payload' => null];
         if (isset($bound['bodyIdentifier'])) {

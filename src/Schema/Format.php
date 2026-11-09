@@ -12,6 +12,50 @@ use ValueError;
 final class Format
 {
     /**
+     * Normalize Yii boolean values while retaining invalid input for validation.
+     */
+    public static function boolean(mixed $value): mixed
+    {
+        return in_array($value, [0, 1, '0', '1', true, false], true) ? (bool) $value : $value;
+    }
+
+    /**
+     * Decode JSON strings without changing already decoded values.
+     */
+    public static function json(mixed $value): mixed
+    {
+        return is_string($value) ? json_decode($value, true) : $value;
+    }
+
+    /**
+     * Encode array values for an API that stores JSON as a string.
+     */
+    public static function jsonString(mixed $value): mixed
+    {
+        return is_array($value) ? json_encode($value) : $value;
+    }
+
+    /**
+     * Bind a filter alias vocabulary once for reuse across requests.
+     *
+     * @param array<string, list<string>> $aliases
+     *
+     * @return \Closure(mixed): mixed
+     */
+    public static function expandWith(array $aliases): \Closure
+    {
+        return static fn (mixed $value): mixed => self::expand($value, $aliases);
+    }
+
+    /**
+     * Convert Unix timestamp filters to UTC while retaining invalid values for validation.
+     */
+    public static function unixTimestamp(mixed $value): mixed
+    {
+        return is_numeric($value) ? gmdate('Y-m-d\\TH:i:s\\Z', (int) $value) : $value;
+    }
+
+    /**
      * Expand normalized CSV filter values while retaining unknown names and request order.
      *
      * @param array<string, list<string>> $aliases

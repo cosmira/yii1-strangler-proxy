@@ -10,6 +10,7 @@ use CDbCriteria;
 use CDbTableSchema;
 use Cosmira\Strangler\ControllerContract;
 use Cosmira\Strangler\InlineMapping;
+use Cosmira\Strangler\Schema\Format;
 use Cosmira\Strangler\Strangler;
 use Cosmira\Strangler\StranglerProxy;
 use Cosmira\Strangler\Tests\Fixtures\Controller;
@@ -62,6 +63,84 @@ final class ControllerContractTest extends TestCase
     {
         Yii::setApplication(null);
         $_GET = [];
+    }
+
+    public function testNativeSearchIsSelectedBeforeReadingControllerModelMetadata(): void
+    {
+        $contract = new class extends ControllerContract
+        {
+            public function model(CController $controller): CActiveRecord
+            {
+                throw new \LogicException('The native search must not bind a model.');
+            }
+
+            public function payload(CController $controller): array
+            {
+                return [];
+            }
+        };
+        $config = Strangler::proxy('example')->using($contract)
+            ->query(nativeOn: ['query'])->get('get', '/items')->build()['config'];
+        $client = $this->createMock(ClientInterface::class);
+        $client->expects(self::never())->method('request');
+        foreach ([['query' => 'full text'], 'malformed'] as $filter) {
+            $_GET = ['filter' => $filter];
+            self::assertTrue(StranglerProxy::shouldBypass($this->controller, $config, 'get'));
+            self::assertFalse((new StranglerProxy($client))->handle($this->controller, $config, 'get'));
+        }
+        $_GET = ['filter' => ['query' => '']];
+        $this->expectException(\LogicException::class);
+        $this->expectExceptionMessage('The native search must not bind a model.');
+        StranglerProxy::shouldBypass($this->controller, $config, 'get');
+    }
+
+    public function testDeclaredPayloadFragmentsOnlySelectTheirNativeActions(): void
+    {
+        $config = Strangler::proxy('example')->uppercase('ITEM_ID')
+            ->request(nativeContains: ['csv' => 'legacy'], actions: ['import'])
+            ->post('import', '/items/import')->post('create', '/items')->build()['config'];
+        foreach ([['legacy csv', true], ['normal csv', false], [null, false], [1, false]] as [$value, $native]) {
+            self::assertSame($native, StranglerProxy::shouldBypass(
+                $this->controller, $config, 'import', ['csv' => $value],
+            ));
+        }
+        self::assertFalse(StranglerProxy::shouldBypass($this->controller, $config, 'import', []));
+        self::assertFalse(StranglerProxy::shouldBypass($this->controller, $config, 'create', ['csv' => 'legacy']));
+    }
+
+    public function testSharedContractDeclarationsAreAppliedBeforeLocalOverrides(): void
+    {
+        $contract = new class extends ControllerContract
+        {
+            public function configure(Strangler $proxy): void
+            {
+                $proxy->request(values: ['enabled' => Format::boolean(...)])
+                    ->query(defaults: ['children' => []])->response(fields: ['label' => 'TITLE']);
+            }
+
+            public function model(CController $controller): CActiveRecord
+            {
+                throw new \LogicException('Explicit identifiers do not require model metadata.');
+            }
+
+            public function payload(CController $controller): array
+            {
+                return [];
+            }
+        };
+        $config = Strangler::proxy('example')->using($contract)->uppercase('ITEM_ID')
+            ->query(emptyFor: ['delete'])
+            ->response(fields: ['label' => 'LOCAL_TITLE'], projection: '*')
+            ->post('create', '/items')->delete('delete', '/items/{id}')->build()['config'];
+        $mapping = new InlineMapping($config['mappings'] ?? [], ['action' => 'create', 'query' => [], 'payload' => ['ENABLED' => 1]]);
+
+        $result = $mapping->request([], ['ENABLED' => 1], null);
+
+        self::assertIsArray($result);
+
+        self::assertSame(['enabled' => true], $result['payload']);
+        $response = $mapping->response(new Response(200, [], '{"data":{"id":"i","label":"Title"}}'));
+        self::assertSame(['state' => 'data', 'data' => ['ITEM_ID' => 'i', 'LOCAL_TITLE' => 'Title']], json_decode((string) $response->getBody(), true));
     }
 
     public function testNativeRelationWritesStayLocalUnlessExplicitlyAdaptedOrConsumed(): void

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Cosmira\Strangler\Internal\Payload;
 
+use Closure;
 use InvalidArgumentException;
 use stdClass;
 
@@ -11,9 +12,85 @@ use stdClass;
  * Move declared body values into route parameters without consuming neighboring data.
  *
  * @internal
+ *
+ * @phpstan-type BodyValue string|list<string>|Closure(array<array-key, mixed>): mixed
+ * @phpstan-type Body array<string, BodyValue>
  */
 final class BodyParameters
 {
+    /**
+     * Compile selected native values into a new upstream body without changing the snapshot.
+     *
+     * @param Body $fields
+     *
+     * @return Closure(array<array-key, mixed>): array<string, mixed>
+     */
+    public static function mapper(array $fields): Closure
+    {
+        foreach ($fields as $target => $source) {
+            self::validateTargetName($target);
+            self::validateFieldSource($source);
+        }
+
+        return static function (array $payload) use ($fields): array {
+            $body = [];
+            foreach ($fields as $target => $source) {
+                $body[$target] = self::fieldValue($source, $payload);
+            }
+
+            return $body;
+        };
+    }
+
+    /**
+     * Require named output fields at the configuration boundary.
+     */
+    private static function validateTargetName(mixed $target): void
+    {
+        if (! is_string($target) || $target === '') {
+            throw new InvalidArgumentException('Body mappings require named output fields.');
+        }
+    }
+
+    /**
+     * Reject malformed source declarations before any request is forwarded.
+     */
+    private static function validateFieldSource(mixed $source): void
+    {
+        if ($source instanceof Closure) {
+            return;
+        }
+        if (is_array($source) && ! array_is_list($source)) {
+            throw new InvalidArgumentException(
+                'Body list mappings require a list of source fields.',
+            );
+        }
+        foreach (is_array($source) ? $source : [$source] as $field) {
+            if (! is_string($field) || $field === '') {
+                throw new InvalidArgumentException(
+                    'Body mappings require nonempty source field names.',
+                );
+            }
+        }
+    }
+
+    /**
+     * Evaluate a source field, an ordered field list or a compiled value conversion.
+     *
+     * @param string|list<string>|Closure(array<array-key, mixed>): mixed $source
+     * @param array<array-key, mixed>                                     $payload
+     */
+    private static function fieldValue(string|array|Closure $source, array $payload): mixed
+    {
+        if ($source instanceof Closure) {
+            return $source($payload);
+        }
+
+        return is_array($source)
+            ? array_map(static fn (string $field): mixed => $payload[$field] ?? null, $source)
+            : $payload[$source] ?? null;
+    }
+
     /**
      * Reject invalid bindings while the filter configuration is built.
      *

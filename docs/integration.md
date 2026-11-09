@@ -172,7 +172,7 @@ The controller builder configures behavior for one feature:
 
 Payload decisions run in this order after the feature and route checks:
 
-1. Run the existing early `bypassUsing()` callback. A match does not read the body or native model.
+1. Check `query(nativeOn:)`, then the early `bypassUsing()` callback. A match does not read the body or native model.
 2. Resolve the native primary key and compile request-local mappings when the contract has no explicit identifier.
 3. Read the payload once and run the contract's conventional CRUD checks against that snapshot.
 4. Call the configured payload predicate with the original `($payload, $actionId, $query)` values.
@@ -184,8 +184,8 @@ Payload decisions run in this order after the feature and route checks:
 A predicate exception reaches the application error handler unchanged. It does not
 select the legacy action. Payload matches use the `bypass_payload` diagnostic reason.
 The [adaptation guide](api-adaptation.md#enable-the-feature-after-checking-compatibility)
-includes field-presence and nested-value examples. `actions` scopes guards and
-`before` checks; it does not scope the other `request()` arguments. Repeated non-null `reader` or
+includes field-presence and nested-value examples. `actions` scopes guards, `before` checks, `lists`, `defaults`, and relation exceptions.
+Input field/value maps and callbacks remain shared across actions. Repeated non-null `reader` or
 `bypass` arguments replace that callback; omitted arguments retain it.
 
 ## Inline mappings
@@ -367,9 +367,9 @@ To work on the package beside a Yii application, clone the repository and add a
 Composer path repository:
 
 ```shell
-git clone --branch 5.1.0 --depth 1 https://github.com/cosmira/yii1-strangler-proxy.git ../yii1-strangler-proxy
+git clone --branch 5.2.0 --depth 1 https://github.com/cosmira/yii1-strangler-proxy.git ../yii1-strangler-proxy
 composer config repositories.yii1-strangler-proxy path ../yii1-strangler-proxy
-composer require cosmira/yii1-strangler-proxy:5.1.0
+composer require cosmira/yii1-strangler-proxy:5.2.0
 ```
 
 A path repository is for development; deploy the tagged VCS dependency and the

@@ -22,6 +22,11 @@ use Psr\Http\Message\ResponseInterface;
 abstract class ControllerContract
 {
     /**
+     * Register shared declarations before controller-specific differences.
+     */
+    public function configure(Strangler $proxy): void {}
+
+    /**
      * Bind a deferred declaration to the current controller without mutating its snapshot.
      *
      * @internal

@@ -110,7 +110,8 @@ final readonly class StranglerProxy
     ): bool {
         $predicate = $config['bypassPayload'] ?? null;
         $guards = $config['requestGuards'] ?? [];
-        if ($predicate === null && $guards === []) {
+        $contract = $config['controllerContract'] ?? null;
+        if ($predicate === null && $guards === [] && $contract === null) {
             return false;
         }
         $original = $payload ?? self::readPayload($controller, $config, $actionKey)['payload'];
@@ -126,7 +127,37 @@ final readonly class StranglerProxy
             }
         }
 
-        return false;
+        return self::hasNativeRelationWrite($controller, $config, $actionKey, $original);
+    }
+
+    /**
+     * Keep unadapted nested writes local after consuming declared route parameters.
+     *
+     * @param Config                  $config
+     * @param array<array-key, mixed> $payload
+     */
+    private static function hasNativeRelationWrite(
+        CController $controller, array $config, string $action, array $payload,
+    ): bool {
+        $contract = $config['controllerContract'] ?? null;
+        $relations = in_array($action, ['create', 'edit'], true)
+            ? $contract?->nativeRelations($controller) ?? [] : [];
+        if ($relations === []) {
+            return false;
+        }
+        $routes = $config['routes'] ?? [];
+        $route = $routes[$action] ?? [];
+        $binding = BodyParameters::resolve($route['fromBody'] ?? [], $payload);
+        if ($binding === false) {
+            return true;
+        }
+        $adapted = $config['requestRelations'] ?? [];
+        $native = array_diff(
+            array_map(strtolower(...), $relations), $adapted['*'] ?? [], $adapted[$action] ?? [],
+        );
+        $fields = array_map(strtolower(...), array_keys((array) $binding['payload']));
+
+        return array_intersect($fields, $native) !== [];
     }
 
     /**

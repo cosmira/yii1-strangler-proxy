@@ -342,6 +342,29 @@ selection also keeps it in Yii. The upstream query contains the selected top-lev
 relation names. Nested branches remain in the response projection; this setting
 does not turn them into dotted upstream includes. No result is cached between requests.
 
+### Preserve native relation writes
+
+A controller contract can return native writable relation names from
+`nativeRelations($controller)`. On `create` and `edit`, requests containing these
+fields stay in Yii before HTTP. Names are case-insensitive; their values may be
+arrays, JSON strings or null. Ordinary undeclared fields still pass through.
+
+Declare only relations whose writes your adapter preserves upstream:
+
+```php
+Strangler::proxy('catalog')
+    ->using(new ApiContract())
+    ->request(relations: ['contacts'], actions: ['create'])
+    ->post('create', '/api/items')
+    ->put('edit', '/api/items/{id}')
+    ->build();
+```
+
+This declaration permits the existing payload adapter to handle `contacts` on
+creation; it does not convert nested values or add upstream write support.
+Relations fully consumed by `fromBody` route bindings need no declaration.
+The whole request stays in Yii if any unadapted native relation remains.
+
 ### Declare request guards and native checks
 
 Structural differences can keep a request in Yii without a procedural adapter:
@@ -427,6 +450,7 @@ Override only the shared differences your application needs:
 | --- | --- |
 | `identifier()` | Optional explicit native identifier. The default `null` resolves the key from the current model. |
 | `relations()` | Shared relation declarations, including controller-backed schemas and native name differences. |
+| `nativeRelations($controller)` | Native nested-write fields retained in Yii unless explicitly adapted or consumed by route bindings. |
 | `responseFields($identifier)` | Upstream-to-native field exceptions for that root or related resource. |
 | `responseAttributes($attributes, $identifier, $relation)` | Attribute values before naming and relation traversal. |
 | `responseAfter($mapped, $raw, $projection, $identifier, $relation)` | Derived attributes after related records are mapped. |

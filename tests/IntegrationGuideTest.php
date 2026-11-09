@@ -71,7 +71,7 @@ final class IntegrationGuideTest extends TestCase
             ->put('update', '/api/items/{id}')->build();
         $filter['client'] = new Client(['handler' => $handler]);
         $chain = CFilterChain::create($controller, $controller->createAction('update'), [
-            'validateCatalog', 'resourceAccess', $filter,
+            'validateInput', 'resourceAccess', $filter,
         ]);
         ob_start();
 
@@ -102,32 +102,38 @@ final class IntegrationGuideTest extends TestCase
     /** @return list<array{string, string, mixed, int|null}> */
     public static function validationCases(): array
     {
+        $fields = ',"NAME":"Desk","ACTIVE":true,"CATEGORY_ID":7';
+
         return [
-            ['GET', '{"ID":42}', 42, 405],
-            ['POST', '{"ID":43}', 42, 400],
+            ['GET', '{"ID":42'.$fields.'}', 42, 405],
+            ['POST', '{"ID":43'.$fields.'}', 42, 400],
             ['POST', 'invalid', 42, 400],
             ['POST', '42', 42, 400],
-            ['POST', '{"ID":42}', [], 400],
-            ['POST', '{"ID":[]}', 42, 400],
-            ['POST', '{"ID":42}', 42, null],
-            ['POST', '{"ID":42}', '42', null],
-            ['POST', '{"ID":42}', null, null],
+            ['POST', '{"ID":42'.$fields.'}', [], 400],
+            ['POST', '{"ID":[]'.$fields.'}', 42, 400],
+            ['POST', '{"ID":42'.$fields.'}', 42, null],
+            ['POST', '{"ID":42'.$fields.'}', '42', null],
+            ['POST', '{"ID":42'.$fields.'}', null, null],
         ];
     }
 
     private function controller(): CatalogValidationController
     {
-        $guide = file_get_contents(dirname(__DIR__).'/docs/integration.md');
-        self::assertIsString($guide);
-        if (preg_match('/```php\r?\n(.*?)\r?\n```/s', $guide, $matches) !== 1) {
-            throw new \RuntimeException('The guide must contain its runnable validation filter.');
-        }
+        require_once dirname(__DIR__).'/examples/catalog/controllers.php';
+        $method = new \ReflectionMethod('CatalogController', 'filterValidateInput');
+        $file = $method->getFileName();
+        self::assertIsString($file);
+        $source = file($file);
+        self::assertIsArray($source);
+        $filter = implode('', array_slice(
+            $source, $method->getStartLine() - 1, $method->getEndLine() - $method->getStartLine() + 1,
+        ));
         $path = tempnam(sys_get_temp_dir(), 'strangler-validation-');
         self::assertIsString($path);
 
         try {
             file_put_contents($path, "<?php\nclass PublishedCatalogController extends ".
-                CatalogValidationController::class." {\n".$matches[1]."\n}");
+                CatalogValidationController::class." {\n".$filter."\n}");
             require $path;
         } finally {
             unlink($path);

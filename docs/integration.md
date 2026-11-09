@@ -36,71 +36,18 @@ Yii action may forward a guest request; its user identifier is an empty string.
 The complete [catalog example](../examples/catalog/README.md) implements these
 checks in a real host application. Use it to verify the order, not just copy names.
 
-| Existing location | Integration change | Proof before enabling |
-| --- | --- | --- |
-| Access/validation inside an action or `beforeAction()` | Complete the checks in a preceding filter before calling its chain. | Denied request reaches neither executor with the flag off or on. |
-| Cleanup in `afterAction()` or a previous `postFilter()` | Use a tested host request-end handler for required cleanup. | Exactly one cleanup for legacy, proxied and rejected requests. |
-| Incoming verb/CSRF checks | Keep them before the complete Strangler filter block. | Incorrect verb/token has the same rejection with either executor. |
-| Form validation plus `request(reader: ...)` | Read one application-owned validated input representation. | Invalid form shape and conflicting IDs are rejected before forwarding. |
-
 ## Write-action validation
 
-For the catalog contract, the incoming update is POST even though its outgoing
-route uses PUT. A preceding filter can enforce this and reject conflicting IDs:
+Validate the incoming method and input before resource-access checks and Strangler.
+Use the same parsed input as `request(reader:)`. Reject malformed bodies and
+conflicting query/body identifiers before checking access to that identifier.
+Keep session-authenticated write CSRF checks in the preceding filters.
 
-```php
-public function filterValidateCatalog(CFilterChain $chain): void
-{
-    $action = strtolower($chain->action->getId());
-    $expected = ['get' => 'GET', 'create' => 'POST', 'update' => 'POST'];
-    $request = Yii::app()->request;
-    if (isset($expected[$action]) && $request->getRequestType() !== $expected[$action]) {
-        throw new CHttpException(405, 'Method not allowed.');
-    }
+The [catalog controller](../examples/catalog/controllers.php) demonstrates these
+checks, including a native POST that becomes an upstream PUT. Its errors use the
+host's API error handler.
 
-    if ($action === 'update') {
-        // Use the same validated input as request(reader: ...) for form fields.
-        $body = $request->getRawBody();
-        try {
-            $payload = json_decode($body, flags: JSON_THROW_ON_ERROR | JSON_BIGINT_AS_STRING);
-        } catch (JsonException) {
-            throw new CHttpException(400, 'Invalid JSON.');
-        }
-        if (!$payload instanceof stdClass) {
-            throw new CHttpException(400, 'Expected a JSON object.');
-        }
-        $requestId = $request->getParam('id');
-        $bodyId = $payload->ID ?? null;
-        if (($requestId !== null && !is_scalar($requestId))
-            || ($bodyId !== null && !is_scalar($bodyId))) {
-            throw new CHttpException(400, 'Invalid identifier.');
-        }
-        if ($requestId !== null && $bodyId !== null && (string) $requestId !== (string) $bodyId) {
-            throw new CHttpException(400, 'Conflicting identifiers.');
-        }
-        // Validate required fields and access to this same ID in your application.
-    }
-    $chain->run();
-}
-```
-
-Place `validateCatalog` before your resource-access filter and Strangler. Keep
-session-authenticated write CSRF checks there too: use your application's existing
-validated token/header contract. Enabling a Strangler route does not add those
-checks. Errors thrown by these filters use the host's API error handler.
-
-For cleanup that must run for both executors, register a request-end callback during
-application bootstrap, rather than relying on `afterAction()` or `postFilter()`:
-
-```php
-Yii::app()->attachEventHandler('onEndRequest', static function (CEvent $event): void {
-    // Release application-owned request resources; keep this safe to call once.
-});
-```
-
-Use a real HTTP request to verify that your cleanup runs on a proxied response,
-legacy response and denied request. Do not keep uncommitted transactions open
-across a backend call; an end hook is not distributed transaction coordination.
+Do not hold an open application transaction across the backend call.
 
 ## API errors from Yii
 
@@ -113,36 +60,14 @@ invalid backend responses keep the legacy JSON error contract. In Yii configurat
 ],
 ```
 
-Create `ApiErrorController` in your application's controller directory:
+Use your application's JSON error action. It must remain reachable without
+repeating the failed filters. The [catalog error action](../examples/catalog/controllers.php)
+shows a complete implementation. Preserve a separate HTML error handler for browser
+pages, and run production with `YII_DEBUG=false`.
 
-```php
-class ApiErrorController extends CController
-{
-    public function actionError(): void
-    {
-        $error = Yii::app()->errorHandler->error;
-        $status = $error['code'] ?? 500;
-        header('Content-Type: application/json; charset=utf-8', true, $status);
-        echo json_encode([
-            'success' => false,
-            'error' => [
-                'code' => $status >= 500 ? 'internal_error' : 'request_rejected',
-                'fields' => [],
-            ],
-        ], JSON_THROW_ON_ERROR);
-    }
-}
-```
-
-Use this route for your API requests; preserve an appropriate HTML error action for
-browser pages if the application serves both. The error action must be reachable
-without repeating the failing filters. Run production with `YII_DEBUG=false`, because
-Yii debug exception rendering bypasses its configured error action. Keep exception
-details in server logs. With a JSON response mapper, malformed backend JSON produces
-`502 invalid_upstream_response` before application error mapping. Your mapper may
-translate that status. Programming exceptions reach Yii's error handler; test its
-JSON `500` response separately. Without a JSON mapper, response bytes pass through.
-None of these paths retries the backend or executes the legacy action.
+Malformed mapped JSON produces `502 invalid_upstream_response`; other callback
+exceptions reach Yii's error handler. Without a JSON mapper, response bytes pass
+through. Neither path retries the backend or runs the native action after forwarding.
 
 ## Trusted channel
 
@@ -231,11 +156,11 @@ The controller builder configures behavior for one feature:
 | `get/post/put/delete($action, $path)` | Map one Yii action to an outgoing method/path. Each action may appear once. |
 | `route($action, $method, $path, $fromBody = [])` | Register GET, HEAD, POST, PUT, PATCH or DELETE, with optional body bindings. |
 | `uppercase($identifier = null, $except = [])` | Enable conventional names and the Yii response envelope. An omitted identifier comes from the controller contract; missing both is a configuration error. |
-| `using($contract)` | Connect one application `ControllerContract` for payload reading, shared response differences, and native errors. |
+| `using($contract, $except = [])` | Connect native parsing and errors. A declared contract identifier enables naming, query, and response conventions; `except` excludes actions from those mappings. |
 | `within($nativeParent)` | Resolve a parent required by a nested route through the contract's scoped model. Requires `using()`. |
-| `request(fields: [], values: [], reader: null, bypass: null, parameters: null, using: null)` | Configure input differences, the payload reader, pre-forward decisions, route-only parameters, and semantic adaptation. |
-| `response(fields: [], values: [], using: null, except: [], optional: [], attributes: null, after: null, projection: null, relations: [])` | Configure output differences and the shared record graph. |
-| `query(filters: [], sorts: [], includes: null, using: null, values: [])` | Configure query aliases and semantic adaptation using the existing mapper. |
+| `request()` | Configure input names and values, a reader, a bypass predicate, route parameters, semantic adaptation, structural guards, and native checks. See [request guards](api-adaptation.md#declare-request-guards-and-native-checks). |
+| `response()` | Configure output names and values, required attribute types, omissions, projection, related resources, and record callbacks. `using` configures the JSON envelope. |
+| `query()` | Configure filter, sort, and include aliases, filter values, semantic adaptation, and action-specific relation selection. See [selection rules](api-adaptation.md#keep-query-and-response-selection-together). |
 | `mapQuery($mapper, $actions = [])` | Translate query fields or return `false` to keep Yii before forwarding. |
 | `mapPayload($mapper, $actions = [])` | Translate the payload using a field map or callback. |
 | `mapJsonResponse($mapper, $actions = [])` | Map decoded success JSON and return a PSR response. |
@@ -250,13 +175,17 @@ Payload decisions run in this order after the feature and route checks:
 1. Run the existing early `bypassUsing()` callback. A match does not read the body.
 2. Read the payload once.
 3. If a controller contract is configured, run its conventional CRUD checks against the same snapshot.
-4. Call the configured payload predicate once with original `($payload, $actionId, $query)` values.
-5. Resolve body bindings and any scoped parent, map the request, and attempt forwarding if no bypass matched.
+4. Call the configured payload predicate with the original `($payload, $actionId, $query)` values.
+   Then evaluate matching structural guards. A matching bypass or failed guard keeps the request in Yii.
+5. Run matching `request(before:)` checks against the original payload, in registration order.
+   Exceptions reach the application's error handler.
+6. Resolve body bindings and any scoped parent, map the request, and attempt forwarding if no bypass matched.
 
 A predicate exception reaches the application error handler unchanged. It does not
 select the legacy action. Payload matches use the `bypass_payload` diagnostic reason.
 The [adaptation guide](api-adaptation.md#enable-the-feature-after-checking-compatibility)
-includes field-presence and nested-value examples. Repeated non-null `reader` or
+includes field-presence and nested-value examples. `actions` scopes guards and
+`before` checks; it does not scope the other `request()` arguments. Repeated non-null `reader` or
 `bypass` arguments replace that callback; omitted arguments retain it.
 
 ## Inline mappings
@@ -361,26 +290,12 @@ multipart uploads. Arbitrary raw request bodies are outside this JSON proxy's sc
 
 ## Rollout and rollback
 
-1. Keep the feature disabled while adapting and testing the old client's contract.
-2. Verify the outgoing URL, method, body and query; then test successful responses,
-   validation errors, denied access, malformed input and backend timeouts.
-3. Agree who writes each dataset and what Yii will see if the feature is disabled.
-   A flag changes routing; it does not migrate data back or restore an old schema.
-4. Define how deployment or support staff change the flag and reload configuration.
-   PHP workers may reload config per request; cached config or long-running workers
-   need your application's explicit reload procedure. Check the next request.
-5. Enable one adapted action, observe it, and expand only after compatibility holds.
+Keep flags disabled until application contract tests pass. Deploy the reviewed
+`composer.lock` with `composer install`. Follow the [operations guide](operations.md)
+for data ownership, configuration reload, and uncertain writes.
 
-Turning off a feature affects subsequent requests after configuration is reloaded.
-In-flight requests continue with the executor already chosen. If new data is no
-longer compatible with Yii, rollback requires a data plan, not just a flag change.
-
-Requests are never automatically retried or replayed in Yii. Forwarded
-`Idempotency-Key` works only if the backend defines and enforces that contract;
-the package does not deduplicate operations by itself.
-
-For repeatable deployments, retain the application's `composer.lock` and run
-`composer install`. Deploy the reviewed dependency versions and configuration.
+Disabling a flag affects subsequent requests. It does not cancel in-flight requests,
+reverse backend writes, or make incompatible data safe for Yii.
 
 ## Logging and callbacks
 
@@ -441,14 +356,10 @@ There is no new observer API or silent exception suppression in Strangler.
 
 ## Before deployment
 
-The [example deployment check](../examples/catalog/README.md) examines the example's
-actual configuration even when its feature flags are off. It performs no business
-HTTP call and does not execute mapping callbacks. It cannot prove
-that a future backend operation will succeed.
-Application bootstrap, secrets and configuration reload remain host-specific.
-Availability checks use a separately declared safe read-only endpoint; never probe
-a write route. Follow the [operations runbook](operations.md) for data ownership,
-flag reload and an uncertain write result after timeout.
+The [catalog configuration check](../examples/catalog/README.md#verify-and-investigate)
+validates declarations without business HTTP calls. Adapt it to your host, then
+check reachability separately through a documented read-only endpoint. Neither
+check proves that a write will succeed.
 
 ## Local development
 
@@ -456,9 +367,9 @@ To work on the package beside a Yii application, clone the repository and add a
 Composer path repository:
 
 ```shell
-git clone https://github.com/cosmira/yii1-strangler-proxy.git ../yii1-strangler-proxy
+git clone --branch 4.1.0 --depth 1 https://github.com/cosmira/yii1-strangler-proxy.git ../yii1-strangler-proxy
 composer config repositories.yii1-strangler-proxy path ../yii1-strangler-proxy
-composer require cosmira/yii1-strangler-proxy:dev-main
+composer require cosmira/yii1-strangler-proxy:4.1.0
 ```
 
 A path repository is for development; deploy the tagged VCS dependency and the
@@ -496,8 +407,8 @@ version, locally and in GitHub Actions; no separate checkout of Soda is required
 | Source | Forbidden dependencies | Responsibility |
 | --- | --- | --- |
 | `Cosmira\Strangler` | `App`, application `strangler`, `Illuminate`, `Symfony`, package tests | The reusable Yii package must not import its consuming application, another application framework, or test fixtures. |
-| `Cosmira\Strangler\Schema` | Guzzle, PSR HTTP, package internals, `CController`, `CActiveRecord`, `Yii`, `ControllerContract` | Naming and value transforms remain independent of HTTP transport and native controller access. |
-| `Cosmira\Strangler\Response` | `CController`, `CActiveRecord`, `Yii`, `ControllerContract`, `StranglerProxy`, `YiiRuntime`, package internals | Response graphs and envelopes consume pure data without calling the native controller or forwarding requests. |
+| `Cosmira\Strangler\Schema` | Guzzle, PSR HTTP, package internals, `CController`, `CActiveRecord`, `Yii`, `ControllerContract`, `Strangler`, `Query` | Naming and value transforms remain independent of HTTP transport and native controller access. |
+| `Cosmira\Strangler\Response` | `CController`, `CActiveRecord`, `Yii`, `ControllerContract`, `StranglerProxy`, `YiiRuntime`, `Strangler`, `Query`, package internals | Response graphs and envelopes consume pure data without calling the native controller or forwarding requests. |
 | `Cosmira\Strangler\Internal\Payload` | `GuzzleHttp`, `Psr\Http` | Body bindings transform PHP/JSON data without sending requests or reading HTTP messages. |
 
 Naming, includes, scalar formatting, and pure data mappings live in

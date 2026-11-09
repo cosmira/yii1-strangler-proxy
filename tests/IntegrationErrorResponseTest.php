@@ -38,9 +38,9 @@ final class IntegrationErrorResponseTest extends TestCase
             $client = new Client(['base_uri' => 'http://'.$address, 'timeout' => 5, 'http_errors' => false]);
             foreach (['malformed', 'throw'] as $case) {
                 $response = $client->post('/?case='.$case);
-                self::assertSame(500, $response->getStatusCode());
+                self::assertSame(500, $response->getStatusCode(), (string) $response->getBody());
                 self::assertSame('application/json; charset=utf-8', $response->getHeaderLine('Content-Type'));
-                self::assertSame('{"success":false,"error":{"code":"internal_error","fields":[]}}', (string) $response->getBody());
+                self::assertSame('{"success":false,"error":{"code":"internal_error","fields":{}}}', (string) $response->getBody());
                 self::assertSame('1', $response->getHeaderLine('X-Backend-Attempts'));
                 self::assertSame('0', $response->getHeaderLine('X-Legacy-Ran'));
             }

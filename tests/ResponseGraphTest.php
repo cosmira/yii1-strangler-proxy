@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Cosmira\Strangler\Tests;
 
 use Cosmira\Strangler\ControllerContract;
+use Cosmira\Strangler\Exception\InvalidUpstreamResponse;
 use Cosmira\Strangler\InlineMapping;
 use Cosmira\Strangler\Query;
 use Cosmira\Strangler\Response\JsonResource;
@@ -15,6 +16,47 @@ use PHPUnit\Framework\TestCase;
 
 final class ResponseGraphTest extends TestCase
 {
+    public function testContractIdentifiersApplyToRootAndNestedRecordsAndMetadata(): void
+    {
+        $contract = new class extends ControllerContract
+        {
+            public function model(\CController $controller): \CActiveRecord
+            {
+                throw new \LogicException('Rendering must not query native models.');
+            }
+
+            public function payload(\CController $controller): array
+            {
+                return [];
+            }
+
+            public function responseFields(string $identifier): array
+            {
+                return [strtolower($identifier) => $identifier];
+            }
+        };
+        $builder = Strangler::proxy('catalog')->using($contract)->uppercase('ITEM_ID')
+            ->response(relations: ['children' => ['identifier' => 'CHILD_ID']])
+            ->get('view', '/items/{id}');
+
+        self::assertSame(['ITEM_ID' => 'root', 'children' => [['CHILD_ID' => 'child']]],
+            $this->map($builder, ['data' => ['item_id' => 'root', 'children' => [['child_id' => 'child']]]])['data']);
+        $config = ControllerContract::resolveConfig($builder->build()['config'], new \CController('catalog'));
+        self::assertSame(['item_id' => 'ITEM_ID'], $config['mappings']['responseFields'] ?? []);
+        $schema = $config['responseRecord'] ?? null;
+        self::assertInstanceOf(Record::class, $schema);
+        self::assertSame(['ITEM_ID' => 'root'], $schema(['item_id' => 'root']));
+
+        foreach ([['id' => 'obsolete'], ['item_id' => 'root', 'children' => [['id' => 'obsolete']]]] as $record) {
+            try {
+                $schema($record);
+                self::fail('Missing database identifiers must be rejected.');
+            } catch (InvalidUpstreamResponse $exception) {
+                self::assertSame('Missing record identifier.', $exception->getMessage());
+            }
+        }
+    }
+
     public function testOneFluentObjectTranslatesRecursiveRelationsAndKeepsOpaqueJsonUntouched(): void
     {
         $builder = Strangler::proxy('catalog')->uppercase('ITEM_ID')

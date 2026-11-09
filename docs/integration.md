@@ -368,9 +368,9 @@ To work on the package beside a Yii application, clone the repository and add a
 Composer path repository:
 
 ```shell
-git clone --branch 5.2.0 --depth 1 https://github.com/cosmira/yii1-strangler-proxy.git ../yii1-strangler-proxy
+git clone --branch 5.3.0 --depth 1 https://github.com/cosmira/yii1-strangler-proxy.git ../yii1-strangler-proxy
 composer config repositories.yii1-strangler-proxy path ../yii1-strangler-proxy
-composer require cosmira/yii1-strangler-proxy:5.2.0
+composer require cosmira/yii1-strangler-proxy:5.3.0
 ```
 
 A path repository is for development; deploy the tagged VCS dependency and the

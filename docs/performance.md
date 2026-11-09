@@ -51,10 +51,10 @@ Failures stop the command with a nonzero exit code.
 
 Each result comes from a separate PHP process with one untimed warm-up request.
 `--rounds=N` controls the number of measured requests; the default is five.
-PCOV is disabled and CLI OPcache is enabled. Five measured requests per operation
-and size report milliseconds, worker CPU time, absolute peak PHP allocation, and
-additional allocation above the warm baseline. Zero additional allocation means
-that the existing PHP heap was sufficient, not that the request used no memory.
+PCOV is disabled and CLI OPcache is enabled. Each measured request reports
+milliseconds, worker CPU time, absolute peak PHP allocation, and additional
+allocation above the warm baseline. Zero additional allocation means that the
+existing PHP heap was sufficient, not that the request used no memory.
 PHP allocation excludes libcurl memory and the backend process. `peak_rss_bytes`
 reports the worker process's lifetime peak RSS, including warm-up and native
 allocations; unlike PHP allocation, that OS counter cannot be reset for each run.
@@ -67,20 +67,9 @@ The PHP test backend does not implement the HTTP 100-continue handshake, so the
 benchmark client disables `Expect` on both sides of a comparison. This does not
 change the package's production client defaults.
 
-To compare the current source with the 2.0.5 tag:
-
-```shell
-baseline=$(mktemp -d)
-git archive 2.0.5 | tar -x -C "$baseline"
-composer benchmark:files -- "$baseline" > files-benchmark.json
-rm -rf "$baseline"
-```
-
-The comparison alternates baseline and current workers for each case. Both sources
-use the current checkout's installed dependencies to isolate the package change.
-Workers check that the expected source checkout was loaded. Inspect the raw runs and the machine's
-load before interpreting a median. Timing is not a CI threshold: CI checks complete,
-correct transfers and stores the measurements as an artifact.
+Timing is not a CI threshold. CI checks complete, correct transfers and stores
+measurements as an artifact. Inspect the raw runs and machine load before drawing
+conclusions about elapsed time.
 
 ## Transfer 1 GiB in both directions
 
@@ -107,46 +96,22 @@ The report contains the actual byte counts, hashes, elapsed time, and PHP alloca
 Passing this case with a 128 MiB worker proves that PHP did not hold the whole 1 GiB
 body in its heap. The report also records process peak RSS, which includes native
 allocations and the warm-up. It does not measure concurrent transfers or reverse
-proxy buffering. A 2.0.6 baseline can exceed that memory budget on download; such a
-failure is reported, not silently retried with an unlimited memory limit.
+proxy buffering. A memory-limit failure stops the run; the benchmark does not retry
+with an unlimited memory limit.
 
-### Recorded 1 GiB run
+### Recorded 4.0.0 run
 
-[CI run on PHP 8.4.27](https://github.com/cosmira/yii1-strangler-proxy/actions/runs/42510924534)
-completed both directions with a `128M` worker limit:
+[The 4.0.0 CI run on PHP 8.4.27](https://github.com/cosmira/yii1-strangler-proxy/actions/runs/42531544902)
+completed both directions with a `128M` worker limit. The
+[raw report](https://github.com/cosmira/yii1-strangler-proxy/releases/download/4.0.0/files-benchmark.json)
+is attached to the release.
 
 | Direction | Verified bytes | Peak PHP heap | Peak process RSS |
 | --- | ---: | ---: | ---: |
-| Download | 1,073,741,824 | 6 MiB | 77.9 MiB |
-| Upload | 1,073,741,824 | 4 MiB | 73.1 MiB |
+| Download | 1,073,741,824 | 6 MiB | 75.7 MiB |
+| Upload | 1,073,741,824 | 4 MiB | 73.2 MiB |
 
-Each direction had one warm-up and one measured request. These results demonstrate
-bounded memory for this case; a single loopback run does not establish production
-throughput. The default HTTP handler can spool the response to temporary disk.
-
-## Historical comparison before chunked output
-
-The following recorded run compares 2.0.5 with 2.0.6 on macOS, PHP 8.5.11, libcurl 8.22.0,
-and 8 logical CPUs. Files and code were warm, concurrency was one, and the machine
-also ran ordinary desktop workloads. Each entry summarizes five alternating runs.
-[Raw A/B results](https://github.com/cosmira/yii1-strangler-proxy/releases/download/2.0.6/files-benchmark.json)
-and an [A/A control](https://github.com/cosmira/yii1-strangler-proxy/releases/download/2.0.6/files-benchmark-control.json)
-are attached to the release.
-
-| Operation | File | 2.0.5 median ms (range) | 2.0.6 median ms (range) | Peak PHP MiB, before → after |
-| --- | --- | --- | --- | --- |
-| Download | 1 MiB | 16.67 (16.63–16.77) | 16.48 (16.36–16.70) | 14 → 10 |
-| Download | 16 MiB | 263.53 (239.66–277.02) | 259.10 (208.15–278.09) | 68.05 → 52.03 |
-| Upload | 1 MiB | 23.11 (21.87–29.66) | 22.29 (22.06–24.59) | 4 → 4 |
-| Upload | 16 MiB | 293.24 (272.95–312.15) | 351.47 (281.76–387.48) | 4 → 4 |
-
-The confirmed improvement is lower peak PHP allocation for unchanged downloads:
-the 16 MiB response avoids approximately 16 MiB of additional allocation. Multipart
-upload allocation stays flat in these cases. The proxy no longer constructs and
-reads an extra PSR response when no response mapper is selected.
-
-Transfer latency is inconclusive. The ranges overlap, and some upload samples are
-slower. An A/A run of unchanged 2.0.5 produced upload medians of 312.49 and 286.60 ms
-for the same 16 MiB file. The upload worker used approximately 18 ms of CPU, while
-wall time included backend processing and I/O. Do not interpret this fixture as a
-production speedup, throughput limit, or evidence about concurrent large uploads.
+Each direction had one warm-up and one measured request. Byte counts and SHA-256
+matched the fixture in both directions. These results demonstrate bounded memory
+for this case. A single loopback run does not establish production throughput.
+The default HTTP handler can spool the response to temporary disk.

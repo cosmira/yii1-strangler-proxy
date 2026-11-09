@@ -178,8 +178,7 @@ contract and name the native parent attribute:
 
 ```php
 Strangler::proxy('catalog')
-    ->using(new ApiContract())
-    ->uppercase('ITEM_ID')
+    ->using(new ApiContract('ITEM_ID'))
     ->within('CATALOG_ID')
     ->get('view', '/catalogs/{catalog_id}/items/{id}')
     ->put('edit', '/catalogs/{catalog_id}/items/{id}')
@@ -283,7 +282,7 @@ return Strangler::proxy('catalog')
 ```
 
 The referenced class must extend `CController`, accept the standard Yii controller
-constructor, and declare exactly one Strangler filter with `uppercase()`. The
+constructor, and declare exactly one Strangler filter with conventional record mapping. The
 constructor receives the current controller module. The
 package constructs it and reads `filters()` lazily. It does not call `init()` or
 run an action, but the constructor and attached behaviors still execute. Keep
@@ -406,21 +405,24 @@ actions. A missing path or another value does not match. Neither rule replays a 
 A `ControllerContract` connects existing application methods to the package.
 The [README example](../README.md#connect-existing-rest-controllers) implements
 its required `model()` and `payload()` methods. Register it with
-`using(new ApiContract())`; keep all route declarations on the same `Strangler`.
+`using(new ApiContract('ITEM_ID'))`; keep route declarations on the same `Strangler`.
 An explicit `request(reader: ...)` overrides the contract's payload reader.
 
-If the shared contract already stores its native identifier, override
-`identifier(): ?string` to return it and call `uppercase()` without an argument.
-The default hook returns `null`. An explicit `uppercase('ITEM_ID')` takes
-precedence. Both fluent call orders resolve the identifier when `build()` runs;
-neither reads model metadata or queries the database. If neither source provides
-an identifier, `build()` rejects the configuration.
+Override `identifier(): ?string` to declare the native primary key. This enables
+naming, query, and response conventions through `using()`; no `uppercase()` call
+is needed. Binary actions can opt out with `using($contract, except: ['image'])`.
+Exclusions accumulate across `using()` and `uppercase()` calls.
+The identifier is read when `build()` runs, without model lookup or database access.
+
+A contract returning `null` keeps explicit mappings and pass-through behavior.
+For standalone conventions, `uppercase('ITEM_ID')` declares the identifier directly;
+an explicit value takes precedence over the contract identifier.
 
 Override only the shared differences your application needs:
 
 | Hook | Result |
 | --- | --- |
-| `identifier()` | Optional native identifier used by `uppercase()` without an argument. |
+| `identifier()` | Native identifier that enables conventions through `using()`; `null` leaves them disabled. |
 | `relations()` | Shared relation declarations, including controller-backed schemas and native name differences. |
 | `responseFields($identifier)` | Upstream-to-native field exceptions for that root or related resource. |
 | `responseAttributes($attributes, $identifier, $relation)` | Attribute values before naming and relation traversal. |
@@ -462,106 +464,27 @@ timezone unless your application explicitly changes it.
 
 ## Advanced: adapt a different envelope
 
-Use full stage callbacks when the client envelope or write structure differs from
-the ordinary convention. This example translates `start/limit` to `page/per_page`,
-nests write fields, and restores a different item, list, and error envelope.
-Place the resulting filter after the existing access, method, CSRF, and input checks.
-
-The old write body is `{"ID":42,"NAME":"Desk","ACTIVE":1,"CATEGORY_ID":7}`.
-The backend accepts `{"product":{"title":"Desk","enabled":true},"category":{"id":7}}`.
-It returns `{"data":{"id":42,"title":"Desk","enabled":true,"category":{"id":7}}}`.
-Lists use `{"data":[...],"meta":{"total":50}}`.
+Use `response(using:)` to change the success envelope while keeping conventional
+record mapping:
 
 ```php
-use Cosmira\Strangler\Exception\InvalidUpstreamResponse;
-use Cosmira\Strangler\Response\Json;
-use Cosmira\Strangler\Schema\Mapping;
+use Cosmira\Strangler\Response\JsonResource;
 use Cosmira\Strangler\Strangler;
-use Psr\Http\Message\ResponseInterface;
 
-$fields = ['id' => 'ID', 'title' => 'NAME'];
-$errorFields = [
-    'title' => 'NAME',
-    'product.title' => 'NAME',
-    'category.id' => 'CATEGORY_ID',
-    'product.enabled' => 'ACTIVE',
-];
-$relations = static function (array $query): array {
-    $with = $query['with'] ?? [];
-    if (!is_array($with) || !array_is_list($with)
-        || array_filter($with, static fn ($name): bool => $name !== 'category')) {
-        throw new InvalidArgumentException('Only with[]=category is supported.');
-    }
-
-    return $with;
-};
-$record = static function (mixed $item, array $request) use ($fields, $relations): object {
-    if (!$item instanceof stdClass || !isset($item->id, $item->title, $item->enabled, $item->category->id)) {
-        throw new InvalidUpstreamResponse('The catalog API returned an incomplete item.');
-    }
-    $legacy = Mapping::fields($item, $fields);
-    $legacy->ACTIVE = $item->enabled ? 1 : 0;
-    $legacy->CATEGORY_ID = $item->category->id;
-    if (in_array('category', $relations($request['query']), true)) {
-        $legacy->CATEGORY = Mapping::fields($item->category, ['id' => 'ID']);
-    }
-
-    return $legacy;
-};
-
-return Strangler::proxy('catalog')
-    ->request(parameters: static function (array $context): array {
-        $id = $context['query']['id'] ?? $context['payload']['ID'] ?? null;
-
-        return $id === null ? [] : ['id' => $id];
-    })
-    ->mapQuery(static fn (): array => [])
-    ->mapQuery(static function (array $query) use ($relations): array|false {
-        $relations($query);
-        unset($query['with']);
-
-        return Mapping::legacyQuery($query);
-    }, ['get'])
-    ->mapPayload(static fn (array $payload): array => [
-        'product' => ['title' => $payload['NAME'], 'enabled' => (bool) $payload['ACTIVE']],
-        'category' => ['id' => $payload['CATEGORY_ID']],
-    ], ['create', 'update'])
-    ->mapJsonResponse(static function (mixed $json, ResponseInterface $response, array $request) use ($record): ResponseInterface {
-        if ($response->getStatusCode() === 204) {
-            return $response;
-        }
-        $map = static fn (mixed $item): object => $record($item, $request);
-        $body = $request['action'] === 'get'
-            ? Mapping::collection($json, $map, ['success' => true], to: ['rows'],
-                totalFrom: ['meta', 'total'], totalTo: ['total'])
-            : Mapping::item($json, $map, ['success' => true]);
-
-        return Json::response($response, $body);
-    })
-    ->mapJsonErrors(static fn (mixed $json, ResponseInterface $response): ResponseInterface => Json::response($response, [
-        'success' => false,
-        'error' => ['code' => $json->code ?? $json->error ?? 'request_failed',
-            'fields' => (array) Mapping::validationErrors($json->errors ?? new stdClass(), $errorFields)],
-    ]))
-    ->request(bypass: static fn (array $payload, string $action): bool =>
-        $action === 'update' && ($payload['OPTIONS']['MODE'] ?? null) === 'legacy')
-    ->get('get', '/api/items')
-    ->get('view', '/api/items/{id}')
-    ->post('create', '/api/items')
-    ->put('update', '/api/items/{id}')
+Strangler::proxy('catalog')
+    ->uppercase('ITEM_ID')
+    ->response(using: static fn (JsonResource $resource) => $resource
+        ->envelope(['success' => true])
+    )
+    ->get('view', '/items/{id}')
     ->build();
 ```
 
-Without `with`, the item response stays
-`{"success":true,"data":{"ID":42,"NAME":"Desk","ACTIVE":1,"CATEGORY_ID":7}}`.
-`with[]=category` also adds `CATEGORY: {"ID":7}` while preserving `CATEGORY_ID`.
-The callback uses the request snapshot directly. It does not rely on a previous
-request mapper or read global Yii state. Constructing this configuration does not
-validate request data before the security filters run.
+`{"data":{"id":42}}` becomes `{"success":true,"data":{"ITEM_ID":42}}`.
 
-For a list, the legacy client gets `{"success":true,"rows":[...],"total":50}`.
-A 204 response stays empty in this example. To restore a legacy success envelope
-instead, return `Json::response($response, ['state' => 'data'], 200)`.
+For a different data location or write structure, use explicit stage callbacks.
+The [catalog mappings](../examples/catalog/proxy.php) provide a runnable example
+with nested writes, item and list responses, and validation errors.
 
 ## Advanced: replace a mapping stage
 

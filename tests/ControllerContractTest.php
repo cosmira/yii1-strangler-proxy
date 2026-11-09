@@ -8,6 +8,7 @@ use CActiveRecord;
 use CController;
 use CDbCriteria;
 use Cosmira\Strangler\ControllerContract;
+use Cosmira\Strangler\InlineMapping;
 use Cosmira\Strangler\Strangler;
 use Cosmira\Strangler\StranglerProxy;
 use Cosmira\Strangler\Tests\Fixtures\Controller;
@@ -285,7 +286,7 @@ final class ControllerContractTest extends TestCase
         $this->contract($model)->parentParameters($this->controller, 'PARENT_ID', [], [], null);
     }
 
-    public function testIdentifierMetadataIsDeclaredOnceWithoutReadingTheNativeModel(): void
+    public function testDeclaredIdentifierEnablesConventionsWithoutReadingTheNativeModel(): void
     {
         $contract = new class extends ControllerContract
         {
@@ -305,11 +306,33 @@ final class ControllerContractTest extends TestCase
             }
         };
         foreach ([
-            Strangler::proxy('example')->using($contract)->uppercase(),
-            Strangler::proxy('example')->uppercase()->using($contract),
+            [Strangler::proxy('example')->using($contract), 'ITEM_ID'],
+            [Strangler::proxy('example')->using($contract, except: ['IMAGE']), 'ITEM_ID'],
+            [Strangler::proxy('example')->uppercase('OTHER_ID')->using($contract), 'OTHER_ID'],
+            [Strangler::proxy('example')->using($contract)->uppercase(), 'ITEM_ID'],
+            [Strangler::proxy('example')->uppercase()->using($contract), 'ITEM_ID'],
+        ] as [$builder, $identifier]) {
+            $config = $builder->get('view', '/items/{id}')->build()['config'];
+            self::assertSame($identifier, $config['bodyIdentifier'] ?? null);
+            $mapping = new InlineMapping($config['mappings'] ?? [], ['action' => 'view', 'query' => [], 'payload' => null]);
+            $request = $mapping->request(['filter' => ['DISPLAY_NAME' => 'Desk']], [$identifier => 'item', 'DISPLAY_NAME' => 'Desk'], null);
+            self::assertIsArray($request);
+            self::assertSame(['display_name' => 'Desk'], $request['query']['filter']);
+            self::assertIsString($request['body']);
+            self::assertSame(['display_name' => 'Desk'], json_decode($request['body'], true));
+            $response = $mapping->response(new Response(200, [], '{"data":{"id":"item","display_name":"Desk"}}'));
+            self::assertSame(['state' => 'data', 'data' => [$identifier => 'item', 'DISPLAY_NAME' => 'Desk']],
+                json_decode((string) $response->getBody(), true));
+        }
+        foreach ([
+            Strangler::proxy('example')->using($contract, except: ['IMAGE']),
+            Strangler::proxy('example')->uppercase(except: ['image'])->using($contract),
+            Strangler::proxy('example')->using($contract, except: ['image'])->uppercase('OTHER_ID'),
         ] as $builder) {
-            $config = $builder->get('get', '/items')->build()['config'];
-            self::assertSame('ITEM_ID', $config['bodyIdentifier'] ?? null);
+            $config = $builder->get('image', '/items/{id}/image')->build()['config'];
+            $mapping = new InlineMapping($config['mappings'] ?? [], ['action' => 'image', 'query' => [], 'payload' => null]);
+            $response = new Response(200, ['Content-Type' => 'image/png'], 'binary');
+            self::assertSame($response, $mapping->response($response));
         }
         $_SERVER['REQUEST_METHOD'] = 'PUT';
         self::assertFalse($contract->shouldBypass($this->controller, 'edit', ['id' => 'item'], ['DISPLAY_NAME' => 'Name']));

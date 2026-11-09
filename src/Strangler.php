@@ -264,11 +264,14 @@ final class Strangler
     }
 
     /**
-     * Connect the application's controller conventions to the package runtime.
+     * Connect native parsing and enable conventions when the contract declares its identifier.
+     *
+     * @param list<string> $except Actions excluded from automatic request and response mapping.
      */
-    public function using(ControllerContract $contract): self
+    public function using(ControllerContract $contract, array $except = []): self
     {
         $this->config['controllerContract'] = $contract;
+        $this->except = [...$this->except, ...array_map(strtolower(...), $except)];
 
         return $this;
     }
@@ -296,7 +299,7 @@ final class Strangler
     {
         $this->isConventionEnabled = true;
         $this->identifier = $identifier;
-        $this->except = array_map(strtolower(...), $except);
+        $this->except = [...$this->except, ...array_map(strtolower(...), $except)];
 
         return $this;
     }
@@ -636,7 +639,8 @@ final class Strangler
      */
     private function compiled(): array
     {
-        if (! $this->isConventionEnabled) {
+        if (! $this->isConventionEnabled
+            && ($this->config['controllerContract'] ?? null)?->identifier() === null) {
             $fieldSettings = [
                 $this->responseFields, $this->requestFields, $this->requestValues,
                 $this->responseValues, $this->filterAliases, $this->sortAliases,
@@ -647,7 +651,7 @@ final class Strangler
                 $this->selection !== null, $this->required,
             ];
             if (array_filter($fieldSettings) !== []) {
-                throw new InvalidArgumentException('Field exceptions require uppercase().');
+                throw new InvalidArgumentException('Field mappings require a native identifier.');
             }
 
             return $this->config;
@@ -766,7 +770,7 @@ final class Strangler
             ?? ($this->config['controllerContract'] ?? null)?->identifier();
         if ($identifier === null || $identifier === '') {
             throw new InvalidArgumentException(
-                'uppercase() requires a native identifier or controller contract identifier.',
+                'Conventional mapping requires a native identifier.',
             );
         }
 

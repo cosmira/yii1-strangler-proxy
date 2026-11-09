@@ -76,7 +76,7 @@ abstract class ControllerContract
     abstract public function payload(CController $controller): array;
 
     /**
-     * Supply a native identifier once when the application contract already owns it.
+     * Declare the native identifier to enable shared request and response conventions.
      */
     public function identifier(): ?string
     {

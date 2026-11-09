@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Cosmira\Strangler\Schema;
 
+use Closure;
 use Cosmira\Strangler\Exception\InvalidUpstreamResponse;
 use InvalidArgumentException;
 use stdClass;
@@ -224,6 +225,51 @@ final class Mapping
 
             return null;
         }, $records);
+    }
+
+    /**
+     * Read one native input field before applying its reusable value conversion.
+     *
+     * @param callable(mixed): mixed $format
+     *
+     * @return Closure(array<array-key, mixed>): mixed
+     */
+    public static function field(string $name, callable $format, mixed $default = null): Closure
+    {
+        if ($name === '') {
+            throw new InvalidArgumentException('A source field name is required.');
+        }
+
+        return static fn (array $payload): mixed => $format($payload[$name] ?? $default);
+    }
+
+    /**
+     * Bind preferred identifier keys for reuse as a declared value conversion.
+     *
+     * @param list<string> $fields
+     *
+     * @return Closure(mixed): mixed
+     */
+    public static function pluckFrom(array $fields): Closure
+    {
+        return static fn (mixed $records): mixed => self::pluck($records, $fields);
+    }
+
+    /**
+     * Bind nested record names and selection rules for declared request values.
+     *
+     * @param array<array-key, string>|Fields $fields
+     * @param array<string, mixed>            $defaults
+     * @param list<string>                    $required
+     *
+     * @return Closure(mixed): mixed
+     */
+    public static function recordsWith(
+        array|Fields $fields, array $defaults = [], array $required = [],
+    ): Closure {
+        return static fn (mixed $records): mixed => self::requestRecords(
+            $records, $fields, $defaults, $required,
+        );
     }
 
     /**

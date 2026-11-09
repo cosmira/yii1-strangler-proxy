@@ -109,7 +109,7 @@ use Cosmira\Strangler\Strangler;
 Strangler::proxy('catalog')
     ->uppercase('ITEM_ID')
     ->query(values: [
-        'kind' => static fn ($value) => Format::expand($value, ['legacy' => ['modern']]),
+        'kind' => Format::expandWith(['legacy' => ['modern']]),
     ])
     ->get('get', '/api/items')
     ->build();
@@ -126,6 +126,11 @@ semantic difference, then invoke that supplied mapper. Do not rebuild `Fields` o
 `Query::legacy()` in the callback. Return `false` to retain Yii before HTTP.
 `mapQuery()` remains the explicit full-replacement escape hatch and takes priority
 over the convention and its semantic adapter.
+
+`query(nativeOn: ['query'])` keeps nonempty native full-text searches in Yii before
+model resolution. This is a semantic exception, not a backend capability list.
+`request(nativeContains: ['csv' => '\\"'], actions: ['import'])` keeps matching
+string payloads in Yii; absent and non-string values do not match.
 
 `request(using: ...)` provides the corresponding payload extension. Its callback
 receives the remaining payload, the original context, and the compiled convention.
@@ -150,6 +155,36 @@ native execution before HTTP. Route parameters do not become query/body fields.
 Consumed leaves and newly empty ancestors disappear from the forwarded body;
 sibling metadata remains. Query/payload callbacks keep the original body in their
 context, while the payload argument contains the remaining body.
+
+### Select the outgoing body
+
+Use `body` when an operation changes the payload structure:
+
+```php
+Strangler::proxy('directory')
+    ->using(new ApiContract())
+    ->put('move', '/people/{id}/groups', body: ['ids' => ['PARENT_GROUP_ID']])
+    ->build();
+```
+
+`'note' => 'NOTE'` copies one value; `'ids' => ['PARENT_GROUP_ID']` builds a list.
+Source names are literal native keys. Missing keys produce `null`. Only declared
+fields are sent; `body: []` sends an empty payload. Omitting `body` keeps normal
+mapping. Callbacks still receive the original payload snapshot.
+
+For create-only defaults and scalar-to-list aliases:
+
+```php
+->request(
+    lists: ['PARENT_ID' => 'parent_ids'],
+    defaults: ['is_visible' => true],
+    actions: ['create'],
+)
+```
+
+List aliases wrap present, non-null values. Null keeps its ordinary field name.
+Defaults fill missing upstream fields and preserve explicit null or false.
+Other request aliases remain active; conflicting aliases keep execution in Yii.
 
 ### Value differences and scoped identifiers
 
@@ -418,6 +453,10 @@ Strangler::proxy('catalog')
     ->build();
 ```
 
+`response(empty: ['delete'], rejectEmpty: ['copy' => [['meta', 'added_ids'], 'exists_entity', 400]])`
+configures these outcomes without a callback. `response(projection: '*')` includes
+all declared relations regardless of the native selection.
+
 `requireData()` requires a successful JSON envelope to have a `data` property,
 including operations with an empty mapped response. HTTP 204 remains valid.
 `rejectEmpty()` matches an explicit empty array at the literal path for the selected
@@ -427,7 +466,8 @@ actions. A missing path or another value does not match. Neither rule replays a 
 
 A `ControllerContract` connects existing application methods to the package.
 The [README example](../README.md#connect-existing-rest-controllers) implements
-its required `model()` and `payload()` methods. Register it with
+its required `model()` and `payload()` methods. An optional `configure(Strangler $proxy)`
+method sets shared fluent defaults; later controller declarations override them. Register it with
 `using(new ApiContract())`; keep route declarations on the same `Strangler`.
 An explicit `request(reader: ...)` overrides the contract's payload reader.
 

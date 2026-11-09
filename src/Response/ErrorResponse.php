@@ -4,17 +4,50 @@ declare(strict_types=1);
 
 namespace Cosmira\Strangler\Response;
 
+use Closure;
 use Cosmira\Strangler\Exception\InvalidUpstreamResponse;
 use Cosmira\Strangler\Schema\Mapping;
+use GuzzleHttp\Psr7\Response;
 use Psr\Http\Message\ResponseInterface;
 
-/** Translate an upstream error into the configured Yii error vocabulary. */
+/**
+ * Translate an upstream error into the configured Yii error vocabulary.
+ *
+ * @phpstan-type ErrorMapper callable(
+ *     mixed, ResponseInterface, array<array-key, mixed>
+ * ): ResponseInterface
+ * @phpstan-type ErrorCallback Closure(
+ *     mixed, ResponseInterface, array<array-key, mixed>
+ * ): ResponseInterface
+ */
 final readonly class ErrorResponse
 {
     /**
      * Yii clients identify failed responses through this envelope discriminator.
      */
     private const ERROR_STATE = 'error';
+
+    /**
+     * Redirect one upstream error status while preserving the application's other errors.
+     *
+     * @param ErrorMapper $fallback
+     *
+     * @return ErrorCallback
+     */
+    public static function redirect(int $status, string $location, callable $fallback): Closure
+    {
+        if ($status < 400 || $status > 599 || $location === '') {
+            throw new \InvalidArgumentException(
+                'Error redirects require an error status and location.',
+            );
+        }
+
+        return static fn (
+            mixed $json, ResponseInterface $response, array $context,
+        ): ResponseInterface => $response->getStatusCode() === $status
+                ? new Response(302, ['Location' => $location])
+                : $fallback($json, $response, $context);
+    }
 
     /**
      * Retain naming differences independently from HTTP status-to-code conventions.

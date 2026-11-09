@@ -16,6 +16,7 @@ final readonly class NativeRequestGuard
      * @param array<string, string> $required
      * @param list<string>          $methods
      * @param list<string>          $actions
+     * @param array<string, string> $contains
      */
     public function __construct(
         /**
@@ -34,8 +35,15 @@ final readonly class NativeRequestGuard
          * Actions governed by this declaration; an empty list applies to all actions.
          */
         private array $actions,
+        /**
+         * Literal payload fragments that require native handling.
+         */
+        private array $contains = [],
     ) {
-        foreach ([...$nativeOn, ...array_keys($required), ...$methods, ...$actions] as $name) {
+        foreach ([
+            ...$nativeOn, ...array_keys($required),
+            ...$methods, ...$actions, ...array_keys($contains),
+        ] as $name) {
             if (trim($name) === '') {
                 throw new InvalidArgumentException('Request guard names must be nonempty strings.');
             }
@@ -52,6 +60,30 @@ final readonly class NativeRequestGuard
                 );
             }
         }
+    }
+
+    /**
+     * Retain native search semantics for explicitly declared nonempty filters.
+     *
+     * @param list<string>            $fields
+     * @param array<array-key, mixed> $query
+     */
+    public static function hasNativeFilter(array $fields, array $query): bool
+    {
+        if ($fields === []) {
+            return false;
+        }
+        $filters = $query['filter'] ?? [];
+        if (! is_array($filters)) {
+            return true;
+        }
+        foreach ($fields as $field) {
+            if (! empty($filters[$field])) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -97,8 +129,26 @@ final readonly class NativeRequestGuard
 
         return ($this->methods !== [] && ! in_array($method, $this->methods, true))
             || $this->hasUnsupportedFields($payload)
+            || $this->containsNativeValue($payload)
             || $this->hasConflictingIdentity($payload, $query, $identifier)
             || $this->hasInvalidRequiredFields($payload, $query, $identifier);
+    }
+
+    /**
+     * Inspect declared string fields without copying or decoding their contents.
+     *
+     * @param array<array-key, mixed> $payload
+     */
+    private function containsNativeValue(array $payload): bool
+    {
+        foreach ($this->contains as $field => $fragment) {
+            $value = $payload[$field] ?? null;
+            if (is_string($value) && str_contains($value, $fragment)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

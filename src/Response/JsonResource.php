@@ -98,6 +98,33 @@ final class JsonResource
     }
 
     /**
+     * Configure strict data-envelope results without an application callback.
+     *
+     * @param list<string>|null                                   $empty
+     * @param array<string, array{list<string|int>, string, int}> $rejectEmpty
+     *
+     * @return Closure(self): self
+     */
+    public static function outcomes(?array $empty, array $rejectEmpty): Closure
+    {
+        $rules = self::make()->requireData()->empty($empty ?? ['delete']);
+        foreach ($rejectEmpty as $action => [$path, $error, $status]) {
+            $rules = $rules->rejectEmpty($path, $error, $status, [$action]);
+        }
+
+        return static function (self $resource) use ($empty, $rules): self {
+            $copy = clone $resource;
+            $copy->requiresData = true;
+            if ($empty !== null) {
+                $copy->emptyActions = $rules->emptyActions;
+            }
+            $copy->emptyResults = [...$copy->emptyResults, ...$rules->emptyResults];
+
+            return $copy;
+        };
+    }
+
+    /**
      * Start with the common Yii REST envelope, total, action, and status defaults.
      */
     public static function make(): self

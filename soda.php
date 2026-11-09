@@ -16,6 +16,7 @@ return Soda::configure()
         ...array_map(
             static fn ($rule) => $rule instanceof NoUnusedParameters
                 ? new NoUnusedParameters(contracts: [
+                    ControllerContract::class.'::configure',
                     ControllerContract::class.'::nativeRelations',
                     ControllerContract::class.'::responseFields',
                     ControllerContract::class.'::responseAttributes',

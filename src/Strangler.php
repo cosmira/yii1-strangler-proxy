@@ -733,7 +733,7 @@ final class Strangler
                 $this->optionalAttributes, $this->attributeMappers, $this->recordFinalizers,
                 $this->includes !== null, $this->queryAdapter !== null, $this->projection !== null,
                 $this->payloadAdapter !== null, $this->queryValues,
-                $this->selection !== null, $this->required,
+                $this->selection !== null, $this->required, $this->requestRules,
             ];
             if (array_filter($fieldSettings) !== []) {
                 throw new InvalidArgumentException('Field mappings require a native identifier.');

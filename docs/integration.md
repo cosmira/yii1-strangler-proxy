@@ -184,7 +184,8 @@ Payload decisions run in this order after the feature and route checks:
 A predicate exception reaches the application error handler unchanged. It does not
 select the legacy action. Payload matches use the `bypass_payload` diagnostic reason.
 The [adaptation guide](api-adaptation.md#enable-the-feature-after-checking-compatibility)
-includes field-presence and nested-value examples. `actions` scopes guards, `before` checks, `lists`, `defaults`, and relation exceptions.
+includes field-presence and nested-value examples. `actions` scopes guards,
+`before` checks, `lists`, `defaults`, and relation exceptions.
 Input field/value maps and callbacks remain shared across actions. Repeated non-null `reader` or
 `bypass` arguments replace that callback; omitted arguments retain it.
 

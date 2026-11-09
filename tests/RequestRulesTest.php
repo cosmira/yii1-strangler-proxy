@@ -6,6 +6,7 @@ namespace Cosmira\Strangler\Tests;
 
 use Cosmira\Strangler\Convention;
 use Cosmira\Strangler\Response\JsonResource;
+use Cosmira\Strangler\Strangler;
 use InvalidArgumentException;
 use PHPUnit\Framework\TestCase;
 use stdClass;
@@ -83,6 +84,16 @@ final class RequestRulesTest extends TestCase
         self::assertTrue($mapped->is_visible);
         self::assertSame($opaque, $input->PARENT_ID);
         self::assertEquals((object) [], (new Convention('GROUP_ID', JsonResource::make()))->payload((object) []));
+    }
+
+    public function testRequestRulesRequireAnEnabledNamingConvention(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('Field mappings require a native identifier.');
+
+        Strangler::proxy('example')
+            ->request(defaults: ['is_visible' => true])
+            ->post('create', '/items')->build();
     }
 
     public function testInvalidRegistrationsFailBeforeRuntime(): void

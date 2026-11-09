@@ -150,7 +150,11 @@ final class ResponseGraph
     private function schema(string $identifier, ?string $relation, array $options): Record
     {
         $fields = $this->attributeNames($identifier, $relation, $options['fields'] ?? []);
-        $record = $this->prototype->identifier($identifier)->rename($fields);
+        $nativeField = strtolower($identifier);
+        $source = ($fields[$nativeField] ?? null) === $identifier ? $nativeField : 'id';
+        $record = $this->prototype
+            ->identifier($identifier, $source)
+            ->rename($fields);
         if ($relation !== null) {
             $record = $record->required([]);
         }

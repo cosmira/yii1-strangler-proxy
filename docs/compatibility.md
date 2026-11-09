@@ -1,7 +1,7 @@
-# Check a 5.2.0 integration
+# Check a 5.3.0 integration
 
 Keep the feature disabled until the application's contract tests pass with
-`cosmira/yii1-strangler-proxy` **5.2.0**.
+`cosmira/yii1-strangler-proxy` **5.3.0**.
 
 ## Check the configuration
 

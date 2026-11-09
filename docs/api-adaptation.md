@@ -475,6 +475,10 @@ An explicit `request(reader: ...)` overrides the contract's payload reader.
 native model when handling a selected request. Building filters does not read the
 model. Disabled, unmapped, and early-bypassed requests do not resolve it.
 
+By default the backend primary key is `id`. To use database field names, include
+`strtolower($identifier) => $identifier` in the contract’s `responseFields()` map.
+The declared primary-key mapping also applies to related records without database queries.
+
 Use the same contract without resource arguments in every controller. Each related
 controller supplies its own model and primary key when its response schema is needed.
 Binary actions can opt out with `using($contract, except: ['image'])`.

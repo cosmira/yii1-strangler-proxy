@@ -859,10 +859,7 @@ final class Strangler
      */
     private function record(string $identifier, ?ControllerContract $contract): Record
     {
-        $fieldsUsing = null;
-        if ($contract !== null) {
-            $fieldsUsing = $contract->responseFields(...);
-        }
+        $fieldsUsing = $contract === null ? null : $contract->responseFields(...);
         $graph = new ResponseGraph(
             prototype: Record::uppercase()->rename($this->responseFields)
                 ->required($this->required)

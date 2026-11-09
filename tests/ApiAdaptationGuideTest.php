@@ -117,7 +117,15 @@ final class ApiAdaptationGuideTest extends TestCase
         self::assertCount(1, $this->history);
     }
 
-    public function testPublishedConfigurationPreservesSingleListAndWriteContracts(): void
+    public function testPublishedEnvelopeExampleKeepsConventionalRecordNames(): void
+    {
+        $result = $this->forward('view', '{"data":{"id":42}}', query: ['id' => 42],
+            builder: $this->builder('Advanced: adapt a different envelope'));
+
+        self::assertSame(['success' => true, 'data' => ['ITEM_ID' => 42]], json_decode($result, true));
+    }
+
+    public function testNestedContractPreservesSingleListAndWriteResponses(): void
     {
         $item = '{"id":42,"title":"Desk","enabled":true,"category":{"id":7}}';
         $legacy = ['ID' => 42, 'NAME' => 'Desk', 'ACTIVE' => 1, 'CATEGORY_ID' => 7];
@@ -160,7 +168,7 @@ final class ApiAdaptationGuideTest extends TestCase
         self::assertSame(503, $this->status);
     }
 
-    public function testPublishedExamplePreservesSafeMetadataAndLargeIdentifiers(): void
+    public function testNestedContractPreservesSafeMetadataAndLargeIdentifiers(): void
     {
         $result = $this->forward('view', '{"data":{"id":9223372036854775808,"title":"Desk","enabled":true,"category":{"id":7}}}', query: ['id' => 42], headers: [
             'X-Request-Id'     => ['request-42'], 'Retry-After' => ['3'], 'ETag' => ['obsolete'],
@@ -184,7 +192,7 @@ final class ApiAdaptationGuideTest extends TestCase
         self::assertCount(3, $this->history);
     }
 
-    public function testPublishedQueryAndPayloadBypassesNeverContactBackend(): void
+    public function testNestedQueryAndPayloadBypassesNeverContactBackend(): void
     {
         $_GET = ['start' => 21, 'limit' => 10];
         $controller = new Controller('catalog');
@@ -228,14 +236,24 @@ final class ApiAdaptationGuideTest extends TestCase
         }
     }
 
-    private function builder(string $section = 'Advanced: adapt a different envelope'): Strangler
+    private function builder(?string $section = null): Strangler
     {
+        if ($section === null) {
+            $builder = require __DIR__.'/Fixtures/NestedCatalogContract.php';
+            self::assertInstanceOf(Strangler::class, $builder);
+
+            return $builder;
+        }
         $guide = file_get_contents(dirname(__DIR__).'/docs/api-adaptation.md');
         self::assertIsString($guide);
         if (preg_match('/## '.preg_quote($section, '/').'\b.*?```php\r?\n(.*?)\r?\n```/s', $guide, $matches) !== 1) {
             throw new RuntimeException('The guide must contain its runnable builder.');
         }
-        $code = preg_replace('/->build\(\);\s*$/', ';', $matches[1]);
+        $snippet = $matches[1];
+        if (! str_contains($snippet, 'return Strangler::proxy')) {
+            $snippet = str_replace('Strangler::proxy', 'return Strangler::proxy', $snippet);
+        }
+        $code = preg_replace('/->build\(\);\s*$/', ';', $snippet);
         self::assertIsString($code);
         $path = tempnam(sys_get_temp_dir(), 'strangler-guide-');
         self::assertIsString($path);

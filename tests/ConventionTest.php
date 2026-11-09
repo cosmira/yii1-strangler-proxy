@@ -543,7 +543,7 @@ final class ConventionTest extends TestCase
         }
     }
 
-    public function testEveryDirectionalExceptionRequiresUppercaseBeforeBuild(): void
+    public function testEveryDirectionalExceptionRequiresANativeIdentifierBeforeBuild(): void
     {
         $formatter = static fn (mixed $value): mixed => $value;
         foreach ([
@@ -554,9 +554,9 @@ final class ConventionTest extends TestCase
         ] as $builder) {
             try {
                 $builder->get('view', '/items')->build();
-                self::fail('A directional exception without uppercase() must fail.');
+                self::fail('A directional exception without a native identifier must fail.');
             } catch (\InvalidArgumentException $error) {
-                self::assertStringContainsString('uppercase()', $error->getMessage());
+                self::assertStringContainsString('native identifier', $error->getMessage());
             }
         }
     }

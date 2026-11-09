@@ -16,22 +16,10 @@ use Psr\Http\Message\ResponseInterface;
 
 define('YII_DEBUG', false);
 require dirname(__DIR__, 2).'/bootstrap.php';
+require_once dirname(__DIR__, 3).'/vendor/yiisoft/yii/framework/yii.php';
 error_reporting(E_ALL & ~E_DEPRECATED);
-$guide = file_get_contents(dirname(__DIR__, 3).'/docs/integration.md');
-if (! is_string($guide) || preg_match('/```php\r?\n(class ApiErrorController.*?)\r?\n```/s', $guide, $matches) !== 1) {
-    throw new RuntimeException('The guide must contain its runnable API error controller.');
-}
-$path = tempnam(sys_get_temp_dir(), 'strangler-error-guide-');
-if (! is_string($path)) {
-    throw new RuntimeException('Could not create the guide fixture.');
-}
-
-try {
-    file_put_contents($path, "<?php\n".$matches[1]);
-    require $path;
-} finally {
-    unlink($path);
-}
+require dirname(__DIR__, 3).'/examples/catalog/common.php';
+require dirname(__DIR__, 3).'/examples/catalog/controllers.php';
 $application = new CWebApplication([
     'basePath'      => dirname(__DIR__, 2), 'runtimePath' => dirname(__DIR__, 2),
     'controllerMap' => ['apiError' => ['class' => 'ApiErrorController']],

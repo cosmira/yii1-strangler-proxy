@@ -104,6 +104,44 @@ final class RuntimeBindingTest extends TestCase
         self::assertFalse($this->controller->ran);
     }
 
+    /** @param array<array-key, string>|null $schemaKey */
+    #[DataProvider('unsupportedExplicitModelKeys')]
+    public function testExplicitApiIdentifierControlsRuntimeIdentityWithoutReadingModels(?array $schemaKey): void
+    {
+        $model = $this->createMock(CActiveRecord::class);
+        $schema = new CDbTableSchema;
+        $schema->primaryKey = $schemaKey;
+        $model->expects(self::never())->method('primaryKey');
+        $model->expects(self::never())->method('getTableSchema')->willReturn($schema);
+        $contract = new NativeControllerContract($model);
+        $payload = ['API_ID' => 'item', 'TITLE' => 'Desk'];
+        $config = Strangler::proxy('example')->uppercase('API_ID')->using($contract)
+            ->request(reader: static function () use (&$payload): array {
+                return $payload;
+            })->put('edit', '/items/{id}')->build()['config'];
+        $_SERVER['REQUEST_METHOD'] = 'PUT';
+        $_GET = ['id' => 'item'];
+        $handler = new MockHandler([new Response(204)]);
+        $proxy = new StranglerProxy(new Client(['handler' => $handler]));
+        ob_start();
+
+        try {
+            self::assertTrue($proxy->handle($this->controller, $config, 'edit'));
+        } finally {
+            ob_end_clean();
+        }
+        self::assertCount(0, $handler);
+        $payload['API_ID'] = 'conflict';
+        self::assertFalse($proxy->handle($this->controller, $config, 'edit'));
+        self::assertSame(0, $contract->models);
+    }
+
+    /** @return list<array{array<array-key, string>|null}> */
+    public static function unsupportedExplicitModelKeys(): array
+    {
+        return [[['FIRST_ID', 'SECOND_ID']], [null]];
+    }
+
     public function testDatabaseMetadataResolvesTheStandardNullOverrideOnlyAtRuntime(): void
     {
         $model = $this->createMock(CActiveRecord::class);

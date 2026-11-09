@@ -185,8 +185,8 @@ Strangler::proxy('catalog')
     ->build();
 ```
 
-`within()` runs a scoped native lookup only when the selected outgoing path
-contains `{catalog_id}`. The package clones the finder and its criteria. An absent
+`within()` requires a single native primary key. It runs a scoped lookup only
+when the outgoing path contains `{catalog_id}`. The package clones the finder and its criteria. An absent
 record or a conflicting parent keeps the request in Yii before HTTP. Building the
 filter does not query the model. Computed route parameters never become query or
 body attributes.

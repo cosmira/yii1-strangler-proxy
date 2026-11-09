@@ -189,7 +189,9 @@ final readonly class StranglerProxy
 
         $contract = $config['controllerContract'] ?? null;
         $nativeBypass = $contract !== null
-            && $contract->shouldBypass($controller, $actionKey, $_GET, $payload);
+            && $contract->shouldBypass(
+                $controller, $actionKey, $_GET, $payload, $config['bodyIdentifier'] ?? null,
+            );
         if ($nativeBypass || self::shouldBypass($controller, $config, $actionKey, $payload)) {
             YiiRuntime::logDecision($config, $actionKey, 'bypass_payload');
 

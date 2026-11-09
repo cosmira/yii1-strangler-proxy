@@ -265,9 +265,11 @@ abstract class ControllerContract
      *
      * @param array<array-key, mixed> $query
      * @param array<array-key, mixed> $payload
+     * @param string|null             $identifier Resolved native identifier, before model metadata.
      */
     public function shouldBypass(
         CController $controller, string $action, array $query, array $payload,
+        ?string $identifier = null,
     ): bool {
         $method = $this->conventionalMethod($action);
         if ($method === null) {
@@ -277,7 +279,7 @@ abstract class ControllerContract
         return StranglerProxy::application()->getRequest()->getRequestType() !== $method
             || $this->malformedQuery($action, $query)
             || ($payload !== [] && array_is_list($payload))
-            || $this->conflictingIdentifier($controller, $query, $payload);
+            || $this->conflictingIdentifier($controller, $query, $payload, $identifier);
     }
 
     /**
@@ -311,15 +313,15 @@ abstract class ControllerContract
      * @param array<array-key, mixed> $payload
      */
     private function conflictingIdentifier(
-        CController $controller, array $query, array $payload,
+        CController $controller, array $query, array $payload, ?string $identifier,
     ): bool {
         if (! isset($query['id']) || $payload === []) {
             return false;
         }
-        $identifier = $this->identifier() ?? self::modelKey($this->model($controller));
+        $key = $identifier ?? $this->identifier() ?? self::modelKey($this->model($controller));
 
-        return isset($payload[$identifier])
-            && $query['id'] !== $payload[$identifier];
+        return isset($payload[$key])
+            && $query['id'] !== $payload[$key];
     }
 
     /**

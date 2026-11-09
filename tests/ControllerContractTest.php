@@ -214,7 +214,7 @@ final class ControllerContractTest extends TestCase
             ->put('edit', '/api/{extra}/parents/{parent_id}/items/{id}')->build()['config'];
         $path = $this->forward($config);
         self::assertSame('/api/ok/parents/parent/items/item', $path);
-        self::assertSame(2, $contract->models);
+        self::assertSame(1, $contract->models);
     }
 
     public function testOutOfScopeRecordDoesNotSendAnUpstreamRequest(): void

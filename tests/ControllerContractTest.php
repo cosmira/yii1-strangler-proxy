@@ -18,6 +18,7 @@ use Cosmira\Strangler\Tests\Fixtures\Request;
 use Cosmira\Strangler\Tests\Fixtures\User;
 use Cosmira\Strangler\Tests\Fixtures\WebApplication;
 use GuzzleHttp\Client;
+use GuzzleHttp\ClientInterface;
 use GuzzleHttp\Handler\MockHandler;
 use GuzzleHttp\Promise\FulfilledPromise;
 use GuzzleHttp\Psr7\Response;
@@ -61,6 +62,78 @@ final class ControllerContractTest extends TestCase
     {
         Yii::setApplication(null);
         $_GET = [];
+    }
+
+    public function testNativeRelationWritesStayLocalUnlessExplicitlyAdaptedOrConsumed(): void
+    {
+        $contract = new class extends ControllerContract
+        {
+            /** @var array<array-key, mixed> */
+            public array $body = [];
+
+            public int $relationReads = 0;
+
+            public function model(CController $controller): CActiveRecord
+            {
+                throw new \LogicException('An explicit identifier must not inspect a model.');
+            }
+
+            public function payload(CController $controller): array
+            {
+                return $this->body;
+            }
+
+            public function nativeRelations(CController $controller): array
+            {
+                $this->relationReads++;
+
+                return ['children', 'groups', 'contacts', 'tags'];
+            }
+        };
+        $config = Strangler::proxy('example')->using($contract)->uppercase('ITEM_ID')
+            ->request(relations: ['CONTACTS'])
+            ->request(relations: ['CHILDREN'], actions: ['Create'])
+            ->request(relations: ['tags'], actions: ['create'])
+            ->post('create', '/api/groups/{group_id}/items', fromBody: ['group_id' => 'GROUPS.*.GROUP_ID'])
+            ->put('edit', '/api/items/{id}')
+            ->put('link', '/api/items/{id}/children')
+            ->build()['config'];
+        $client = $this->createMock(ClientInterface::class);
+        $client->expects(self::never())->method('request');
+        $proxy = new StranglerProxy($client);
+        $_SERVER['REQUEST_METHOD'] = 'PUT';
+
+        foreach ([[], [['id' => 'child']], '[]', null, 'invalid'] as $value) {
+            foreach (['CHILDREN', 'children', 'ChIlDrEn'] as $field) {
+                $contract->body = [$field => $value];
+                self::assertTrue(StranglerProxy::shouldBypass($this->controller, $config, 'edit'));
+                self::assertFalse($proxy->handle($this->controller, $config, 'edit'));
+            }
+        }
+        foreach ([['CONTACTS' => []], ['FUTURE_FIELD' => 'value'], []] as $body) {
+            self::assertFalse(StranglerProxy::shouldBypass($this->controller, $config, 'edit', $body));
+        }
+        $_SERVER['REQUEST_METHOD'] = 'POST';
+        $group = ['GROUPS' => [['GROUP_ID' => 'g']]];
+        self::assertFalse(StranglerProxy::shouldBypass($this->controller, $config, 'create', $group + [
+            'CHILDREN' => [], 'CONTACTS' => [], 'TAGS' => [],
+        ]));
+        self::assertTrue(StranglerProxy::shouldBypass($this->controller, $config, 'create', ['GROUPS' => []]));
+        self::assertTrue(StranglerProxy::shouldBypass($this->controller, $config, 'create', [
+            'GROUPS' => [['GROUP_ID' => 'g', 'NOTE' => 'must not be dropped']],
+        ]));
+        self::assertTrue(StranglerProxy::shouldBypass($this->controller, $config, 'edit', ['TAGS' => []]));
+        $reads = $contract->relationReads;
+        self::assertFalse(StranglerProxy::shouldBypass($this->controller, $config, 'link', ['CHILDREN' => []]));
+        self::assertSame($reads, $contract->relationReads);
+    }
+
+    public function testAdaptedRelationsRequireNonemptyNames(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('Adapted relation names must be nonempty.');
+
+        Strangler::proxy('example')->request(relations: [' ']);
     }
 
     public function testNativeChecksRunOnceAfterStructuralGuardsBeforeMapping(): void

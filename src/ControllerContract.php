@@ -132,6 +132,16 @@ abstract class ControllerContract
     }
 
     /**
+     * Identify native nested writes that ordinary attribute mapping cannot preserve.
+     *
+     * @return list<string>
+     */
+    public function nativeRelations(CController $controller): array
+    {
+        return [];
+    }
+
+    /**
      * Supply naming differences shared by root and related representations of one resource.
      *
      * @return array<string, string>

@@ -55,6 +55,34 @@ final readonly class NativeRequestGuard
     }
 
     /**
+     * Compose action-specific exceptions to native relation handling.
+     *
+     * @param array<string, list<string>> $registered
+     * @param list<string>                $relations
+     * @param list<string>                $actions
+     *
+     * @return array<string, list<string>>
+     */
+    public static function adaptRelations(
+        array $registered, array $relations, array $actions,
+    ): array {
+        foreach ($relations as $relation) {
+            if (trim($relation) === '') {
+                throw new InvalidArgumentException('Adapted relation names must be nonempty.');
+            }
+        }
+        if ($relations === []) {
+            return $registered;
+        }
+        $names = array_map(strtolower(...), $relations);
+        foreach ($actions ?: ['*'] as $action) {
+            $registered[$action] = array_merge($registered[$action] ?? [], $names);
+        }
+
+        return $registered;
+    }
+
+    /**
      * Select native execution when an applicable request violates a declared limitation.
      *
      * @param array<array-key, mixed> $payload

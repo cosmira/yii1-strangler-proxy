@@ -59,6 +59,7 @@ use InvalidArgumentException;
  *     nativeParent?: string,
  *     payloadReader?: callable(CController, string): array<array-key, mixed>,
  *     requestGuards?: list<NativeRequestGuard>,
+ *     requestRelations?: array<string, list<string>>,
  *     beforeRequest?: callable(array<array-key, mixed>, string, CController): void,
  *     routeParameters?: callable(array{action: string, query: array<array-key, mixed>,
  *         payload: array<array-key, mixed>|null}): (array<string, mixed>|false),
@@ -325,12 +326,13 @@ final class Strangler
      * @param list<string>                          $methods
      * @param list<string>                          $actions
      * @param RequestCheck|null                     $before
+     * @param list<string>                          $relations  Adapted native relations.
      */
     public function request(
         array $fields = [], array $values = [], ?callable $reader = null,
         ?callable $bypass = null, ?callable $parameters = null, ?callable $using = null,
         array $nativeOn = [], array $required = [], array $methods = [], array $actions = [],
-        ?callable $before = null,
+        ?callable $before = null, array $relations = [],
     ): self {
         $actionNames = array_map(strtolower(...), $actions);
         $nativeMethods = array_map(strtoupper(...), $methods);
@@ -343,6 +345,9 @@ final class Strangler
             self::validateFieldMap([$source => $target]);
         }
         self::validateFormatters($values);
+        $this->config['requestRelations'] = NativeRequestGuard::adaptRelations(
+            $this->config['requestRelations'] ?? [], $relations, $actionNames,
+        );
         $this->requestFields = array_replace($this->requestFields, $fields);
         $this->requestValues = array_replace($this->requestValues, $values);
 

@@ -16,9 +16,27 @@ use Psr\Http\Message\ResponseInterface;
  * Connect application controller conventions without coupling transport to the application.
  *
  * @phpstan-import-type Relation from \Cosmira\Strangler\Response\ResponseGraph
+ * @phpstan-import-type Config from Strangler
+ * @phpstan-import-type BoundConfig from Strangler
  */
 abstract class ControllerContract
 {
+    /**
+     * Bind a deferred declaration to the current controller without mutating its snapshot.
+     *
+     * @internal
+     *
+     * @param Config $config
+     *
+     * @return BoundConfig
+     */
+    public static function resolveConfig(array $config, CController $controller): array
+    {
+        $resolve = $config['resolve'] ?? null;
+
+        return $resolve === null ? $config : $resolve($controller);
+    }
+
     /**
      * Read a related controller's record declaration without executing its lifecycle.
      *
@@ -55,8 +73,13 @@ abstract class ControllerContract
                 continue;
             }
             $config = $filter['config'] ?? null;
-            if (is_array($config) && ($config['responseRecord'] ?? null) instanceof Record) {
-                $records[] = $config['responseRecord'];
+            if (! is_array($config)) {
+                continue;
+            }
+            $resolve = $config['resolve'] ?? null;
+            $resolved = is_callable($resolve) ? $resolve($controller) : $config;
+            if (is_array($resolved) && ($resolved['responseRecord'] ?? null) instanceof Record) {
+                $records[] = $resolved['responseRecord'];
             }
         }
 
@@ -69,6 +92,21 @@ abstract class ControllerContract
     abstract public function model(CController $controller): CActiveRecord;
 
     /**
+     * Resolve one native key from a model override or Yii's database table metadata.
+     */
+    final public static function modelKey(CActiveRecord $model): string
+    {
+        $key = $model->primaryKey() ?? $model->getTableSchema()->primaryKey;
+        if (! is_string($key) || $key === '') {
+            throw new InvalidArgumentException(
+                'Conventional mapping requires one native identifier.',
+            );
+        }
+
+        return $key;
+    }
+
+    /**
      * Read the application's request envelope once before adapting it.
      *
      * @return array<array-key, mixed>
@@ -76,7 +114,7 @@ abstract class ControllerContract
     abstract public function payload(CController $controller): array;
 
     /**
-     * Declare the native identifier to enable shared request and response conventions.
+     * Declare an explicit native identifier instead of resolving model metadata.
      */
     public function identifier(): ?string
     {
@@ -204,8 +242,8 @@ abstract class ControllerContract
         if ($response->getStatusCode() === 422 && ! isset($context['responseFields'])) {
             $controller = StranglerProxy::application()->getController();
             $identifier = $context['identifier'] ?? $this->identifier()
-                ?? $this->model($controller)->primaryKey();
-            $fields = $this->responseFields(is_string($identifier) ? $identifier : '');
+                ?? self::modelKey($this->model($controller));
+            $fields = $this->responseFields($identifier);
         }
         $mapped = (new ErrorResponse($fields, $this->errorCodes()))($json, $response);
         $action = $context['action'] ?? '';
@@ -227,9 +265,11 @@ abstract class ControllerContract
      *
      * @param array<array-key, mixed> $query
      * @param array<array-key, mixed> $payload
+     * @param string|null             $identifier Resolved native identifier, before model metadata.
      */
     public function shouldBypass(
         CController $controller, string $action, array $query, array $payload,
+        ?string $identifier = null,
     ): bool {
         $method = $this->conventionalMethod($action);
         if ($method === null) {
@@ -239,7 +279,7 @@ abstract class ControllerContract
         return StranglerProxy::application()->getRequest()->getRequestType() !== $method
             || $this->malformedQuery($action, $query)
             || ($payload !== [] && array_is_list($payload))
-            || $this->conflictingIdentifier($controller, $query, $payload);
+            || $this->conflictingIdentifier($controller, $query, $payload, $identifier);
     }
 
     /**
@@ -273,15 +313,15 @@ abstract class ControllerContract
      * @param array<array-key, mixed> $payload
      */
     private function conflictingIdentifier(
-        CController $controller, array $query, array $payload,
+        CController $controller, array $query, array $payload, ?string $identifier,
     ): bool {
         if (! isset($query['id']) || $payload === []) {
             return false;
         }
-        $identifier = $this->identifier() ?? $this->model($controller)->primaryKey();
+        $key = $identifier ?? $this->identifier() ?? self::modelKey($this->model($controller));
 
-        return is_string($identifier) && isset($payload[$identifier])
-            && $query['id'] !== $payload[$identifier];
+        return isset($payload[$key])
+            && $query['id'] !== $payload[$key];
     }
 
     /**
@@ -297,12 +337,7 @@ abstract class ControllerContract
     ): array|false {
         $finder = clone $this->model($controller);
         $finder->setDbCriteria(clone $finder->getDbCriteria());
-        $key = $identifier ?? $finder->primaryKey();
-        if (! is_string($key)) {
-            throw new InvalidArgumentException(
-                'Scoped parent lookup requires one native identifier.',
-            );
-        }
+        $key = $identifier ?? $this->identifier() ?? self::modelKey($finder);
         $id = $query['id'] ?? $payload[$key] ?? null;
         $value = $id === null
             ? ($payload[$parent] ?? null)

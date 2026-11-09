@@ -178,15 +178,15 @@ contract and name the native parent attribute:
 
 ```php
 Strangler::proxy('catalog')
-    ->using(new ApiContract('ITEM_ID'))
+    ->using(new ApiContract())
     ->within('CATALOG_ID')
     ->get('view', '/catalogs/{catalog_id}/items/{id}')
     ->put('edit', '/catalogs/{catalog_id}/items/{id}')
     ->build();
 ```
 
-`within()` runs a scoped native lookup only when the selected outgoing path
-contains `{catalog_id}`. The package clones the finder and its criteria. An absent
+`within()` requires a single native primary key. It runs a scoped lookup only
+when the outgoing path contains `{catalog_id}`. The package clones the finder and its criteria. An absent
 record or a conflicting parent keeps the request in Yii before HTTP. Building the
 filter does not query the model. Computed route parameters never become query or
 body attributes.
@@ -405,24 +405,27 @@ actions. A missing path or another value does not match. Neither rule replays a 
 A `ControllerContract` connects existing application methods to the package.
 The [README example](../README.md#connect-existing-rest-controllers) implements
 its required `model()` and `payload()` methods. Register it with
-`using(new ApiContract('ITEM_ID'))`; keep route declarations on the same `Strangler`.
+`using(new ApiContract())`; keep route declarations on the same `Strangler`.
 An explicit `request(reader: ...)` overrides the contract's payload reader.
 
-Override `identifier(): ?string` to declare the native primary key. This enables
-naming, query, and response conventions through `using()`; no `uppercase()` call
-is needed. Binary actions can opt out with `using($contract, except: ['image'])`.
-Exclusions accumulate across `using()` and `uppercase()` calls.
-The identifier is read when `build()` runs, without model lookup or database access.
+`using()` enables conventions and reads the primary key from the controller's
+native model when handling a selected request. Building filters does not read the
+model. Disabled, unmapped, and early-bypassed requests do not resolve it.
 
-A contract returning `null` keeps explicit mappings and pass-through behavior.
-For standalone conventions, `uppercase('ITEM_ID')` declares the identifier directly;
-an explicit value takes precedence over the contract identifier.
+Use the same contract without resource arguments in every controller. Each related
+controller supplies its own model and primary key when its response schema is needed.
+Binary actions can opt out with `using($contract, except: ['image'])`.
+Exclusions accumulate across `using()` and `uppercase()` calls.
+
+Automatic binding requires one nonempty string primary key. For a different API
+identifier or a composite-key model, declare the API identifier explicitly with
+`uppercase('ITEM_ID')`. Explicit stage mappings retain their precedence.
 
 Override only the shared differences your application needs:
 
 | Hook | Result |
 | --- | --- |
-| `identifier()` | Native identifier that enables conventions through `using()`; `null` leaves them disabled. |
+| `identifier()` | Optional explicit native identifier. The default `null` resolves the key from the current model. |
 | `relations()` | Shared relation declarations, including controller-backed schemas and native name differences. |
 | `responseFields($identifier)` | Upstream-to-native field exceptions for that root or related resource. |
 | `responseAttributes($attributes, $identifier, $relation)` | Attribute values before naming and relation traversal. |

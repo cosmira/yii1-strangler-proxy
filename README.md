@@ -1,6 +1,6 @@
 # Yii 1 Strangler Proxy
 
-Documentation for **4.1.0**.
+Documentation for **5.0.0**.
 
 [![Tests][tests-badge]][tests-workflow]
 [![PHP 8.2–8.5][php-badge]](composer.json)
@@ -26,7 +26,7 @@ mapping, and selected multipart uploads.
 Install the package in your Yii application:
 
 ```shell
-composer require cosmira/yii1-strangler-proxy:4.1.0
+composer require cosmira/yii1-strangler-proxy:5.0.0
 ```
 
 Load Composer's `vendor/autoload.php` before the Yii bootstrap. Commit your
@@ -129,13 +129,6 @@ use Cosmira\Strangler\ControllerContract;
 
 class ApiContract extends ControllerContract
 {
-    public function __construct(private string $identifier) {}
-
-    public function identifier(): string
-    {
-        return $this->identifier;
-    }
-
     public function model(CController $controller): CActiveRecord
     {
         return $controller->getModel();
@@ -148,20 +141,20 @@ class ApiContract extends ControllerContract
 }
 ```
 
-Keep one fluent filter in each controller. Declare only the identifier, routes,
-and differences from your shared contract:
+Keep one fluent filter in each controller. Declare routes and resource-specific differences:
 
 ```php
 use Cosmira\Strangler\Strangler;
 
 Strangler::proxy('catalog')
-    ->using(new ApiContract('ITEM_ID'))
+    ->using(new ApiContract())
     ->get('view', '/api/items/{id}')
     ->build();
 ```
 
-`using()` enables naming, query, and response conventions when the contract declares
-its identifier. It reads the payload once and formats native errors. Conventional
+`using()` enables naming, query, and response conventions. The package reads the
+native model's primary key when handling a selected request, after preceding Yii
+filters. Building the filter does not read the model. Conventional
 `get`, `view`, `create`, `edit`, and `delete` actions also check the incoming method
 and request shape. Authentication, permissions, CSRF, and
 application-specific rules remain in your existing Yii filters.
@@ -176,7 +169,7 @@ can reuse that declaration instead of repeating field maps or branching on recor
 
 ```php
 return Strangler::proxy('catalog')
-    ->using(new ApiContract('CATALOG_ID'))
+    ->using(new ApiContract())
     ->response(relations: [
         'items' => ItemController::class,
         'owner' => ['controller' => PersonController::class, 'many' => false],
@@ -195,7 +188,7 @@ The [catalog example](examples/catalog/README.md) runs Yii and a backend against
 one SQLite dataset. It requires `pdo_sqlite`:
 
 ```shell
-git clone --branch 4.1.0 --depth 1 https://github.com/cosmira/yii1-strangler-proxy.git
+git clone --branch 5.0.0 --depth 1 https://github.com/cosmira/yii1-strangler-proxy.git
 cd yii1-strangler-proxy
 composer install
 composer example:verify

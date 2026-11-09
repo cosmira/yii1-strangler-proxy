@@ -7,6 +7,7 @@ namespace Cosmira\Strangler\Tests;
 use CActiveRecord;
 use CController;
 use CDbCriteria;
+use CDbTableSchema;
 use Cosmira\Strangler\ControllerContract;
 use Cosmira\Strangler\InlineMapping;
 use Cosmira\Strangler\Strangler;
@@ -514,6 +515,9 @@ final class ControllerContractTest extends TestCase
     private function finder(): CActiveRecord
     {
         $model = $this->createMock(CActiveRecord::class);
+        $schema = new CDbTableSchema;
+        $schema->primaryKey = 'ITEM_ID';
+        $model->method('getTableSchema')->willReturn($schema);
         $criteria = new CDbCriteria(['condition' => 'scope = 1']);
         $model->method('getDbCriteria')->willReturn($criteria);
         $model->method('setDbCriteria')->willReturnCallback(static function (CDbCriteria $copy) use ($criteria): void {

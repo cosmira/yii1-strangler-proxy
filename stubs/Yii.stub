@@ -53,8 +53,17 @@ class CAction
 class CModel {}
 class CDbCriteria {}
 
+class CDbTableSchema
+{
+    /** @var string|array<array-key, string>|null */
+    public $primaryKey;
+}
+
 class CActiveRecord extends CModel
 {
+    /** @return CDbTableSchema */
+    public function getTableSchema() {}
+
     /**
      * @param bool $createIfNull
      *

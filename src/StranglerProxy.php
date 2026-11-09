@@ -94,7 +94,9 @@ final readonly class StranglerProxy
             return true;
         }
 
-        return self::payloadIsNative($controller, $config, $actionKey, $payload);
+        $bound = ControllerContract::resolveConfig($config, $controller);
+
+        return self::payloadIsNative($controller, $bound, $actionKey, $payload);
     }
 
     /**
@@ -150,16 +152,17 @@ final readonly class StranglerProxy
 
             return false;
         }
-        unset($config['bypass']);
+        $bound = ControllerContract::resolveConfig($config, $controller);
+        unset($bound['bypass']);
 
         $context = ['action' => $actionKey, 'query' => $_GET, 'payload' => null];
-        if (isset($config['bodyIdentifier'])) {
-            $context['identifier'] = $config['bodyIdentifier'];
+        if (isset($bound['bodyIdentifier'])) {
+            $context['identifier'] = $bound['bodyIdentifier'];
         }
-        $inline = isset($config['mappings'])
-            ? new InlineMapping($config['mappings'], $context) : null;
+        $inline = isset($bound['mappings'])
+            ? new InlineMapping($bound['mappings'], $context) : null;
 
-        return $this->forward($controller, $config, $actionKey, $route, $inline);
+        return $this->forward($controller, $bound, $actionKey, $route, $inline);
     }
 
     /**

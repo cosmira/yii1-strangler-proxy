@@ -49,7 +49,7 @@ use InvalidArgumentException;
  * @phpstan-type Route array{
  *     method: string, path: string, fromBody?: array<string, string|list<string>>
  * }
- * @phpstan-type Config array{
+ * @phpstan-type BoundConfig array{
  *     feature?: string,
  *     routes?: array<string, Route>,
  *     mappings?: Settings,
@@ -68,13 +68,20 @@ use InvalidArgumentException;
  *     bypassPayloadFields?: array<string, list<string>>,
  *     files?: array<string, array<string, string>>
  * }
+ * @phpstan-type DeferredConfig array{
+ *     resolve: callable(CController): BoundConfig,
+ *     feature?: string,
+ *     routes: array<string, Route>,
+ *     bypass?: callable(CController, string, array<array-key, mixed>): bool
+ * }
+ * @phpstan-type Config BoundConfig|DeferredConfig
  */
 final class Strangler
 {
     /**
      * Feature settings and callbacks collected by the builder.
      *
-     * @var Config
+     * @var BoundConfig
      */
     private array $config;
 
@@ -100,11 +107,11 @@ final class Strangler
     private array $routes = [];
 
     /**
-     * Primary legacy body identifier; null leaves the original passthrough contract.
+     * Explicit native identifier; otherwise the controller model supplies it at runtime.
      */
     private ?string $identifier = null;
     /**
-     * Keep convention activation independent of an identifier supplied by the controller contract.
+     * Enable standalone naming conventions without requiring a controller contract.
      */
     private bool $isConventionEnabled = false;
 
@@ -264,7 +271,7 @@ final class Strangler
     }
 
     /**
-     * Connect native parsing and enable conventions when the contract declares its identifier.
+     * Connect native parsing and defer model conventions until the controller is ready.
      *
      * @param list<string> $except Actions excluded from automatic request and response mapping.
      */
@@ -598,6 +605,41 @@ final class Strangler
      */
     public function build(): array
     {
+        $contract = $this->config['controllerContract'] ?? null;
+        if ($contract !== null && $this->identifier === null && $contract->identifier() === null) {
+            $snapshot = clone $this;
+            $config = array_intersect_key($this->config, ['feature' => true, 'bypass' => true])
+                + ['resolve' => static fn (CController $controller): array => $snapshot->bound(
+                    $controller, $contract,
+                )];
+        } else {
+            $config = $this->configuration();
+        }
+
+        return [StranglerFilter::class, 'config' => ['routes' => $this->routes] + $config];
+    }
+
+    /**
+     * Compile a request-local declaration after the controller's preceding Yii filters.
+     *
+     * @return BoundConfig
+     */
+    private function bound(CController $controller, ControllerContract $contract): array
+    {
+        $identifier = ControllerContract::modelKey($contract->model($controller));
+        $bound = clone $this;
+        $bound->identifier = $identifier;
+
+        return ['routes' => $bound->routes] + $bound->configuration();
+    }
+
+    /**
+     * Attach native hooks to the compiled mapping configuration without reading a model.
+     *
+     * @return BoundConfig
+     */
+    private function configuration(): array
+    {
         $config = $this->compiled();
         if ($this->requestChecks !== []) {
             $checks = $this->requestChecks;
@@ -629,18 +671,17 @@ final class Strangler
             throw new InvalidArgumentException('within() requires a controller contract.');
         }
 
-        return [StranglerFilter::class, 'config' => ['routes' => $this->routes] + $config];
+        return $config;
     }
 
     /**
      * Compile convention defaults after all routes and explicit callbacks are known.
      *
-     * @return Config
+     * @return BoundConfig
      */
     private function compiled(): array
     {
-        if (! $this->isConventionEnabled
-            && ($this->config['controllerContract'] ?? null)?->identifier() === null) {
+        if (! $this->isConventionEnabled && ! isset($this->config['controllerContract'])) {
             $fieldSettings = [
                 $this->responseFields, $this->requestFields, $this->requestValues,
                 $this->responseValues, $this->filterAliases, $this->sortAliases,

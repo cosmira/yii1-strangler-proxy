@@ -1,12 +1,13 @@
-# Check a 4.1.0 integration
+# Check a 5.0.0 integration
 
 Keep the feature disabled until the application's contract tests pass with
-`cosmira/yii1-strangler-proxy` **4.1.0**.
+`cosmira/yii1-strangler-proxy` **5.0.0**.
 
 ## Check the configuration
 
 - Complete authentication, permissions, incoming-method, and CSRF checks before Strangler.
 - Keep shared conventions in `ControllerContract` and resource differences in existing controller filters.
+- Let each native model supply its primary key. Building filters must not read model metadata.
 - Keep payload readers free of writes and authorization side effects. Use `request(before:)` for native checks.
 - Make related controllers safe to construct and read through `filters()` without running an action.
 - Exclude binary responses from JSON mapping and check upload limits and buffering.

@@ -156,7 +156,7 @@ The controller builder configures behavior for one feature:
 | `get/post/put/delete($action, $path)` | Map one Yii action to an outgoing method/path. Each action may appear once. |
 | `route($action, $method, $path, $fromBody = [])` | Register GET, HEAD, POST, PUT, PATCH or DELETE, with optional body bindings. |
 | `uppercase($identifier = null, $except = [])` | Enable conventional names and the Yii response envelope. An omitted identifier comes from the controller contract; missing both is a configuration error. |
-| `using($contract, $except = [])` | Connect native parsing and errors. A declared contract identifier enables naming, query, and response conventions; `except` excludes actions from those mappings. |
+| `using($contract, $except = [])` | Connect native parsing and errors. The native model supplies the primary key for naming, query, and response conventions; `except` excludes actions from those mappings. |
 | `within($nativeParent)` | Resolve a parent required by a nested route through the contract's scoped model. Requires `using()`. |
 | `request()` | Configure input names and values, a reader, a bypass predicate, route parameters, semantic adaptation, structural guards, and native checks. See [request guards](api-adaptation.md#declare-request-guards-and-native-checks). |
 | `response()` | Configure output names and values, required attribute types, omissions, projection, related resources, and record callbacks. `using` configures the JSON envelope. |
@@ -172,9 +172,9 @@ The controller builder configures behavior for one feature:
 
 Payload decisions run in this order after the feature and route checks:
 
-1. Run the existing early `bypassUsing()` callback. A match does not read the body.
-2. Read the payload once.
-3. If a controller contract is configured, run its conventional CRUD checks against the same snapshot.
+1. Run the existing early `bypassUsing()` callback. A match does not read the body or native model.
+2. Resolve the native primary key and compile request-local mappings when the contract has no explicit identifier.
+3. Read the payload once and run the contract's conventional CRUD checks against that snapshot.
 4. Call the configured payload predicate with the original `($payload, $actionId, $query)` values.
    Then evaluate matching structural guards. A matching bypass or failed guard keeps the request in Yii.
 5. Run matching `request(before:)` checks against the original payload, in registration order.
@@ -367,9 +367,9 @@ To work on the package beside a Yii application, clone the repository and add a
 Composer path repository:
 
 ```shell
-git clone --branch 4.1.0 --depth 1 https://github.com/cosmira/yii1-strangler-proxy.git ../yii1-strangler-proxy
+git clone --branch 5.0.0 --depth 1 https://github.com/cosmira/yii1-strangler-proxy.git ../yii1-strangler-proxy
 composer config repositories.yii1-strangler-proxy path ../yii1-strangler-proxy
-composer require cosmira/yii1-strangler-proxy:4.1.0
+composer require cosmira/yii1-strangler-proxy:5.0.0
 ```
 
 A path repository is for development; deploy the tagged VCS dependency and the

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Cosmira\Strangler;
 
 use Cosmira\Strangler\Exception\InvalidUpstreamResponse;
+use Cosmira\Strangler\Internal\Http\CollectionPages;
 use Cosmira\Strangler\Internal\Payload\BodyParameters;
 use Cosmira\Strangler\Response\Json;
 use Cosmira\Strangler\Schema\Mapping;
@@ -20,7 +21,8 @@ use UnexpectedValueException;
  *
  * @phpstan-type Context array{
  *     action: string, query: array<array-key, mixed>, payload: array<array-key, mixed>|null,
- *     identifier?: string, responseFields?: array<string, string>
+ *     identifier?: string, responseFields?: array<string, string>,
+ *     method?: string, requestMethod?: string
  * }
  * @phpstan-type QueryMapper array<array-key, string>|callable(
  *     array<array-key, mixed>, Context
@@ -36,7 +38,7 @@ use UnexpectedValueException;
  * @phpstan-type Settings array{
  *     query?: array<string, QueryMapper>, payload?: array<string, PayloadMapper>,
  *     response?: array<string, ResponseMapper>, errors?: array<string, ResponseMapper>,
- *     responseFields?: array<string, string>
+ *     responseFields?: array<string, string>, completeCollections?: array<string, int>
  * }
  */
 final readonly class InlineMapping
@@ -138,18 +140,34 @@ final readonly class InlineMapping
      */
     private function query(array $query): array|false
     {
+        $collectionQuery = $this->collection()?->query($query) ?? $query;
         $mapper = $this->select($this->mappings['query'] ?? []);
         if ($mapper === null) {
-            return $query;
+            return $collectionQuery;
         }
         $mapped = is_callable($mapper)
-            ? $mapper(self::copy($query), $this->context())
-            : Mapping::fields($query, $mapper);
+            ? $mapper(self::copy($collectionQuery), $this->context())
+            : Mapping::fields($collectionQuery, $mapper);
         if ($mapped === false || is_array($mapped)) {
             return $mapped;
         }
 
         throw new UnexpectedValueException('Query mappings must return an array or false.');
+    }
+
+    /**
+     * Select complete reads from the original query, independently of mapped page numbers.
+     */
+    public function collection(): ?CollectionPages
+    {
+        $collections = $this->mappings['completeCollections'] ?? [];
+        $size = $collections[$this->context['action']] ?? null;
+        if ($size === null || ($this->context['method'] ?? '') !== 'GET'
+            || ($this->context['requestMethod'] ?? '') !== 'GET') {
+            return null;
+        }
+
+        return CollectionPages::fromQuery($this->context['query'], $size);
     }
 
     /**

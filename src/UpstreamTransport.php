@@ -12,7 +12,7 @@ use GuzzleHttp\Exception\GuzzleException;
 use GuzzleHttp\Psr7\Message;
 use GuzzleHttp\Psr7\Response;
 use GuzzleHttp\Psr7\Utils;
-use GuzzleHttp\RequestOptions;
+use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\StreamInterface;
 use Throwable;
 
@@ -22,6 +22,10 @@ use Throwable;
  * @internal
  *
  * @phpstan-import-type Config from Strangler
+ *
+ * @phpstan-type Options array{
+ *     timeout: float, connect_timeout: float, query: array<array-key, mixed>, ...
+ * }
  */
 final readonly class UpstreamTransport
 {
@@ -93,49 +97,99 @@ final readonly class UpstreamTransport
         string $routeTemplate,
         ?InlineMapping $inline,
     ): void {
-        $method = $outgoing['method'];
-        $path = $outgoing['path'];
         $options = self::validatedOptions(
             $settings, $config, $actionKey, $outgoing, $routeTemplate,
         );
         $client = $this->client ?? new Client();
         $startedAt = ($this->clock)();
+        $collection = $inline?->collection();
+        $deadline = $startedAt + $options['timeout'];
 
+        do {
+            if ($collection !== null) {
+                $options = $collection->options($options, $deadline - ($this->clock)());
+                if ($options === null) {
+                    $this->emitFailure($config, $actionKey, $routeTemplate,
+                        $this->elapsed($startedAt), $outgoing['method'], $inline);
+
+                    return;
+                }
+            }
+
+            [$response, $timeMs] = $this->attempt(
+                $client, $config, $actionKey, $outgoing, $routeTemplate, $options, $startedAt,
+            );
+            if ($response === null) {
+                $this->emitFailure(
+                    $config, $actionKey, $routeTemplate, $timeMs, $outgoing['method'], $inline,
+                );
+
+                return;
+            }
+            $complete = $collection === null ? $response : $collection->response($response);
+        } while ($complete === null);
+
+        $snapshot = $this->responseSnapshot($complete, $inline);
+        $this->emitResponse(
+            $config, $actionKey, $routeTemplate, $timeMs, $snapshot,
+            $outgoing['method'], $response->getStatusCode(), $inline,
+        );
+    }
+
+    /**
+     * Observe one actual HTTP attempt, preserving callback exceptions outside the transport catch.
+     *
+     * @param Config                                   $config
+     * @param array{method: string, path: string, ...} $outgoing
+     * @param Options                                  $options
+     *
+     * @return array{ResponseInterface|null, int}
+     */
+    private function attempt(
+        ClientInterface $client, array $config, string $actionKey, array $outgoing,
+        string $routeTemplate, array $options, float $startedAt,
+    ): array {
         try {
-            $response = $client->request($method, $path, $options);
+            $response = $client->request($outgoing['method'], $outgoing['path'], $options);
         } catch (GuzzleException) {
             $timeMs = $this->elapsed($startedAt);
             YiiRuntime::logResult($config, $actionKey, $routeTemplate, [
                 'reason' => 'transport_failure',
-                'method' => $method, 'time_ms' => $timeMs,
+                'method' => $outgoing['method'], 'time_ms' => $timeMs,
             ]);
             $this->notifyAttempt(
                 $config, $actionKey, $outgoing, $routeTemplate, ['time_ms' => $timeMs],
             );
-            $this->emitFailure(
-                $config, $actionKey, $routeTemplate, $timeMs, $method, $inline,
-            );
 
-            return;
+            return [null, $timeMs];
         }
+        $timeMs = $this->elapsed($startedAt);
+        $this->notifyAttempt($config, $actionKey, $outgoing, $routeTemplate, [
+            'upstream_status' => $response->getStatusCode(), 'time_ms' => $timeMs,
+        ]);
 
+        return [$response, $timeMs];
+    }
+
+    /**
+     * Retain a readable body for adaptation while rewinding seekable upstream streams.
+     *
+     * @return array{status: int, body: string|StreamInterface,
+     *     headers: array<string, array<string>>}
+     */
+    private function responseSnapshot(ResponseInterface $response, ?InlineMapping $inline): array
+    {
         $mapsResponse = $inline !== null && $inline->mapsResponse($response->getStatusCode());
-        $responseSnapshot = [
+        $snapshot = [
             'status'  => $response->getStatusCode(),
             'body'    => $mapsResponse ? (string) $response->getBody() : $response->getBody(),
             'headers' => $response->getHeaders(),
         ];
-        $timeMs = $this->elapsed($startedAt);
-        $this->notifyAttempt($config, $actionKey, $outgoing, $routeTemplate, [
-            'upstream_status' => $responseSnapshot['status'], 'time_ms' => $timeMs,
-        ]);
         if ($response->getBody()->isSeekable()) {
             Message::rewindBody($response);
         }
-        $this->emitResponse(
-            $config, $actionKey, $routeTemplate, $timeMs, $responseSnapshot,
-            $method, $responseSnapshot['status'], $inline,
-        );
+
+        return $snapshot;
     }
 
     /**
@@ -146,7 +200,7 @@ final readonly class UpstreamTransport
      * @param array{method: string, path: string, query: array<array-key, mixed>,
      *     payload: array<array-key, mixed>, body: string|null} $outgoing
      *
-     * @return array<array-key, mixed>
+     * @return Options
      */
     private static function validatedOptions(
         array $settings,
@@ -178,7 +232,7 @@ final readonly class UpstreamTransport
      * @param array<array-key, mixed>    $payload
      * @param array<string, string>|null $files
      *
-     * @return array<array-key, mixed>
+     * @return Options
      */
     private static function requestOptions(
         array $settings,
@@ -196,14 +250,14 @@ final readonly class UpstreamTransport
         ]);
 
         $options = [
-            RequestOptions::HEADERS         => $headers,
-            RequestOptions::QUERY           => $query,
+            'headers'                       => $headers,
+            'query'                         => $query,
             'base_uri'                      => YiiRuntime::baseUri($settings),
-            RequestOptions::HTTP_ERRORS     => false,
-            RequestOptions::ALLOW_REDIRECTS => false,
-            RequestOptions::VERIFY          => YiiRuntime::tlsVerification($settings),
-            RequestOptions::TIMEOUT         => self::timeout($settings, 'timeout', 10),
-            RequestOptions::CONNECT_TIMEOUT => self::timeout($settings, 'connect_timeout', 3),
+            'http_errors'                   => false,
+            'allow_redirects'               => false,
+            'verify'                        => YiiRuntime::tlsVerification($settings),
+            'timeout'                       => self::timeout($settings, 'timeout', 10),
+            'connect_timeout'               => self::timeout($settings, 'connect_timeout', 3),
         ];
 
         if (! in_array($method, ['POST', 'PUT', 'PATCH', 'DELETE'], true)) {
@@ -212,21 +266,21 @@ final readonly class UpstreamTransport
 
         if ($files !== null) {
             unset($headers['Content-Type']);
-            $options[RequestOptions::HEADERS] = $headers;
-            $options[RequestOptions::MULTIPART] = self::multipart($payload, $files);
+            $options['headers'] = $headers;
+            $options['multipart'] = self::multipart($payload, $files);
 
             return $options;
         }
 
         if ($body !== null) {
             $headers['Content-Type'] = 'application/json';
-            $options[RequestOptions::HEADERS] = $headers;
-            $options[RequestOptions::BODY] = $body;
+            $options['headers'] = $headers;
+            $options['body'] = $body;
 
             return $options;
         }
 
-        $options[RequestOptions::JSON] = $payload;
+        $options['json'] = $payload;
 
         return $options;
     }

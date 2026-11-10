@@ -41,14 +41,16 @@ final class ValueFormatsTest extends TestCase
         }
     }
 
-    public function testJsonStringEncodesOnlyArraysAndRetainsEncodingFailure(): void
+    public function testJsonStringEncodesArraysAndObjectsAndRetainsEncodingFailure(): void
     {
         self::assertSame('{"enabled":false,"nested":{"value":null}}',
             Format::jsonString(['enabled' => false, 'nested' => ['value' => null]]));
         self::assertSame('[]', Format::jsonString([]));
         self::assertSame('["a\\/b","\\u0410"]', Format::jsonString(['a/b', 'А']));
         self::assertFalse(Format::jsonString(["\xFF"]));
-        foreach ([null, false, 1, '{broken', new stdClass()] as $value) {
+        self::assertSame('{}', Format::jsonString(new stdClass()));
+        self::assertSame('{"MixedCase":false}', Format::jsonString((object) ['MixedCase' => false]));
+        foreach ([null, false, 1, '{broken'] as $value) {
             self::assertSame($value, Format::jsonString($value));
         }
     }

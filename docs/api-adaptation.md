@@ -98,6 +98,13 @@ attributes or response fields. Ordinary filters and sorts still need no list.
 ordinary undeclared names still pass through the convention. Multiple legacy names
 may share one upstream include; an empty target omits that include.
 
+Native scalar `with` flags select their associative keys: an encoded
+`with[IDENTITY_NAME]=true` selects `IDENTITY_NAME`, so
+`query(includes: ['IDENTITY_NAME' => 'identity'])` forwards `include=identity`.
+False scalar flags also select by key presence. List strings keep their existing
+meaning; malformed containers and unsupported nested selections retain native execution.
+Filter and sort values do not use this include-only normalization.
+
 `query(values: [...])` formats declared filter values after ordinary names and list
 values have been normalized. Formatter keys use upstream filter names. For example,
 expand a historic name while retaining both spellings for the backend:
@@ -692,13 +699,26 @@ without adding another application mapper class:
 
 | Helper | Behavior |
 | --- | --- |
-| `pluck($records, $fields)` | Select the first present key in preference order from each record, retaining scalar input for validation. |
-| `requestRecords($records, $fields, $defaults = [], $required = [])` | Rename each nested record's own keys, add defaults under translated names, and optionally select records containing non-null required fields. |
+| `pluck($records, $fields)` | Select the first non-null key in preference order from each record, retaining scalar input for validation. |
+| `requestRecords($records, $fields, $defaults = [], $required = [], $values = [])` | Rename each nested record's own keys, add defaults under translated names, and optionally select records containing non-null required fields. |
 | `changes($changes, $sides, $fields, $except = [], $values = [])` | Convert field-oriented snapshots into named sides, retaining an unrecognized business payload unchanged. |
 
 For a `Fields::uppercase()` schema, `requestRecords()` translates ordinary input
 keys without listing them. It preserves nested opaque JSON values; it does not
 recursively rename those values or make malformed scalar rows valid.
+
+`recordsWith()` returns the same mapping as a callback. Use `values` for explicit
+conversions after renaming, such as metadata stored as a JSON string:
+
+```php
+use Cosmira\Strangler\Schema\Fields;
+use Cosmira\Strangler\Schema\Format;
+use Cosmira\Strangler\Schema\Mapping;
+
+$contacts = Mapping::recordsWith(Fields::uppercase(), values: ['meta' => Format::jsonString(...)]);
+```
+
+Formatter keys use mapped field names; configured defaults pass through the same formatters.
 
 `changes()` receives source-to-target side names, such as
 `['from' => 'old', 'to' => 'new']`. A change
@@ -813,3 +833,42 @@ The backend must validate file size, content and permissions. Multipart requests
 trusted headers, timeouts and single-attempt behavior as JSON requests.
 
 See [file performance](performance.md) for reproducible transfer and memory measurements.
+
+### Complete native collection reads
+
+A native list request without `limit`, or with `limit=-1`, can mean the whole
+collection. Declare this difference for the relevant GET action:
+
+```php
+Strangler::proxy('directory')
+    ->uppercase('ITEM_ID')
+    ->query(complete: ['get' => 100])
+    ->get('get', '/api/items')
+    ->build();
+```
+
+The package requests successive Laravel paginator pages on the same trusted path,
+retaining mapped filters, sort and includes. It combines their `data` before the
+normal response mapping and preserves `meta.total` for native `totalCount`.
+A nonnegative native `start` skips that many records, including offsets inside an
+upstream page; `start=-1` means zero. A positive explicit limit keeps the existing
+single-page translation and unsupported queries still run natively before any
+upstream attempt. Only declared actions resolving to GET, called with GET, collect
+pages. Writes are never replayed.
+
+The upstream paginator must expose integer `meta.current_page`, `last_page`,
+`per_page` and `total`. Each page must match its requested number and the initial
+collection total. A collection without `meta` is accepted as a complete list.
+Pagination links are never followed. A later error discards earlier pages and
+uses the normal error response mapping; malformed or inconsistent pagination
+returns `502 invalid_upstream_response`. There is no fallback after HTTP begins.
+Each actual attempt runs `afterAttempt`; the configured transport timeout is one
+deadline for the entire read, not a renewed timeout per page.
+
+Page sizes must be positive and accepted by the upstream paginator. Each size
+bounds one requested page, not the total collection.
+Mapped JSON and the combined collection use memory proportional to the complete
+result, like a native unlimited response; there is no silent record or byte cap.
+Unmapped binary/file responses keep their existing streamed output. Offset pages
+do not provide a database snapshot: use stable server ordering; concurrent edits
+can still replace records without changing the total.

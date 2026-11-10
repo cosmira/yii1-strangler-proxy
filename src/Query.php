@@ -7,6 +7,7 @@ namespace Cosmira\Strangler;
 use Closure;
 use Cosmira\Strangler\Schema\Fields;
 use Cosmira\Strangler\Schema\Mapping;
+use InvalidArgumentException;
 
 /** Callable legacy query configuration for Strangler::mapQuery(). */
 final class Query
@@ -84,6 +85,28 @@ final class Query
     public static function legacy(?Fields $convention = null): self
     {
         return new self($convention ?? Fields::uppercase([]));
+    }
+
+    /**
+     * Normalize action names and reject invalid collection page sizes.
+     *
+     * @param array<string, int> $actions
+     *
+     * @return array<string, int>
+     */
+    public static function collectionPages(array $actions): array
+    {
+        $configured = [];
+        foreach ($actions as $action => $pageSize) {
+            if ($action === '' || $pageSize < 1) {
+                throw new InvalidArgumentException(
+                    'Complete collection actions require nonempty names and positive page sizes.',
+                );
+            }
+            $configured[strtolower($action)] = $pageSize;
+        }
+
+        return $configured;
     }
 
     /**
@@ -207,7 +230,7 @@ final class Query
         if ($this->adapter !== null) {
             return ($this->adapter)($query, $context, $this->defaults);
         }
-        $values = array_diff_key($query, array_flip($this->ignored));
+        $values = $this->nativeQuery($query);
         $list = in_array($context['action'], $this->listActions, true);
         if (! $list) {
             unset($values['start'], $values['limit']);
@@ -219,7 +242,7 @@ final class Query
             $sorts = $this->sortFields
                 ?? $this->convention->sorts(self::names(self::keys($values['sort'] ?? [])));
             $includes = $this->includeNames($values['with'] ?? []);
-        } catch (\InvalidArgumentException) {
+        } catch (InvalidArgumentException) {
             return false;
         }
         $mapped = Mapping::legacyQuery($values, $filters, $sorts,
@@ -236,6 +259,40 @@ final class Query
         }
 
         return $mapped;
+    }
+
+    /**
+     * Strip ignored inputs and normalize Yii's scalar relation flags before mapping.
+     *
+     * @param array<array-key, mixed> $query
+     *
+     * @return array<array-key, mixed>
+     */
+    private function nativeQuery(array $query): array
+    {
+        $values = array_diff_key($query, array_flip($this->ignored));
+        if (isset($values['with']) && is_array($values['with'])) {
+            $values['with'] = self::nativeIncludes($values['with']);
+        }
+
+        return $values;
+    }
+
+    /**
+     * Native scalar include flags select by key presence, regardless of their value.
+     *
+     * @param array<array-key, mixed> $values
+     *
+     * @return list<mixed>
+     */
+    private static function nativeIncludes(array $values): array
+    {
+        $names = [];
+        foreach ($values as $key => $value) {
+            $names[] = is_string($key) && is_scalar($value) ? $key : $value;
+        }
+
+        return $names;
     }
 
     /**

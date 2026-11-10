@@ -28,11 +28,11 @@ final class Format
     }
 
     /**
-     * Encode array values for an API that stores JSON as a string.
+     * Encode arrays and JSON objects for an API that stores JSON as a string.
      */
     public static function jsonString(mixed $value): mixed
     {
-        return is_array($value) ? json_encode($value) : $value;
+        return is_array($value) || $value instanceof \stdClass ? json_encode($value) : $value;
     }
 
     /**

@@ -2,6 +2,11 @@
 
 declare(strict_types=1);
 
+// Real HTTP fixtures stay on loopback; accidental external requests fail immediately.
+putenv('HTTP_PROXY=http://127.0.0.1:1');
+putenv('HTTPS_PROXY=http://127.0.0.1:1');
+putenv('NO_PROXY=127.0.0.1,localhost,::1');
+
 define('YII_ENABLE_ERROR_HANDLER', false);
 define('YII_ENABLE_EXCEPTION_HANDLER', false);
 

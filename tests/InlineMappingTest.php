@@ -100,7 +100,7 @@ final class InlineMappingTest extends TestCase
     {
         $_GET = ['r' => 'example/get', 'start' => 20];
         $this->request->body = '{"ID":"a/b","NAME":"Desk","nullable":null}';
-        $context = ['action' => 'get', 'query' => $_GET, 'payload' => ['ID' => 'a/b', 'NAME' => 'Desk', 'nullable' => null]];
+        $context = ['action' => 'get', 'query' => $_GET, 'payload' => ['ID' => 'a/b', 'NAME' => 'Desk', 'nullable' => null], 'method' => 'POST', 'requestMethod' => 'GET'];
         $filter = Strangler::proxy('example')->post('get', '/items/{id}')->request(parameters: static fn (array $context): array => ['id' => $context['query']['id'] ?? $context['payload']['ID'] ?? null])
             ->mapQuery(static function (array $query, array $request) use ($context): array {
                 self::assertSame(['start' => 20], $query);
@@ -416,7 +416,7 @@ final class InlineMappingTest extends TestCase
                 $calls++;
                 self::assertSame(502, $response->getStatusCode());
                 self::assertEquals((object) ['state' => 'error', 'error' => 'invalid_upstream_response'], $json);
-                self::assertSame(['action' => 'get', 'query' => [], 'payload' => []], $request);
+                self::assertSame(['action' => 'get', 'query' => [], 'payload' => [], 'method' => 'GET', 'requestMethod' => 'GET'], $request);
 
                 return Json::response($response, ['legacy' => 'invalid']);
             })->build();
@@ -519,10 +519,10 @@ final class InlineMappingTest extends TestCase
             ->mapJsonResponse(static fn (mixed $json, ResponseInterface $response, array $request): ResponseInterface => Json::response($response, $request))->build();
         $_GET = ['marker' => 'first'];
         $this->request->body = '{"ID":1}';
-        self::assertSame('{"action":"get","query":{"marker":"first"},"payload":{"ID":1}}', $this->executeFilter($filter, new Response(200, [], '{}')));
+        self::assertSame('{"action":"get","query":{"marker":"first"},"payload":{"ID":1},"method":"GET","requestMethod":"GET"}', $this->executeFilter($filter, new Response(200, [], '{}')));
         $_GET = ['marker' => 'second'];
         $this->request->body = '{"ID":2}';
-        self::assertSame('{"action":"get","query":{"marker":"second"},"payload":{"ID":2}}', $this->executeFilter($filter, new Response(200, [], '{}')));
+        self::assertSame('{"action":"get","query":{"marker":"second"},"payload":{"ID":2},"method":"GET","requestMethod":"GET"}', $this->executeFilter($filter, new Response(200, [], '{}')));
     }
 
     public function testActionSpecificMappingsDoNotRunForOtherActions(): void

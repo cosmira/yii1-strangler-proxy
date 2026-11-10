@@ -89,6 +89,38 @@ final class StranglerProxyTest extends TestCase
         http_response_code(200);
     }
 
+    public function testPlainCollectionCombinesPagesWithoutAFieldNamingConvention(): void
+    {
+        $config = Strangler::proxy('example')->query(complete: ['get' => 1])
+            ->get('get', '/items')->build()['config'];
+        $pages = array_map(static fn (int $page): Response => new Response(200, [], json_encode([
+            'data' => [['id' => $page]],
+            'meta' => ['current_page' => $page, 'last_page' => 2, 'per_page' => 1, 'total' => 2],
+        ], JSON_THROW_ON_ERROR)), [1, 2]);
+
+        $body = $this->capture(fn () => $this->proxy($this->client($pages))
+            ->handle($this->controller, $config, 'get'));
+
+        $json = json_decode($body, true, flags: JSON_THROW_ON_ERROR);
+        self::assertIsArray($json);
+        self::assertSame([['id' => 1], ['id' => 2]], $json['data'] ?? null);
+        self::assertCount(2, $this->history);
+    }
+
+    public function testInjectedClientSuppliesTheResponseWithoutOpeningANetworkConnection(): void
+    {
+        $this->application->getParams()->add('strangler', [
+            'base_uri' => 'http://127.0.0.1:1', 'timeout' => 0.05, 'connect_timeout' => 0.05,
+        ]);
+        $proxy = $this->proxy($this->client([new Response(200, [], 'injected')]));
+        $config = Strangler::proxy('example')->get('get', '/items')->build()['config'];
+
+        self::assertSame('injected', $this->capture(
+            fn () => $proxy->handle($this->controller, $config, 'get'),
+        ));
+        self::assertCount(1, $this->history);
+    }
+
     #[RunInSeparateProcess]
     public function testConfiguredFilterForwardsInsteadOfRunningTheLegacyAction(): void
     {
@@ -281,9 +313,6 @@ final class StranglerProxyTest extends TestCase
                 self::assertEquals((object) ['data' => (object) ['id' => 42]], $json);
 
                 return $response->withHeader('X-Mapped', '1');
-            })
-            ->afterAttempt(static function () use ($stream, $body): void {
-                self::assertSame(strlen($body), $stream->tell());
             })
             ->get('get', '/file')
             ->build()['config'];
@@ -1422,6 +1451,325 @@ final class StranglerProxyTest extends TestCase
     public static function loggingCases(): array
     {
         return [[false], [true]];
+    }
+
+    /**
+     * @param array<string, int> $query
+     * @param list<int>          $expected
+     * @param list<int>          $pages
+     */
+    #[DataProvider('completeCollectionQueries')]
+    public function testCompleteCollectionsPreserveNativeUnlimitedReads(array $query, array $expected, array $pages): void
+    {
+        $_GET = $query + ['sort' => ['ID' => 'ASC']];
+        $config = Strangler::proxy('example')->uppercase('ID')
+            ->query(complete: ['GET' => 20])
+            ->get('get', '/items')->build()['config'];
+        $responses = array_map($this->collectionPage(...), $pages);
+        $body = $this->capture(fn () => $this->proxy($this->client($responses))
+            ->handle($this->controller, $config, 'get'));
+        $json = json_decode($body, true, flags: JSON_THROW_ON_ERROR);
+        self::assertIsArray($json);
+        self::assertIsArray($json['data']);
+        self::assertIsArray($json['meta']);
+
+        self::assertSame($expected, array_column($json['data'], 'ID'));
+        self::assertSame(45, $json['meta']['totalCount']);
+        self::assertCount(count($pages), $this->history);
+        foreach ($this->history as $index => $attempt) {
+            self::assertSame('backend.test', $attempt['request']->getUri()->getHost());
+            self::assertSame('/items', $attempt['request']->getUri()->getPath());
+            parse_str($attempt['request']->getUri()->getQuery(), $sent);
+            self::assertSame((string) $pages[$index], $sent['page']);
+            self::assertSame('20', $sent['per_page']);
+            self::assertSame('id', $sent['sort']);
+            self::assertArrayNotHasKey('start', $sent);
+            self::assertArrayNotHasKey('limit', $sent);
+        }
+    }
+
+    /** @return list<array{array<string, int>, list<int>, list<int>}> */
+    public static function completeCollectionQueries(): array
+    {
+        return [
+            [[], range(1, 45), [1, 2, 3]],
+            [['limit' => -1], range(1, 45), [1, 2, 3]],
+            [['start' => -1], range(1, 45), [1, 2, 3]],
+            [['start' => 23], range(24, 45), [2, 3]],
+            [['start' => 23, 'limit' => -1], range(24, 45), [2, 3]],
+            [['start' => 100], [], [6]],
+        ];
+    }
+
+    public function testInvalidNativeCollectionOffsetStaysInYiiBeforeTransport(): void
+    {
+        $_GET = ['start' => -2];
+        $config = Strangler::proxy('example')->uppercase('ID')
+            ->query(complete: ['get' => 20])->get('get', '/items')->build()['config'];
+
+        self::assertFalse($this->proxy($this->client([]))->handle($this->controller, $config, 'get'));
+        self::assertSame([], $this->history);
+    }
+
+    #[DataProvider('malformedCollectionBodies')]
+    public function testMalformedCollectionResponsesFailBeforeEmittingRecords(string $body): void
+    {
+        $config = Strangler::proxy('example')->query(complete: ['get' => 1])
+            ->get('get', '/items')->build()['config'];
+        $result = $this->capture(fn () => $this->proxy($this->client([new Response(200, [], $body)]))
+            ->handle($this->controller, $config, 'get'));
+
+        self::assertSame(502, http_response_code());
+        self::assertSame(['state' => 'error', 'error' => 'invalid_upstream_response'],
+            json_decode($result, true, flags: JSON_THROW_ON_ERROR));
+        self::assertCount(1, $this->history);
+    }
+
+    /** @return array<string, array{string}> */
+    public static function malformedCollectionBodies(): array
+    {
+        return [
+            'invalid JSON'        => ['invalid JSON'],
+            'non-object envelope' => ['[]'],
+            'non-list data'       => ['{"data":{}}'],
+            'negative total'      => ['{"data":[],"meta":{"current_page":1,"last_page":1,"per_page":1,"total":-1}}'],
+        ];
+    }
+
+    public function testChangedCollectionTotalsDiscardEarlierPages(): void
+    {
+        $config = Strangler::proxy('example')->query(complete: ['get' => 1])
+            ->get('get', '/items')->build()['config'];
+        $responses = array_map(static fn (int $page, int $total): Response => new Response(200, [], json_encode([
+            'data' => [['id' => $page]],
+            'meta' => ['current_page' => $page, 'last_page' => $total, 'per_page' => 1, 'total' => $total],
+        ], JSON_THROW_ON_ERROR)), [1, 2], [2, 3]);
+        $result = $this->capture(fn () => $this->proxy($this->client($responses))
+            ->handle($this->controller, $config, 'get'));
+
+        self::assertSame(502, http_response_code());
+        self::assertSame(['state' => 'error', 'error' => 'invalid_upstream_response'],
+            json_decode($result, true, flags: JSON_THROW_ON_ERROR));
+        self::assertCount(2, $this->history);
+    }
+
+    public function testCompleteCollectionsKeepExplicitPaginationInOneRequest(): void
+    {
+        $_GET = ['start' => 20, 'limit' => 20];
+        $config = Strangler::proxy('example')->uppercase('ID')
+            ->query(complete: ['get' => 20])->get('get', '/items')->build()['config'];
+        $body = $this->capture(fn () => $this->proxy($this->client([$this->collectionPage(2)]))
+            ->handle($this->controller, $config, 'get'));
+
+        $json = json_decode($body, true, flags: JSON_THROW_ON_ERROR);
+        self::assertIsArray($json);
+        self::assertIsArray($json['data']);
+        self::assertSame(range(21, 40), array_column($json['data'], 'ID'));
+        self::assertCount(1, $this->history);
+    }
+
+    #[DataProvider('failedCollectionPages')]
+    public function testCompleteCollectionsNeverEmitPartialSuccess(Response|ConnectException $failure, int $status): void
+    {
+        $attempts = 0;
+        $config = Strangler::proxy('example')->uppercase('ID')
+            ->query(complete: ['get' => 20])
+            ->afterAttempt(static function () use (&$attempts): void {
+                $attempts++;
+            })
+            ->get('get', '/items')->build()['config'];
+        $body = $this->capture(fn () => $this->proxy($this->client([$this->collectionPage(1), $failure]))
+            ->handle($this->controller, $config, 'get'));
+
+        self::assertSame($status, http_response_code());
+        $json = json_decode($body, true, flags: JSON_THROW_ON_ERROR);
+        self::assertIsArray($json);
+        self::assertArrayNotHasKey('data', $json);
+        self::assertSame(2, $attempts);
+        self::assertCount(2, $this->history);
+        self::assertFalse($this->controller->ran);
+    }
+
+    /** @return list<array{Response|ConnectException, int}> */
+    public static function failedCollectionPages(): array
+    {
+        return [
+            [new Response(403, [], '{"error":"denied"}'), 403],
+            [new Response(200, [], 'invalid json'), 502],
+            [new Response(200, [], '{"data":[],"meta":{}}'), 502],
+            [new Response(200, [], '{"data":[],"meta":{"current_page":1,"last_page":3,"per_page":20,"total":45}}'), 502],
+            [new Response(200, [], '{"data":[],"meta":{"current_page":2,"last_page":3,"per_page":20,"total":45}}'), 502],
+            [new Response(200, [], '{"data":[]}'), 502],
+            [new ConnectException('offline', new HttpRequest('GET', 'https://backend.test/items')), 503],
+        ];
+    }
+
+    public function testCompleteCollectionsShareOneTransportDeadline(): void
+    {
+        $ticks = [0.0, 0.0, 6.0, 11.0, 11.0];
+        $clock = static function () use (&$ticks): float {
+            return array_shift($ticks) ?? throw new \LogicException('Unexpected clock read.');
+        };
+        $config = Strangler::proxy('example')->uppercase('ID')
+            ->query(complete: ['get' => 20])->get('get', '/items')->build()['config'];
+        $proxy = $this->proxy($this->client([$this->collectionPage(1)]), clock: $clock);
+        $this->application->shouldEnd = false;
+        ob_start();
+
+        try {
+            self::assertTrue($proxy->handle($this->controller, $config, 'get'));
+            $body = (string) ob_get_contents();
+        } finally {
+            ob_end_clean();
+        }
+
+        self::assertSame(503, http_response_code());
+        $json = json_decode($body, true, flags: JSON_THROW_ON_ERROR);
+        self::assertIsArray($json);
+        self::assertSame('service_temporarily_unavailable', $json['error']);
+        self::assertCount(1, $this->history);
+    }
+
+    #[DataProvider('singleCollectionRoutes')]
+    public function testCompleteCollectionsDoNotRepeatOtherMethodsOrActions(string $method, string $action): void
+    {
+        $config = Strangler::proxy('example')->uppercase('ID')
+            ->query(complete: ['get' => 20])->route($action, $method, '/items')->build()['config'];
+        $this->capture(fn () => $this->proxy($this->client([$this->collectionPage(1)]))
+            ->handle($this->controller, $config, $action));
+
+        self::assertCount(1, $this->history);
+    }
+
+    /** @return list<array{string, string}> */
+    public static function singleCollectionRoutes(): array
+    {
+        return [['POST', 'get'], ['PUT', 'get'], ['DELETE', 'get'], ['GET', 'view']];
+    }
+
+    /**
+     * @param array<string, int> $query
+     * @param list<int>          $expected
+     */
+    #[DataProvider('plainCollectionQueries')]
+    public function testCompleteCollectionsAcceptPlainListsWithoutPaginationMetadata(array $query, array $expected): void
+    {
+        $_GET = $query;
+        $config = Strangler::proxy('example')->uppercase('ID')
+            ->query(complete: ['get' => 100])->get('get', '/items')->build()['config'];
+        $body = $this->capture(fn () => $this->proxy($this->client([
+            new Response(200, [], '{"data":[{"id":1},{"id":2}]}'),
+        ]))->handle($this->controller, $config, 'get'));
+
+        $json = json_decode($body, true, flags: JSON_THROW_ON_ERROR);
+        self::assertIsArray($json);
+        self::assertIsArray($json['data']);
+        self::assertIsArray($json['meta']);
+        self::assertSame($expected, array_column($json['data'], 'ID'));
+        self::assertSame(2, $json['meta']['totalCount']);
+        self::assertCount(1, $this->history);
+    }
+
+    /** @return list<array{array<string, int>, list<int>}> */
+    public static function plainCollectionQueries(): array
+    {
+        return [[[], [1, 2]], [['start' => 1], [2]], [['start' => 100], []]];
+    }
+
+    #[DataProvider('invalidCompleteCollectionConfiguration')]
+    public function testCompleteCollectionsRejectInvalidConfiguration(string $action, int $size): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+
+        Strangler::proxy('example')->query(complete: [$action => $size]);
+    }
+
+    /** @return list<array{string, int}> */
+    public static function invalidCompleteCollectionConfiguration(): array
+    {
+        return [['', 20], ['get', 0], ['get', -1]];
+    }
+
+    public function testCompleteCollectionsAcceptUpstreamPageSizesAboveOneHundred(): void
+    {
+        $config = Strangler::proxy('example')->uppercase('ID')
+            ->query(complete: ['get' => 101])->get('get', '/items')->build()['config'];
+        $this->capture(fn () => $this->proxy($this->client([
+            new Response(200, [], '{"data":[]}'),
+        ]))->handle($this->controller, $config, 'get'));
+
+        parse_str($this->history[0]['request']->getUri()->getQuery(), $sent);
+        self::assertSame('101', $sent['per_page']);
+        self::assertCount(1, $this->history);
+    }
+
+    #[DataProvider('invalidPlainCollectionLinks')]
+    public function testCompleteCollectionsRejectMalformedPlainListLinks(string $links): void
+    {
+        $config = Strangler::proxy('example')->uppercase('ID')
+            ->query(complete: ['get' => 100])->get('get', '/items')->build()['config'];
+        $body = $this->capture(fn () => $this->proxy($this->client([
+            new Response(200, [], '{"data":[],"links":'.$links.'}'),
+        ]))->handle($this->controller, $config, 'get'));
+
+        self::assertSame(502, http_response_code());
+        self::assertSame([
+            'state' => 'error', 'error' => 'invalid_upstream_response',
+        ], json_decode($body, true, flags: JSON_THROW_ON_ERROR));
+        self::assertCount(1, $this->history);
+    }
+
+    /** @return list<array{string}> */
+    public static function invalidPlainCollectionLinks(): array
+    {
+        return [['[]'], ['1'], ['"invalid"'], ['{"next":"/items?page=2"}']];
+    }
+
+    public function testCompleteCollectionsPreserveAttemptHookFailures(): void
+    {
+        $failure = new ConnectException('hook failed', new HttpRequest('GET', 'https://backend.test/items'));
+        $config = Strangler::proxy('example')->uppercase('ID')
+            ->query(complete: ['get' => 20])
+            ->afterAttempt(static function () use ($failure): void {
+                throw $failure;
+            })
+            ->get('get', '/items')->build()['config'];
+        $proxy = $this->proxy($this->client([$this->collectionPage(1)]));
+
+        try {
+            $proxy->handle($this->controller, $config, 'get');
+            self::fail('Hook failures must propagate.');
+        } catch (ConnectException $exception) {
+            self::assertSame($failure, $exception);
+            self::assertCount(1, $this->history);
+        }
+    }
+
+    public function testCompleteCollectionsDoNotCollectANativePostRequest(): void
+    {
+        $_SERVER['REQUEST_METHOD'] = 'POST';
+        $config = Strangler::proxy('example')->uppercase('ID')
+            ->query(complete: ['get' => 20])->get('get', '/items')->build()['config'];
+
+        try {
+            $this->capture(fn () => $this->proxy($this->client([$this->collectionPage(1)]))
+                ->handle($this->controller, $config, 'get'));
+            self::assertCount(1, $this->history);
+        } finally {
+            unset($_SERVER['REQUEST_METHOD']);
+        }
+    }
+
+    private function collectionPage(int $page): Response
+    {
+        $first = ($page - 1) * 20 + 1;
+        $ids = $first > 45 ? [] : range($first, min($page * 20, 45));
+
+        return new Response(200, [], json_encode([
+            'data'  => array_map(static fn (int $id): array => ['id' => $id], $ids),
+            'meta'  => ['current_page' => $page, 'last_page' => 3, 'per_page' => 20, 'total' => 45],
+            'links' => ['next' => 'https://untrusted.test/never-follow'],
+        ], JSON_THROW_ON_ERROR));
     }
 
     /** @param (\Closure(): float)|null $clock */

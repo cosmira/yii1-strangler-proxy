@@ -1,6 +1,6 @@
 # Yii 1 Strangler Proxy
 
-Documentation for **5.3.0**.
+Documentation for **5.4.0**.
 
 [![Tests][tests-badge]][tests-workflow]
 [![PHP 8.2–8.5][php-badge]](composer.json)
@@ -26,7 +26,7 @@ mapping, and selected multipart uploads.
 Install the package in your Yii application:
 
 ```shell
-composer require cosmira/yii1-strangler-proxy:5.3.0
+composer require cosmira/yii1-strangler-proxy:5.4.0
 ```
 
 Load Composer's `vendor/autoload.php` before the Yii bootstrap. Commit your
@@ -188,7 +188,7 @@ The [catalog example](examples/catalog/README.md) runs Yii and a backend against
 one SQLite dataset. It requires `pdo_sqlite`:
 
 ```shell
-git clone --branch 5.3.0 --depth 1 https://github.com/cosmira/yii1-strangler-proxy.git
+git clone --branch 5.4.0 --depth 1 https://github.com/cosmira/yii1-strangler-proxy.git
 cd yii1-strangler-proxy
 composer install
 composer example:verify

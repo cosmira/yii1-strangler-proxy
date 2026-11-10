@@ -258,36 +258,42 @@ final class Mapping
     /**
      * Bind nested record names and selection rules for declared request values.
      *
-     * @param array<array-key, string>|Fields $fields
-     * @param array<string, mixed>            $defaults
-     * @param list<string>                    $required
+     * @param array<array-key, string>|Fields       $fields
+     * @param array<string, mixed>                  $defaults
+     * @param list<string>                          $required
+     * @param array<string, callable(mixed): mixed> $values   Format mapped field values.
      *
      * @return Closure(mixed): mixed
      */
     public static function recordsWith(
-        array|Fields $fields, array $defaults = [], array $required = [],
+        array|Fields $fields, array $defaults = [], array $required = [], array $values = [],
     ): Closure {
         return static fn (mixed $records): mixed => self::requestRecords(
-            $records, $fields, $defaults, $required,
+            $records, $fields, $defaults, $required, $values,
         );
     }
 
     /**
      * Translate nested input records while retaining invalid containers for normal validation.
      *
-     * @param array<array-key, string>|Fields $fields
-     * @param array<string, mixed>            $defaults
-     * @param list<string>                    $required
+     * @param array<array-key, string>|Fields       $fields
+     * @param array<string, mixed>                  $defaults
+     * @param list<string>                          $required
+     * @param array<string, callable(mixed): mixed> $values   Format mapped field values.
      */
     public static function requestRecords(
-        mixed $records, array|Fields $fields, array $defaults = [], array $required = [],
+        mixed $records,
+        array|Fields $fields,
+        array $defaults = [],
+        array $required = [],
+        array $values = [],
     ): mixed {
         if (! is_array($records)) {
             return $records;
         }
         $result = [];
         foreach ($records as $key => $record) {
-            $mapped = self::requestRecord($record, $fields, $defaults);
+            $mapped = self::requestRecord($record, $fields, $defaults, $values);
             if (self::hasRequiredFields($mapped, $required)) {
                 $result[$key] = $mapped;
             }
@@ -297,13 +303,14 @@ final class Mapping
     }
 
     /**
-     * Keep opaque nested values untouched while translating one input record's own keys.
+     * Translate one record and format only explicitly configured values.
      *
-     * @param array<array-key, string>|Fields $fields
-     * @param array<string, mixed>            $defaults
+     * @param array<array-key, string>|Fields       $fields
+     * @param array<string, mixed>                  $defaults
+     * @param array<string, callable(mixed): mixed> $values
      */
     private static function requestRecord(
-        mixed $record, array|Fields $fields, array $defaults,
+        mixed $record, array|Fields $fields, array $defaults, array $values,
     ): mixed {
         if (! is_array($record) && ! $record instanceof stdClass) {
             return $record;
@@ -311,6 +318,11 @@ final class Mapping
         $attributes = (array) $record;
         $names = $fields instanceof Fields ? $fields->writes(array_keys($attributes)) : $fields;
         $mapped = (array) self::fields($record, $names) + $defaults;
+        foreach ($values as $field => $format) {
+            if (array_key_exists($field, $mapped)) {
+                $mapped[$field] = $format($mapped[$field]);
+            }
+        }
 
         return $record instanceof stdClass ? (object) $mapped : $mapped;
     }

@@ -201,7 +201,11 @@ final readonly class StranglerProxy
         $bound = ControllerContract::resolveConfig($config, $controller);
         unset($bound['bypass'], $bound['nativeQueryFilters']);
 
-        $context = ['action' => $actionKey, 'query' => $_GET, 'payload' => null];
+        $context = [
+            'action'        => $actionKey, 'query' => $_GET, 'payload' => null,
+            'method'        => strtoupper($route['method']),
+            'requestMethod' => self::application()->getRequest()->getRequestType(),
+        ];
         if (isset($bound['bodyIdentifier'])) {
             $context['identifier'] = $bound['bodyIdentifier'];
         }

@@ -85,6 +85,13 @@ use InvalidArgumentException;
 final class Strangler
 {
     /**
+     * Collection actions mapped to their upstream page sizes.
+     *
+     * @var array<string, int>
+     */
+    private array $completeCollections = [];
+
+    /**
      * Feature settings and callbacks collected by the builder.
      *
      * @var BoundConfig
@@ -443,24 +450,23 @@ final class Strangler
      * @param array<string, list<string>>           $extendFor
      * @param list<string>                          $mergeFor
      * @param list<string>                          $nativeOn   Native search filters.
+     * @param array<string, int>                    $complete   Actions and collection page sizes.
      */
     public function query(
         array $filters = [], array $sorts = [], ?array $includes = null, ?callable $using = null,
         array $values = [], array|callable|null $defaults = null,
         array $replaceFor = [], array $emptyFor = [], array $extendFor = [],
-        array $mergeFor = ['view'], array $nativeOn = [],
+        array $mergeFor = ['view'], array $nativeOn = [], array $complete = [],
     ): self {
         $this->selection = Selection::make(
             $defaults, $replaceFor, $emptyFor, $extendFor, $mergeFor, $this->selection,
         ) ?? $this->selection;
-        foreach ([$filters, $sorts] as $aliases) {
-            foreach ($aliases as $field => $name) {
-                if ($field === '' || $name === '') {
-                    throw new InvalidArgumentException('Query aliases require nonempty names.');
-                }
-            }
+        $names = [...array_keys($filters), ...$filters, ...array_keys($sorts), ...$sorts];
+        if (in_array('', $names, true)) {
+            throw new InvalidArgumentException('Query aliases require nonempty names.');
         }
         self::validateFormatters($values);
+        $this->completeCollections = Query::collectionPages($complete) + $this->completeCollections;
         if ($nativeOn !== []) {
             $this->config['nativeQueryFilters'] = $nativeOn;
         }
@@ -725,6 +731,8 @@ final class Strangler
      */
     private function compiled(): array
     {
+        $mappings = array_filter(['completeCollections' => $this->completeCollections])
+            + ($this->config['mappings'] ?? []);
         if (! $this->isConventionEnabled && ! isset($this->config['controllerContract'])) {
             $fieldSettings = [
                 $this->responseFields, $this->requestFields, $this->requestValues,
@@ -739,14 +747,13 @@ final class Strangler
                 throw new InvalidArgumentException('Field mappings require a native identifier.');
             }
 
-            return $this->config;
+            return array_replace($this->config, array_filter(['mappings' => $mappings]));
         }
 
         $identifier = $this->nativeIdentifier();
         $record = $this->record($identifier, $this->config['controllerContract'] ?? null);
         $convention = $this->convention($identifier, $record);
         $actions = array_values(array_diff(array_keys($this->routes), $this->except));
-        $mappings = $this->config['mappings'] ?? [];
         $mappings['query'] = self::defaults(
             $mappings['query'] ?? [], $this->queryMapper($convention), $actions,
         );

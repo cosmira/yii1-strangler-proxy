@@ -26,6 +26,40 @@ final class DirectionalQueryTest extends TestCase
         self::assertFalse($mapper(['with' => [null]], $context));
     }
 
+    public function testEncodedNativeIncludeFlagsSelectKeysAndPreserveFilterValues(): void
+    {
+        parse_str('with[IDENTITY_NAME]=true&with[CONTACTS]=false&filter[VISIBLE]=false', $query);
+        $mapper = $this->queryMapper(Strangler::proxy('directory')->uppercase('PERSON_ID')
+            ->query(includes: ['IDENTITY_NAME' => 'identity'])->get('get', '/people'));
+
+        self::assertSame([
+            'filter' => ['visible' => 'false'], 'include' => 'identity,contacts',
+            'page'   => 1, 'per_page' => 20,
+        ], $mapper($query, ['action' => 'get', 'query' => [], 'payload' => null]));
+        self::assertSame([
+            'include' => 'identity,contacts', 'page' => 1, 'per_page' => 20,
+        ], $mapper(['with' => ['IDENTITY_NAME' => false, 'CONTACTS' => 0]], [
+            'action' => 'get', 'query' => [], 'payload' => null,
+        ]));
+        self::assertSame([
+            'include' => 'identity,contacts', 'page' => 1, 'per_page' => 20,
+        ], $mapper(['with' => ['IDENTITY_NAME', 'CONTACTS']], [
+            'action' => 'get', 'query' => [], 'payload' => null,
+        ]));
+    }
+
+    public function testIncludeFlagsDoNotAcceptNestedOrMalformedSelections(): void
+    {
+        $mapper = $this->queryMapper(Strangler::proxy('directory')->uppercase('PERSON_ID')
+            ->get('get', '/people'));
+        $context = ['action' => 'get', 'query' => [], 'payload' => null];
+
+        self::assertFalse($mapper(['with' => ['CONTACTS' => ['IDENTITY' => 'true']]], $context));
+        self::assertFalse($mapper(['with' => ['CONTACTS' => null]], $context));
+        self::assertFalse($mapper(['with' => [true]], $context));
+        self::assertFalse($mapper(['with' => ['CONTACTS' => 'true'], 'filter' => false], $context));
+    }
+
     public function testSemanticAdapterReusesAliasesIncludesAndAnImmutableConfiguredQuery(): void
     {
         $builder = Strangler::proxy('directory')->uppercase('PERSON_ID')

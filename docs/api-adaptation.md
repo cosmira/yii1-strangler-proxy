@@ -834,7 +834,6 @@ trusted headers, timeouts and single-attempt behavior as JSON requests.
 
 See [file performance](performance.md) for reproducible transfer and memory measurements.
 
-
 ### Complete native collection reads
 
 A native list request without `limit`, or with `limit=-1`, can mean the whole

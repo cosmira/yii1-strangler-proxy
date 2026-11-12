@@ -566,7 +566,8 @@ The declared primary-key mapping also applies to related records without databas
 
 Each related controller supplies its own model and primary key when its response
 schema is needed. Mark a binary GET route with
-`get('image', '/people/{person_id}/photo', binary: true)`. It opts out of automatic success JSON mapping for that action. Request, query,
+`get('image', '/people/{person_id}/photo', binary: true)`. It opts out of automatic
+success JSON mapping for that action. Request, query,
 field aliases and error handling still apply. This preserves binary bytes without treating malformed JSON
 on ordinary routes as a binary response. Existing exclusions through `using()`
 and `uppercase()` remain supported.

@@ -56,22 +56,6 @@ final class YiiRuntime
         return is_array($settings) ? $settings : [];
     }
 
-    public static function controllerContract(): ?ControllerContract
-    {
-        if (! class_exists(Yii::class, false) || ! Yii::app() instanceof CWebApplication) {
-            return null;
-        }
-        $class = self::settings()['controller_contract'] ?? null;
-        if ($class === null) {
-            return null;
-        }
-        if (! is_string($class) || ! is_subclass_of($class, ControllerContract::class)) {
-            throw new InvalidArgumentException('controller_contract must name a ControllerContract class.');
-        }
-
-        return new $class();
-    }
-
     /**
      * Validate the configured upstream HTTP origin.
      *

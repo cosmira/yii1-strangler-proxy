@@ -7,6 +7,7 @@ use Cosmira\Soda\Config\Soda;
 use Cosmira\Soda\Rules\Architecture\ForbiddenDependencies;
 use Cosmira\Soda\Rules\Architecture\NoStaticMutableProperties;
 use Cosmira\Soda\Rules\Documentation\NoVacuousDocblocks;
+use Cosmira\Soda\Rules\Structure\MaxPublicMethods;
 use Cosmira\Soda\Rules\Usage\NoUnusedParameters;
 use Cosmira\Strangler\ControllerContract;
 
@@ -27,7 +28,11 @@ return Soda::configure()
                     ControllerContract::class.'::validationErrors',
                 ])
                 : $rule,
-            RuleCatalog::standard(),
+            array_map(
+                // Keep the released fluent API alongside the shared fields() declaration.
+                static fn ($rule) => $rule instanceof MaxPublicMethods ? new MaxPublicMethods(21) : $rule,
+                RuleCatalog::standard(),
+            ),
         ),
         new ForbiddenDependencies([
             'Cosmira\\Strangler' => [

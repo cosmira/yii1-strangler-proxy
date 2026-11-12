@@ -4,11 +4,14 @@ declare(strict_types=1);
 
 namespace Cosmira\Strangler;
 
+use CController;
+use Closure;
 use Cosmira\Strangler\Exception\InvalidUpstreamResponse;
 use Cosmira\Strangler\Internal\Http\CollectionPages;
 use Cosmira\Strangler\Internal\Payload\BodyParameters;
 use Cosmira\Strangler\Response\Json;
 use Cosmira\Strangler\Schema\Mapping;
+use InvalidArgumentException;
 use JsonException;
 use Psr\Http\Message\ResponseInterface;
 use stdClass;
@@ -19,16 +22,23 @@ use UnexpectedValueException;
  *
  * @internal
  *
+ * @phpstan-type RouteBody callable(
+ *     array<array-key, mixed>, DefaultPayload, Context
+ * ): (array<array-key, mixed>|stdClass|false)
+ * @phpstan-type RequestCheck callable(array<array-key, mixed>, string, CController): void
  * @phpstan-type Context array{
  *     action: string, query: array<array-key, mixed>, payload: array<array-key, mixed>|null,
- *     identifier?: string, responseFields?: array<string, string>, errorFields?: array<string, string>,
+ *     identifier?: string, responseFields?: array<string, string>,
+ *     errorFields?: array<string, string>,
  *     method?: string, requestMethod?: string
  * }
  * @phpstan-type QueryMapper array<array-key, string>|callable(
  *     array<array-key, mixed>, Context
  * ): (array<array-key, mixed>|false)
  * @phpstan-type PayloadMapper Convention|CustomPayloadMapper
- * @phpstan-type DefaultPayload callable(array<array-key, mixed>): (array<array-key, mixed>|stdClass|false)
+ * @phpstan-type DefaultPayload callable(
+ *     array<array-key, mixed>
+ * ): (array<array-key, mixed>|stdClass|false)
  * @phpstan-type CustomPayloadMapper array<array-key, string>|callable(
  *     array<array-key, mixed>, Context, DefaultPayload
  * ): (array<array-key, mixed>|stdClass|false)
@@ -75,6 +85,68 @@ final readonly class InlineMapping
     }
 
     /**
+     * Replace shared or action-specific registrations for one mapping stage.
+     *
+     * @template T
+     *
+     * @param array<string, T> $registered
+     * @param T                $mapper
+     * @param list<string>     $actions
+     *
+     * @return array<string, T>
+     */
+    public static function register(array $registered, mixed $mapper, array $actions): array
+    {
+        foreach ($actions ?: ['*'] as $action) {
+            if ($action === '') {
+                throw new InvalidArgumentException('Mapping actions must not be empty.');
+            }
+            $registered[strtolower($action)] = $mapper;
+        }
+
+        return $registered;
+    }
+
+    /**
+     * Isolate each action-scoped native check from mutations by preceding callbacks.
+     *
+     * @param list<array{actions: list<string>, check: RequestCheck}> $checks
+     *
+     * @return Closure(array<array-key, mixed>, string, CController): void
+     */
+    public static function beforeRequest(array $checks): Closure
+    {
+        return static function (
+            array $payload, string $action, CController $controller,
+        ) use ($checks): void {
+            $snapshot = new self([], ['action' => $action, 'query' => [], 'payload' => $payload]);
+            foreach ($checks as $entry) {
+                if ($entry['actions'] === [] || in_array($action, $entry['actions'], true)) {
+                    ($entry['check'])($snapshot->context()['payload'] ?? [], $action, $controller);
+                }
+            }
+        };
+    }
+
+    /**
+     * Preserve explicit global or action callbacks regardless of fluent call order.
+     *
+     * @template T
+     *
+     * @param array<string, T> $registered
+     * @param T                $mapper
+     * @param list<string>     $actions
+     *
+     * @return array<string, T>
+     */
+    public static function defaults(array $registered, mixed $mapper, array $actions): array
+    {
+        return isset($registered['*'])
+            ? $registered
+            : array_replace(array_fill_keys($actions, $mapper), $registered);
+    }
+
+    /**
      * Resolve route values once against the original body, before custom mappings.
      *
      * @param array<string, string|list<string>> $bindings
@@ -105,7 +177,9 @@ final readonly class InlineMapping
         if (isset($this->mappings['errorFields'])) {
             $context['errorFields'] = array_replace(
                 $this->mappings['errorFields'],
-                ($this->mappings['convention'] ?? null)?->validationFields($context['payload'] ?? []) ?? [],
+                ($this->mappings['convention'] ?? null)?->validationFields(
+                    $context['payload'] ?? [],
+                ) ?? [],
             );
         }
         $context['query'] = self::copy($this->context['query']);
@@ -244,6 +318,8 @@ final readonly class InlineMapping
     }
 
     /**
+     * Reuse configured naming and values after a route changes the body structure.
+     *
      * @param array<array-key, mixed> $payload
      *
      * @return array<array-key, mixed>|stdClass|false
@@ -252,7 +328,7 @@ final readonly class InlineMapping
     {
         $convention = $this->mappings['convention'] ?? null;
 
-        return $convention === null ? $payload : $convention->payload($payload, $this->context());
+        return $convention?->payload($payload, $this->context()) ?? $payload;
     }
 
     /**

@@ -22,6 +22,27 @@ use Psr\Http\Message\ResponseInterface;
 abstract class ControllerContract
 {
     /**
+     * Instantiate the application-wide adapter without reading a controller model.
+     */
+    public static function fromApplication(): ?self
+    {
+        if (! class_exists(\Yii::class, false) || ! \Yii::app() instanceof \CWebApplication) {
+            return null;
+        }
+        $class = YiiRuntime::settings()['controller_contract'] ?? null;
+        if ($class === null) {
+            return null;
+        }
+        if (! is_string($class) || ! is_subclass_of($class, self::class)) {
+            throw new InvalidArgumentException(
+                'controller_contract must name a ControllerContract class.',
+            );
+        }
+
+        return new $class();
+    }
+
+    /**
      * Register shared declarations before controller-specific differences.
      */
     public function configure(Strangler $proxy): void {}

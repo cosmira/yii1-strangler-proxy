@@ -46,7 +46,6 @@ final class Convention
      * Input names are independent of response aliases.
      */
     private Fields $input;
-    private Fields $queryInput;
     /**
      * The default Yii success envelope and its response-only record schema.
      */
@@ -57,8 +56,6 @@ final class Convention
      *
      * @param array<string, string>                 $requestFields
      * @param array<string, callable(mixed): mixed> $requestValues
-     * @param array<string, string>                 $filterAliases
-     * @param array<string, string>                 $sortAliases
      * @param (callable(
      *     mixed, ResponseInterface, array{action: string}
      * ): ?ResponseInterface)|null $resultUsing
@@ -73,22 +70,11 @@ final class Convention
         JsonResource $output,
         private array $requestFields = [],
         private array $requestValues = [],
-        array $filterAliases = [],
-        array $sortAliases = [],
         ?callable $resultUsing = null,
         private array $rules = [],
         array $fields = [],
     ) {
-        $input = Fields::uppercase()->rename($fields);
-        $queryInput = $input;
-        foreach ($filterAliases as $field => $name) {
-            $queryInput = $queryInput->filterAs($field, $name);
-        }
-        foreach ($sortAliases as $field => $name) {
-            $queryInput = $queryInput->sortAs($field, $name);
-        }
-        $this->input = $input;
-        $this->queryInput = $queryInput;
+        $this->input = Fields::uppercase()->rename($fields);
         $this->output = $output;
         $this->resultUsing = $resultUsing === null ? null : $resultUsing(...);
     }
@@ -143,6 +129,8 @@ final class Convention
     }
 
     /**
+     * Restore the input alias actually supplied when several aliases target one field.
+     *
      * @param array<array-key, mixed> $payload
      *
      * @return array<string, string>
@@ -153,11 +141,22 @@ final class Convention
     }
 
     /**
-     * Share the compiled query convention with application semantic adapters.
+     * Apply query-only names without changing writable attributes.
+     *
+     * @param array<string, string> $filterAliases
+     * @param array<string, string> $sortAliases
      */
-    public function queryMapper(): Query
+    public function queryMapper(array $filterAliases = [], array $sortAliases = []): Query
     {
-        return Query::legacy($this->queryInput)->pagination(max: PHP_INT_MAX);
+        $input = $this->input;
+        foreach ($filterAliases as $field => $name) {
+            $input = $input->filterAs($field, $name);
+        }
+        foreach ($sortAliases as $field => $name) {
+            $input = $input->sortAs($field, $name);
+        }
+
+        return Query::legacy($input)->pagination(max: PHP_INT_MAX);
     }
 
     /**

@@ -118,7 +118,7 @@ final class ControllerContractTest extends TestCase
     {
         $contract = new class extends ControllerContract
         {
-            public function __construct(private string $name = 'TITLE') {}
+            public function __construct(private readonly string $name = 'TITLE') {}
 
             public function identifier(): string
             {

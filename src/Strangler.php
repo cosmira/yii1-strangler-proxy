@@ -40,18 +40,15 @@ use InvalidArgumentException;
  *     array<array-key, mixed>, array<array-key, mixed>
  * ): (array<string, mixed>|false)
  *
- * @phpstan-import-type DefaultPayload from InlineMapping
+ * @phpstan-import-type RouteBody from InlineMapping
  *
- * @phpstan-type RouteBody callable(
- *     array<array-key, mixed>, DefaultPayload, Context
- * ): (array<array-key, mixed>|\stdClass|false)
  * @phpstan-type PayloadAdapter callable(
  *     array<array-key, mixed>, array{action: string}, Convention
  * ): (array<array-key, mixed>|\stdClass|false)
  *
  * @phpstan-import-type Body from BodyParameters
+ * @phpstan-import-type RequestCheck from InlineMapping
  *
- * @phpstan-type RequestCheck callable(array<array-key, mixed>, string, CController): void
  * @phpstan-type RelationDefaults array<string, mixed>|callable(
  *     array<array-key, mixed>
  * ): ?array<string, mixed>
@@ -145,7 +142,11 @@ final class Strangler
      */
     private array $except = [];
 
-    /** @var list<string> */
+    /**
+     * Routes that preserve success bytes while retaining request and error mappings.
+     *
+     * @var list<string>
+     */
     private array $binaryActions = [];
     /**
      * Response-only naming exceptions.
@@ -154,7 +155,11 @@ final class Strangler
      */
     private array $responseFields = [];
 
-    /** @var array<string, string> */
+    /**
+     * Naming exceptions shared by writes, responses, queries and validation errors.
+     *
+     * @var array<string, string>
+     */
     private array $fields = [];
     /**
      * Request-only naming exceptions.
@@ -304,7 +309,7 @@ final class Strangler
     public static function proxy(string $feature): self
     {
         $proxy = new self($feature);
-        $contract = YiiRuntime::controllerContract();
+        $contract = ControllerContract::fromApplication();
 
         return $contract === null ? $proxy : $proxy->using($contract);
     }
@@ -351,7 +356,11 @@ final class Strangler
         return $this;
     }
 
-    /** @param array<string, string> $fields */
+    /**
+     * Declare common naming differences once for all mapping directions.
+     *
+     * @param array<string, string> $fields
+     */
     public function fields(array $fields): self
     {
         $names = array_replace($this->fields, $fields);
@@ -523,7 +532,7 @@ final class Strangler
     {
         self::validateFieldMap($mapper);
         $mappings = $this->config['mappings'] ?? [];
-        $mappings['query'] = self::registerMapping($mappings['query'] ?? [], $mapper, $actions);
+        $mappings['query'] = InlineMapping::register($mappings['query'] ?? [], $mapper, $actions);
         $this->config['mappings'] = $mappings;
 
         return $this;
@@ -539,7 +548,9 @@ final class Strangler
     {
         self::validateFieldMap($mapper);
         $mappings = $this->config['mappings'] ?? [];
-        $mappings['payload'] = self::registerMapping($mappings['payload'] ?? [], $mapper, $actions);
+        $mappings['payload'] = InlineMapping::register(
+            $mappings['payload'] ?? [], $mapper, $actions,
+        );
         $this->config['mappings'] = $mappings;
 
         return $this;
@@ -554,7 +565,7 @@ final class Strangler
     public function mapJsonResponse(callable $mapper, array $actions = []): self
     {
         $mappings = $this->config['mappings'] ?? [];
-        $mappings['response'] = self::registerMapping(
+        $mappings['response'] = InlineMapping::register(
             $mappings['response'] ?? [], $mapper, $actions,
         );
         $this->config['mappings'] = $mappings;
@@ -571,7 +582,7 @@ final class Strangler
     public function mapJsonErrors(callable $mapper, array $actions = []): self
     {
         $mappings = $this->config['mappings'] ?? [];
-        $mappings['errors'] = self::registerMapping($mappings['errors'] ?? [], $mapper, $actions);
+        $mappings['errors'] = InlineMapping::register($mappings['errors'] ?? [], $mapper, $actions);
         $this->config['mappings'] = $mappings;
 
         return $this;
@@ -594,7 +605,7 @@ final class Strangler
             }
             $names[$source] = $target;
         }
-        $this->config['files'] = self::registerMapping(
+        $this->config['files'] = InlineMapping::register(
             $this->config['files'] ?? [],
             $names,
             $actions,
@@ -734,21 +745,7 @@ final class Strangler
     {
         $config = $this->compiled();
         if ($this->requestChecks !== []) {
-            $checks = $this->requestChecks;
-            $config['beforeRequest'] = static function (
-                array $payload, string $action, CController $controller,
-            ) use ($checks): void {
-                $snapshot = new InlineMapping(
-                    [], ['action' => $action, 'query' => [], 'payload' => $payload],
-                );
-                foreach ($checks as $entry) {
-                    if ($entry['actions'] === [] || in_array($action, $entry['actions'], true)) {
-                        ($entry['check'])(
-                            $snapshot->context()['payload'] ?? [], $action, $controller,
-                        );
-                    }
-                }
-            };
+            $config['beforeRequest'] = InlineMapping::beforeRequest($this->requestChecks);
         }
         if ($this->requestGuards !== []) {
             $config['requestGuards'] = $this->requestGuards;
@@ -796,14 +793,16 @@ final class Strangler
         $record = $this->record($identifier, $this->config['controllerContract'] ?? null);
         $convention = $this->convention($identifier, $record);
         $actions = array_values(array_diff(array_keys($this->routes), $this->except));
-        $mappings['query'] = self::defaults(
+        $mappings['query'] = InlineMapping::defaults(
             $mappings['query'] ?? [], $this->queryMapper($convention), $actions,
         );
         $payloadAdapter = $this->payloadAdapter;
         $payloadMapper = $payloadAdapter === null
             ? $convention : $convention->adapt($payloadAdapter);
-        $mappings['payload'] = self::defaults($mappings['payload'] ?? [], $payloadMapper, $actions);
-        $mappings['response'] = self::defaults(
+        $mappings['payload'] = InlineMapping::defaults(
+            $mappings['payload'] ?? [], $payloadMapper, $actions,
+        );
+        $mappings['response'] = InlineMapping::defaults(
             $mappings['response'] ?? [], $convention->response(...),
             array_values(array_diff($actions, $this->binaryActions)),
         );
@@ -858,7 +857,8 @@ final class Strangler
      */
     private function queryMapper(Convention $convention): Query
     {
-        $query = $convention->queryMapper()->values($this->queryValues);
+        $query = $convention->queryMapper($this->filterAliases, $this->sortAliases)
+            ->values($this->queryValues);
         if ($this->includes !== null) {
             $query = $query->includes($this->includes);
         }
@@ -893,10 +893,6 @@ final class Strangler
     private function convention(string $identifier, Record $record): Convention
     {
         $contract = $this->config['controllerContract'] ?? null;
-        $resultUsing = null;
-        if ($contract !== null) {
-            $resultUsing = $contract->responseResult(...);
-        }
 
         return new Convention(
             identifier: $identifier,
@@ -904,9 +900,7 @@ final class Strangler
             requestFields: $this->requestFields,
             fields: $this->fields,
             requestValues: $this->requestValues,
-            filterAliases: $this->filterAliases,
-            sortAliases: $this->sortAliases,
-            resultUsing: $resultUsing,
+            resultUsing: $contract === null ? null : [$contract, 'responseResult'],
             rules: $this->requestRules,
         );
     }
@@ -916,12 +910,9 @@ final class Strangler
      */
     private function record(string $identifier, ?ControllerContract $contract): Record
     {
-        $fieldsUsing = null;
-        if ($contract !== null) {
-            $fieldsUsing = $contract->responseFields(...);
-        }
         $graph = new ResponseGraph(
-            prototype: Record::uppercase()->rename(array_replace($this->fields, $this->responseFields))
+            prototype: Record::uppercase()
+                ->rename(array_replace($this->fields, $this->responseFields))
                 ->required($this->required)
                 ->except($this->excludedAttributes)
                 ->optional($this->optionalAttributes),
@@ -929,7 +920,7 @@ final class Strangler
             relations: array_replace($contract?->relations() ?? [], $this->relations),
             attributes: $contract === null ? [] : [$contract->responseAttributes(...)],
             after: $contract === null ? [] : [$contract->responseAfter(...)],
-            fieldsUsing: $fieldsUsing,
+            fieldsUsing: $contract === null ? null : [$contract, 'responseFields'],
             controllerUsing: ControllerContract::responseRecord(...),
             rootCallbacks: [
                 'attributes' => $this->attributeMappers,
@@ -945,13 +936,9 @@ final class Strangler
      */
     private function resource(Record $record, ?ControllerContract $contract): JsonResource
     {
-        $projection = $this->projection;
-        if ($projection === null && $this->selection !== null) {
-            $projection = $this->selection->projection(...);
-        }
-        if ($projection === null && $contract !== null) {
-            $projection = $contract->responseProjection(...);
-        }
+        $projection = $this->projection
+            ?? ($this->selection === null ? null : [$this->selection, 'projection'])
+            ?? ($contract === null ? null : [$contract, 'responseProjection']);
         $resource = JsonResource::make()->recordUsing($record);
         if ($projection !== null) {
             $resource = $resource->projectionUsing($projection);
@@ -961,24 +948,6 @@ final class Strangler
         }
 
         return $resource;
-    }
-
-    /**
-     * Preserve explicit global or action callbacks regardless of fluent call order.
-     *
-     * @template T
-     *
-     * @param array<string, T> $registered
-     * @param T                $mapper
-     * @param list<string>     $actions
-     *
-     * @return array<string, T>
-     */
-    private static function defaults(array $registered, mixed $mapper, array $actions): array
-    {
-        return isset($registered['*'])
-            ? $registered
-            : array_replace(array_fill_keys($actions, $mapper), $registered);
     }
 
     /**
@@ -1010,29 +979,6 @@ final class Strangler
     }
 
     /**
-     * Replace shared or action-specific registrations for one mapping stage.
-     *
-     * @template T
-     *
-     * @param array<string, T> $registered
-     * @param T                $mapper
-     * @param list<string>     $actions
-     *
-     * @return array<string, T>
-     */
-    private static function registerMapping(array $registered, mixed $mapper, array $actions): array
-    {
-        foreach ($actions ?: ['*'] as $action) {
-            if ($action === '') {
-                throw new InvalidArgumentException('Mapping actions must not be empty.');
-            }
-            $registered[strtolower($action)] = $mapper;
-        }
-
-        return $registered;
-    }
-
-    /**
      * Register a route using a case-insensitive action key.
      *
      * @param array<string, string|list<string>> $fromBody
@@ -1040,7 +986,8 @@ final class Strangler
      * @param RouteResolver|null                 $parameters
      */
     public function route(
-        string $action, string $method, string $path, array $fromBody = [], array|callable|null $body = null,
+        string $action, string $method, string $path, array $fromBody = [],
+        array|callable|null $body = null,
         ?callable $parameters = null,
     ): self {
         $method = strtoupper($method);
@@ -1056,7 +1003,9 @@ final class Strangler
         }
         if (is_callable($body)) {
             $this->mapPayload(
-                static fn (array $payload, array $context, callable $map): array|\stdClass|false => $body($context['payload'] ?? $payload, $map, $context),
+                static fn (
+                    array $payload, array $context, callable $map,
+                ) => $body($context['payload'] ?? $payload, $map, $context),
                 [$key],
             );
         } elseif ($body !== null) {

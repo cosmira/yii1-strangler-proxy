@@ -516,21 +516,15 @@ final readonly class StranglerProxy
         CController $controller, array $config, array $route, array $context, array $bound,
     ): array|false {
         $resolver = $config['routeParameters'] ?? null;
-        $resolved = $resolver === null ? [] : $resolver($context);
-        if ($resolved === false) {
-            return false;
-        }
-        $resolved = self::mergeRouteParameters([], $resolved);
+        $resolved = self::mergeRouteParameters([], $resolver === null ? [] : $resolver($context));
         if ($resolved === false) {
             return false;
         }
         $routeResolver = $route['parameters'] ?? null;
         if ($routeResolver !== null) {
-            $values = $routeResolver($context['query'], $context['payload'] ?? []);
-            if ($values === false) {
-                return false;
-            }
-            $resolved = self::mergeRouteParameters($resolved, $values);
+            $resolved = self::mergeRouteParameters(
+                $resolved, $routeResolver($context['query'], $context['payload'] ?? []),
+            );
             if ($resolved === false) {
                 return false;
             }
@@ -572,13 +566,16 @@ final readonly class StranglerProxy
     /**
      * Merge declared and native route values without hiding conflicting identifiers.
      *
-     * @param array<string, int|string> $bound
-     * @param array<string, mixed>      $resolved
+     * @param array<string, int|string>  $bound
+     * @param array<string, mixed>|false $resolved
      *
      * @return array<string, int|string>|false
      */
-    private static function mergeRouteParameters(array $bound, array $resolved): array|false
+    private static function mergeRouteParameters(array $bound, array|false $resolved): array|false
     {
+        if ($resolved === false) {
+            return false;
+        }
         $parameters = $bound;
         foreach ($resolved as $name => $value) {
             if (! self::validRouteParameter($value)

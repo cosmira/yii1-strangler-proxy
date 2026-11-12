@@ -152,7 +152,7 @@ final class DirectionalQueryTest extends TestCase
     public function testBuiltConfigurationsRetainTheirDirectionalSnapshots(): void
     {
         $builder = Strangler::proxy('directory')->uppercase('PERSON_ID')
-            ->request(fields: ['TITLE' => 'display_name'])
+            ->fields(['display_name' => 'TITLE'])
             ->query(filters: ['display_name' => 'query'])->get('get', '/people');
         $before = $this->queryMapper($builder);
         $builder->query(filters: ['display_name' => 'search'])->query(filters: ['is_visible' => 'visible'])

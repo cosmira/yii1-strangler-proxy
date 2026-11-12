@@ -520,6 +520,21 @@ final readonly class StranglerProxy
         if ($resolved === false) {
             return false;
         }
+        $resolved = self::mergeRouteParameters([], $resolved);
+        if ($resolved === false) {
+            return false;
+        }
+        $routeResolver = $route['parameters'] ?? null;
+        if ($routeResolver !== null) {
+            $values = $routeResolver($context['query'], $context['payload'] ?? []);
+            if ($values === false) {
+                return false;
+            }
+            $resolved = self::mergeRouteParameters($resolved, $values);
+            if ($resolved === false) {
+                return false;
+            }
+        }
         $native = self::nativeParentParameters($controller, $config, $route, $context);
         if ($native === false) {
             return false;

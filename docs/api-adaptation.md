@@ -16,18 +16,20 @@ complex contracts through the same mapping pipeline.
 
 ## One fluent proxy
 
+The examples use a flat catalog with backend fields `id` and `name`.
+
 Without mappings, Strangler forwards the request and returns the backend response
 without translating its JSON contract. Use that mode when the two APIs already match.
 
 Use `uppercase()` when the client expects uppercase attributes and the success
-envelope shown below. Describe only directional exceptions:
+envelope shown below. Describe only naming differences:
 
 ```php
 use Cosmira\Strangler\Strangler;
 
 return Strangler::proxy('catalog')
     ->uppercase('ITEM_ID')
-    ->response(fields: ['updated_at' => 'CHANGE_DATE'])
+    ->fields(['name' => 'TITLE'])
     ->get('view', '/items/{id}')
     ->put('edit', '/items/{id}')
     ->build();
@@ -39,16 +41,40 @@ ordinary response attributes are uppercase in Yii. `with` becomes `include`, and
 or sort lists. Keep native request/access checks before Strangler and validate the
 backend independently: naming conventions do not grant permissions.
 
-For a backend item `{"data":{"id":42,"updated_at":"2026-11-08"}}`, this returns
-`{"state":"data","data":{"ITEM_ID":42,"CHANGE_DATE":"2026-11-08"}}`.
+For a backend item `{"data":{"id":42,"name":"Desk"}}`, this returns
+`{"state":"data","data":{"ITEM_ID":42,"TITLE":"Desk"}}`.
 The convention reads records under `data`; list responses also require `meta.total`.
 It uses HTTP 200 for mapped success responses. See [response defaults](#response-defaults)
 for empty actions and custom envelopes. This convention maps successful responses;
 [error contracts](#preserve-errors-and-headers) require separate configuration.
 
 `response(fields: [...])` maps upstream to legacy names. `request(fields: [...])` maps legacy to
-upstream names. The two directions are deliberately independent: a Person may
-return `given_name` while accepting `givenname`.
+upstream names. A hypothetical backend may return `label` while accepting `name`.
+A request-only alias does not change filter or sort names.
+
+### Share field names across directions
+
+Use `fields()` for one upstream-to-Yii name map shared by request bodies,
+responses, filters, ordering and validation field names:
+
+```php
+Strangler::proxy('catalog')
+    ->uppercase('ITEM_ID')
+    ->fields(['name' => 'TITLE'])
+    ->get('get', '/items')
+    ->put('edit', '/items/{id}')
+    ->build();
+```
+
+`TITLE` is sent as `name` in writes, filters and ordering;
+`name` is returned as `TITLE`. Ordinary attributes keep automatic
+case conversion. The map changes names, not values or payload structure.
+
+`request(fields: ['TITLE' => 'input_name'])` overrides the write name only.
+`response(fields: ['name' => 'OUTPUT_NAME'])` overrides the response name.
+Neither override changes the shared query name. Directional overrides take
+precedence regardless of fluent call order. Existing directional declarations
+remain supported.
 
 ### Identifiers in routes and bodies
 
@@ -84,8 +110,8 @@ use Cosmira\Strangler\Strangler;
 return Strangler::proxy('directory')
     ->uppercase('PERSON_ID')
     ->query(
-        filters: ['display_name' => 'query', 'is_visible' => 'visible'],
-        sorts: ['change_date' => 'updated_at'],
+        filters: ['display_name' => 'query'],
+        sorts: ['title' => 'name'],
     )
     ->get('get', '/people')
     ->build();
@@ -162,6 +188,52 @@ native execution before HTTP. Route parameters do not become query/body fields.
 Consumed leaves and newly empty ancestors disappear from the forwarded body;
 sibling metadata remains. Query/payload callbacks keep the original body in their
 context, while the payload argument contains the remaining body.
+
+### Compute parameters and bodies per route
+
+Use a closure when route parameters need application logic or a database lookup:
+
+```php
+->put(
+    'move',
+    '/people/{id}/groups',
+    parameters: static fn (array $query, array $payload): array => [
+        'id' => $query['id'] ?? $payload['PERSON_ID'],
+    ],
+    body: static fn (array $payload): array => [
+        'ids' => [$payload['PARENT_GROUP_ID']],
+    ],
+)
+```
+
+`parameters` receives the original query and body. It runs only for the selected
+route, after preceding Yii filters and request guards, before HTTP. Returned
+values are URL parameters; they do not remove or rename body fields. Return
+`false` to keep Yii execution before transport. Missing, invalid or conflicting
+resolved values do not reach the backend. Database exceptions are not fallback
+signals.
+
+A `body` closure receives the original body, a callable for the configured
+default payload transformation, and the original request context. A closure may
+accept only the arguments it needs. It returns the complete upstream body,
+without further automatic naming, or `false` to keep Yii.
+
+For a structural change that should retain configured names and value conversions,
+call the supplied mapper explicitly:
+
+```php
+body: static function (array $payload, callable $map): array|stdClass|false {
+    unset($payload['GROUPS']);
+
+    return $map($payload);
+},
+```
+
+The mapper retains shared fields, request value conversions, nested record
+conversions, identifier removal and collision checks. Without a naming convention,
+it returns the supplied body unchanged. This replaces ordinary payload mapping
+only for that action. Existing array body declarations remain supported.
+No callback causes retries or native fallback after an upstream attempt.
 
 ### Select the outgoing body
 
@@ -256,7 +328,7 @@ use Cosmira\Strangler\Strangler;
 return Strangler::proxy('catalog')
     ->uppercase('CATALOG_ID')
     ->response(
-        fields: ['updated_at' => 'CHANGE_DATE'],
+        fields: ['name' => 'TITLE'],
         relations: [
             'items' => ['identifier' => 'ITEM_ID'],
         ],
@@ -474,22 +546,30 @@ actions. A missing path or another value does not match. Neither rule replays a 
 A `ControllerContract` connects existing application methods to the package.
 The [README example](../README.md#connect-existing-rest-controllers) implements
 its required `model()` and `payload()` methods. An optional `configure(Strangler $proxy)`
-method sets shared fluent defaults; later controller declarations override them. Register it with
-`using(new ApiContract())`; keep route declarations on the same `Strangler`.
+method sets shared fluent defaults; later controller declarations override them.
+Register its class once as `params.strangler.controller_contract`. Each
+`Strangler::proxy()` then applies those defaults without a per-controller `using()`.
+Building filters constructs the contract and runs `configure()`, but does not read
+model metadata or request data. Keep `configure()` declarative.
+`using(new ApiContract())` remains available for an explicit contract override;
+the supplied instance is used and its configuration is applied after the application
+defaults. Omit `using()` when the application contract is sufficient.
 An explicit `request(reader: ...)` overrides the contract's payload reader.
 
-`using()` enables conventions and reads the primary key from the controller's
-native model when handling a selected request. Building filters does not read the
+The configured contract enables conventions and reads the primary key from the
+controller's native model when handling a selected request. Building filters does not read the
 model. Disabled, unmapped, and early-bypassed requests do not resolve it.
 
 By default the backend primary key is `id`. To use database field names, include
 `strtolower($identifier) => $identifier` in the contract’s `responseFields()` map.
 The declared primary-key mapping also applies to related records without database queries.
 
-Use the same contract without resource arguments in every controller. Each related
-controller supplies its own model and primary key when its response schema is needed.
-Binary actions can opt out with `using($contract, except: ['image'])`.
-Exclusions accumulate across `using()` and `uppercase()` calls.
+Each related controller supplies its own model and primary key when its response
+schema is needed. Mark a binary GET route with
+`get('image', '/people/{person_id}/photo', binary: true)`. It opts out of automatic success JSON mapping for that action. Request, query,
+field aliases and error handling still apply. This preserves binary bytes without treating malformed JSON
+on ordinary routes as a binary response. Existing exclusions through `using()`
+and `uppercase()` remain supported.
 
 Automatic binding requires one nonempty string primary key. For a different API
 identifier or a composite-key model, declare the API identifier explicitly with
@@ -737,14 +817,14 @@ use Cosmira\Strangler\Schema\Fields;
 
 $fields = Fields::uppercase()->rename([
     'id' => 'PERSON_ID',
-    'updated_at' => 'CHANGE_DATE',
+    'name' => 'TITLE',
 ]);
 
 $resource = JsonResource::make()->fields($fields);
 
 $query = Query::legacy()
     ->filters($fields->filterAs('display_name', 'query')->only(['display_name']))
-    ->sorts($fields->only(['updated_at']));
+    ->sorts($fields->only(['name']));
 ```
 
 `display_name` becomes `DISPLAY_NAME` without a declaration. Newly added upstream

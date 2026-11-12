@@ -31,6 +31,7 @@ use InvalidArgumentException;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\PreserveGlobalState;
 use PHPUnit\Framework\Attributes\RunInSeparateProcess;
+use PHPUnit\Framework\Attributes\TestWith;
 use PHPUnit\Framework\TestCase;
 use Psr\Http\Message\RequestInterface;
 use Psr\Http\Message\ResponseInterface;
@@ -693,25 +694,18 @@ final class StranglerProxyTest extends TestCase
         self::assertSame([], $this->history);
     }
 
-    public function testErrorGuardsReturnEvenIfAnApplicationOverrideDoesNotExit(): void
+    #[TestWith([null])]
+    #[TestWith(['unsupported://backend.test'])]
+    public function testErrorGuardsReturnEvenIfAnApplicationOverrideDoesNotExit(?string $origin): void
     {
         $this->application->shouldEnd = false;
-        $this->application->getParams()->add('strangler', []);
+        $this->application->getParams()->add('strangler', $origin === null ? [] : ['base_uri' => $origin]);
         $config = Strangler::proxy('example')->get('get', '/get')->build()['config'];
         $proxy = $this->proxy($this->client([]));
         ob_start();
 
         try {
             self::assertTrue($proxy->handle($this->controller, $config, 'get'));
-            self::assertSame('{"state":"error","error":"strangler_not_configured"}', ob_get_contents());
-        } finally {
-            ob_end_clean();
-        }
-        $this->application->getParams()->add('strangler', ['base_uri' => 'unsupported://backend.test']);
-        ob_start();
-
-        try {
-            ($this->proxy())->handle($this->controller, ['routes' => ['get' => ['method' => 'GET', 'path' => '/get']]], 'get');
             self::assertSame('{"state":"error","error":"strangler_not_configured"}', ob_get_contents());
         } finally {
             ob_end_clean();

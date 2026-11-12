@@ -247,13 +247,13 @@ abstract class ControllerContract
      * @param array{
      *     action?: string, query?: array<array-key, mixed>,
      *     payload?: array<array-key, mixed>|null, identifier?: string,
-     *     responseFields?: array<string, string>
+     *     responseFields?: array<string, string>, errorFields?: array<string, string>
      * } $context
      */
     public function error(
         mixed $json, ResponseInterface $response, array $context,
     ): ResponseInterface {
-        $fields = $context['responseFields'] ?? [];
+        $fields = $context['errorFields'] ?? $context['responseFields'] ?? [];
         if ($response->getStatusCode() === 422 && ! isset($context['responseFields'])) {
             $controller = StranglerProxy::application()->getController();
             $identifier = $context['identifier'] ?? $this->identifier()

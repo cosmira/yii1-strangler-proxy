@@ -55,7 +55,7 @@ final class ApiAdaptationGuideTest extends TestCase
     {
         $result = $this->forward(
             'edit',
-            '{"data":{"id":"42","display_name":"Desk","note":null,"updated_at":"2026-11-08"}}',
+            '{"data":{"id":"42","display_name":"Desk","note":null,"name":"2026-11-08"}}',
             payload: ['ITEM_ID' => '42', 'DISPLAY_NAME' => 'Desk', 'NOTE' => null],
             builder: $this->builder('One fluent proxy'),
         );
@@ -66,7 +66,7 @@ final class ApiAdaptationGuideTest extends TestCase
                 'ITEM_ID'      => '42',
                 'DISPLAY_NAME' => 'Desk',
                 'NOTE'         => null,
-                'CHANGE_DATE'  => '2026-11-08',
+                'TITLE'        => '2026-11-08',
             ],
         ], json_decode($result, true));
         self::assertSame('/items/42', $this->history[0]['request']->getUri()->getPath());
@@ -93,23 +93,23 @@ final class ApiAdaptationGuideTest extends TestCase
     {
         $this->forward('get', '{"data":[],"meta":{"total":0}}', query: [
             'filter' => ['DISPLAY_NAME' => 'Иван', 'IS_VISIBLE' => 0, 'PERSON_ID' => 'p'],
-            'sort'   => ['CHANGE_DATE' => 'DESC'],
+            'sort'   => ['TITLE' => 'DESC'],
         ], builder: $this->builder('Directional query differences'));
         parse_str($this->history[0]['request']->getUri()->getQuery(), $query);
 
-        self::assertSame(['query' => 'Иван', 'visible' => '0', 'person_id' => 'p'], $query['filter']);
-        self::assertSame('-updated_at', $query['sort']);
+        self::assertSame(['query' => 'Иван', 'is_visible' => '0', 'person_id' => 'p'], $query['filter']);
+        self::assertSame('-name', $query['sort']);
         self::assertCount(1, $this->history);
     }
 
     public function testPublishedResponseGraphKeepsItsConfiguredNamingExceptions(): void
     {
-        $body = $this->forward('view', '{"data":{"id":"p","updated_at":"2026-11-07","items":[{"id":"c","value":"user@example.test"}]}}',
+        $body = $this->forward('view', '{"data":{"id":"p","name":"2026-11-07","items":[{"id":"c","value":"user@example.test"}]}}',
             query: ['id' => 'p'], builder: $this->builder('Different semantics and response graphs'));
 
         self::assertSame([
             'state' => 'data', 'data' => [
-                'CATALOG_ID' => 'p', 'CHANGE_DATE' => '2026-11-07',
+                'CATALOG_ID' => 'p', 'TITLE' => '2026-11-07',
                 'items'      => [['ITEM_ID' => 'c', 'VALUE' => 'user@example.test']],
             ],
         ], json_decode($body, true));

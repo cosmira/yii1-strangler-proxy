@@ -21,15 +21,16 @@ use UnexpectedValueException;
  *
  * @phpstan-type Context array{
  *     action: string, query: array<array-key, mixed>, payload: array<array-key, mixed>|null,
- *     identifier?: string, responseFields?: array<string, string>,
+ *     identifier?: string, responseFields?: array<string, string>, errorFields?: array<string, string>,
  *     method?: string, requestMethod?: string
  * }
  * @phpstan-type QueryMapper array<array-key, string>|callable(
  *     array<array-key, mixed>, Context
  * ): (array<array-key, mixed>|false)
  * @phpstan-type PayloadMapper Convention|CustomPayloadMapper
+ * @phpstan-type DefaultPayload callable(array<array-key, mixed>): (array<array-key, mixed>|stdClass|false)
  * @phpstan-type CustomPayloadMapper array<array-key, string>|callable(
- *     array<array-key, mixed>, Context
+ *     array<array-key, mixed>, Context, DefaultPayload
  * ): (array<array-key, mixed>|stdClass|false)
  * @phpstan-type ResponseMapper callable(mixed, ResponseInterface, Context): ResponseInterface
  * @phpstan-type RequestValues array{
@@ -38,7 +39,8 @@ use UnexpectedValueException;
  * @phpstan-type Settings array{
  *     query?: array<string, QueryMapper>, payload?: array<string, PayloadMapper>,
  *     response?: array<string, ResponseMapper>, errors?: array<string, ResponseMapper>,
- *     responseFields?: array<string, string>, completeCollections?: array<string, int>
+ *     responseFields?: array<string, string>, errorFields?: array<string, string>,
+ *     completeCollections?: array<string, int>, convention?: Convention
  * }
  */
 final readonly class InlineMapping
@@ -99,6 +101,12 @@ final readonly class InlineMapping
         $context = $this->context;
         if (isset($this->mappings['responseFields'])) {
             $context['responseFields'] = $this->mappings['responseFields'];
+        }
+        if (isset($this->mappings['errorFields'])) {
+            $context['errorFields'] = array_replace(
+                $this->mappings['errorFields'],
+                ($this->mappings['convention'] ?? null)?->validationFields($context['payload'] ?? []) ?? [],
+            );
         }
         $context['query'] = self::copy($this->context['query']);
         $context['payload'] = $this->context['payload'] === null
@@ -231,8 +239,20 @@ final readonly class InlineMapping
         }
 
         return is_callable($mapper)
-            ? $mapper(self::copy($original), $this->context())
+            ? $mapper(self::copy($original), $this->context(), $this->defaultPayload(...))
             : Mapping::fields((object) $original, $mapper);
+    }
+
+    /**
+     * @param array<array-key, mixed> $payload
+     *
+     * @return array<array-key, mixed>|stdClass|false
+     */
+    private function defaultPayload(array $payload): array|stdClass|false
+    {
+        $convention = $this->mappings['convention'] ?? null;
+
+        return $convention === null ? $payload : $convention->payload($payload, $this->context());
     }
 
     /**

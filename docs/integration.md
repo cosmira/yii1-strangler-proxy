@@ -149,6 +149,15 @@ Routes must start with one `/` and cannot change the origin. Redirects are alway
 returned to the client; there is no redirect-following option. The filter never
 retries a backend request.
 
+Set `params.strangler.controller_contract` to the application contract class to
+apply shared conventions once. Per-controller `using()` remains an explicit override.
+The contract is constructed during declaration; its model is read only when binding
+a selected request after preceding Yii filters.
+
+Use `get(..., binary: true)` for binary success responses. Error mappings remain
+active. A route `body` closure can accept the default payload mapper as its second
+argument to retain configured naming and value conversions after changing structure.
+
 The controller builder configures behavior for one feature:
 
 | Method | Purpose |
@@ -157,7 +166,7 @@ The controller builder configures behavior for one feature:
 | `route($action, $method, $path, $fromBody = [])` | Register GET, HEAD, POST, PUT, PATCH or DELETE, with optional body bindings. |
 | `uppercase($identifier = null, $except = [])` | Enable conventional names and the Yii response envelope. An omitted identifier comes from the controller contract; missing both is a configuration error. |
 | `using($contract, $except = [])` | Connect native parsing and errors. The native model supplies the primary key for naming, query, and response conventions; `except` excludes actions from those mappings. |
-| `within($nativeParent)` | Resolve a parent required by a nested route through the contract's scoped model. Requires `using()`. |
+| `within($nativeParent)` | Resolve a parent required by a nested route through the configured contract's scoped model. |
 | `request()` | Configure input names and values, a reader, a bypass predicate, route parameters, semantic adaptation, structural guards, and native checks. See [request guards](api-adaptation.md#declare-request-guards-and-native-checks). |
 | `response()` | Configure output names and values, required attribute types, omissions, projection, related resources, and record callbacks. `using` configures the JSON envelope. |
 | `query()` | Configure filter, sort, and include aliases, filter values, semantic adaptation, and action-specific relation selection. See [selection rules](api-adaptation.md#keep-query-and-response-selection-together). |

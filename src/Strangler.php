@@ -36,6 +36,15 @@ use InvalidArgumentException;
  *     array<array-key, mixed>, string, array<array-key, mixed>
  * ): bool
  * @phpstan-type RouteParameters callable(Context): (array<string, mixed>|false)
+ * @phpstan-type RouteResolver callable(
+ *     array<array-key, mixed>, array<array-key, mixed>
+ * ): (array<string, mixed>|false)
+ *
+ * @phpstan-import-type DefaultPayload from InlineMapping
+ *
+ * @phpstan-type RouteBody callable(
+ *     array<array-key, mixed>, DefaultPayload, Context
+ * ): (array<array-key, mixed>|\stdClass|false)
  * @phpstan-type PayloadAdapter callable(
  *     array<array-key, mixed>, array{action: string}, Convention
  * ): (array<array-key, mixed>|\stdClass|false)
@@ -50,7 +59,8 @@ use InvalidArgumentException;
  *     array{action: string, query?: array<array-key, mixed>}
  * ): ?array<string, mixed>
  * @phpstan-type Route array{
- *     method: string, path: string, fromBody?: array<string, string|list<string>>
+ *     method: string, path: string, fromBody?: array<string, string|list<string>>,
+ *     parameters?: RouteResolver
  * }
  * @phpstan-type BoundConfig array{
  *     feature?: string,
@@ -134,12 +144,18 @@ final class Strangler
      * @var list<string>
      */
     private array $except = [];
+
+    /** @var list<string> */
+    private array $binaryActions = [];
     /**
      * Response-only naming exceptions.
      *
      * @var array<string, string>
      */
     private array $responseFields = [];
+
+    /** @var array<string, string> */
+    private array $fields = [];
     /**
      * Request-only naming exceptions.
      *
@@ -287,7 +303,10 @@ final class Strangler
      */
     public static function proxy(string $feature): self
     {
-        return new self($feature);
+        $proxy = new self($feature);
+        $contract = YiiRuntime::controllerContract();
+
+        return $contract === null ? $proxy : $proxy->using($contract);
     }
 
     /**
@@ -297,8 +316,8 @@ final class Strangler
      */
     public function using(ControllerContract $contract, array $except = []): self
     {
-        $this->config['controllerContract'] = $contract;
         $this->except = [...$this->except, ...array_map(strtolower(...), $except)];
+        $this->config['controllerContract'] = $contract;
         $contract->configure($this);
 
         return $this;
@@ -328,6 +347,16 @@ final class Strangler
         $this->isConventionEnabled = true;
         $this->identifier = $identifier;
         $this->except = [...$this->except, ...array_map(strtolower(...), $except)];
+
+        return $this;
+    }
+
+    /** @param array<string, string> $fields */
+    public function fields(array $fields): self
+    {
+        $names = array_replace($this->fields, $fields);
+        self::validateFieldMap($names);
+        $this->fields = $names;
 
         return $this;
     }
@@ -602,48 +631,61 @@ final class Strangler
      * Map a legacy action to an upstream GET route.
      *
      * @param array<string, string|list<string>> $fromBody
-     * @param Body|null                          $body
+     * @param Body|RouteBody|null                $body
+     * @param RouteResolver|null                 $parameters
      */
     public function get(
-        string $action, string $path, array $fromBody = [], ?array $body = null,
+        string $action, string $path, array $fromBody = [], array|callable|null $body = null,
+        ?callable $parameters = null, bool $binary = false,
     ): self {
-        return $this->route($action, 'GET', $path, $fromBody, $body);
+        $this->route($action, 'GET', $path, $fromBody, $body, $parameters);
+        if ($binary) {
+            $this->binaryActions[] = strtolower($action);
+        }
+
+        return $this;
     }
 
     /**
      * Map a legacy action to an upstream POST route.
      *
      * @param array<string, string|list<string>> $fromBody
-     * @param Body|null                          $body
+     * @param Body|RouteBody|null                $body
+     * @param RouteResolver|null                 $parameters
      */
     public function post(
-        string $action, string $path, array $fromBody = [], ?array $body = null,
+        string $action, string $path, array $fromBody = [], array|callable|null $body = null,
+        ?callable $parameters = null,
     ): self {
-        return $this->route($action, 'POST', $path, $fromBody, $body);
+        return $this->route($action, 'POST', $path, $fromBody, $body, $parameters);
     }
 
     /**
      * Map a legacy action to an upstream PUT route.
      *
      * @param array<string, string|list<string>> $fromBody
-     * @param Body|null                          $body
+     * @param Body|RouteBody|null                $body
+     * @param RouteResolver|null                 $parameters
      */
     public function put(
-        string $action, string $path, array $fromBody = [], ?array $body = null,
+        string $action, string $path, array $fromBody = [], array|callable|null $body = null,
+        ?callable $parameters = null,
     ): self {
-        return $this->route($action, 'PUT', $path, $fromBody, $body);
+        return $this->route($action, 'PUT', $path, $fromBody, $body, $parameters);
     }
 
     /**
      * Map a legacy action to an upstream DELETE route.
      *
      * @param array<string, string|list<string>> $fromBody
-     * @param Body|null                          $body
+     * @param Body|RouteBody|null                $body
+     * @param RouteResolver|null                 $parameters
      */
     public function delete(
-        string $action, string $path, array $fromBody = [], ?array $body = null,
+        string $action, string $path, array $fromBody = [], array|callable|null $body = null,
+        ?callable $parameters = null,
     ): self {
-        return $this->route($action, 'DELETE', $path, $fromBody, $body);
+        return $this->route($action, 'DELETE', $path, $fromBody, $body, $parameters);
     }
 
     /**
@@ -735,7 +777,7 @@ final class Strangler
             + ($this->config['mappings'] ?? []);
         if (! $this->isConventionEnabled && ! isset($this->config['controllerContract'])) {
             $fieldSettings = [
-                $this->responseFields, $this->requestFields, $this->requestValues,
+                $this->fields, $this->responseFields, $this->requestFields, $this->requestValues,
                 $this->responseValues, $this->filterAliases, $this->sortAliases,
                 $this->responseConfigurators, $this->relations, $this->excludedAttributes,
                 $this->optionalAttributes, $this->attributeMappers, $this->recordFinalizers,
@@ -762,12 +804,19 @@ final class Strangler
             ? $convention : $convention->adapt($payloadAdapter);
         $mappings['payload'] = self::defaults($mappings['payload'] ?? [], $payloadMapper, $actions);
         $mappings['response'] = self::defaults(
-            $mappings['response'] ?? [], $convention->response(...), $actions,
+            $mappings['response'] ?? [], $convention->response(...),
+            array_values(array_diff($actions, $this->binaryActions)),
+        );
+
+        $mappings['errorFields'] = array_replace(
+            $record->schema()->names(), $this->fields, array_flip($this->requestFields),
         );
 
         return array_replace($this->config, [
             'bodyIdentifier' => $identifier,
-            'mappings'       => $mappings + ['responseFields' => $record->schema()->names()],
+            'mappings'       => $mappings + [
+                'responseFields' => $record->schema()->names(), 'convention' => $payloadMapper,
+            ],
             'responseRecord' => $record,
         ]);
     }
@@ -853,6 +902,7 @@ final class Strangler
             identifier: $identifier,
             output: $this->resource($record, $contract),
             requestFields: $this->requestFields,
+            fields: $this->fields,
             requestValues: $this->requestValues,
             filterAliases: $this->filterAliases,
             sortAliases: $this->sortAliases,
@@ -871,7 +921,7 @@ final class Strangler
             $fieldsUsing = $contract->responseFields(...);
         }
         $graph = new ResponseGraph(
-            prototype: Record::uppercase()->rename($this->responseFields)
+            prototype: Record::uppercase()->rename(array_replace($this->fields, $this->responseFields))
                 ->required($this->required)
                 ->except($this->excludedAttributes)
                 ->optional($this->optionalAttributes),
@@ -986,10 +1036,12 @@ final class Strangler
      * Register a route using a case-insensitive action key.
      *
      * @param array<string, string|list<string>> $fromBody
-     * @param Body|null                          $body
+     * @param Body|RouteBody|null                $body
+     * @param RouteResolver|null                 $parameters
      */
     public function route(
-        string $action, string $method, string $path, array $fromBody = [], ?array $body = null,
+        string $action, string $method, string $path, array $fromBody = [], array|callable|null $body = null,
+        ?callable $parameters = null,
     ): self {
         $method = strtoupper($method);
         $key = $this->routeKey($action, $method, $path);
@@ -999,7 +1051,15 @@ final class Strangler
         if ($fromBody !== []) {
             $route['fromBody'] = $fromBody;
         }
-        if ($body !== null) {
+        if ($parameters !== null) {
+            $route['parameters'] = $parameters;
+        }
+        if (is_callable($body)) {
+            $this->mapPayload(
+                static fn (array $payload, array $context, callable $map): array|\stdClass|false => $body($context['payload'] ?? $payload, $map, $context),
+                [$key],
+            );
+        } elseif ($body !== null) {
             $this->mapPayload(BodyParameters::mapper($body), [$key]);
         }
         $this->routes[$key] = $route;

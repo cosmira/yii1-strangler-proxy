@@ -4,10 +4,14 @@ declare(strict_types=1);
 
 namespace Cosmira\Strangler\Tests;
 
+use Cosmira\Strangler\Response\ErrorResponse;
 use Cosmira\Strangler\Response\Json;
 use Cosmira\Strangler\Response\JsonResource;
 use Cosmira\Strangler\Response\Record;
 use Cosmira\Strangler\ResponseEmitter;
+use Cosmira\Strangler\Schema\Fields;
+use Cosmira\Strangler\Schema\Format;
+use Cosmira\Strangler\Schema\Mapping;
 use Cosmira\Strangler\Strangler;
 use Cosmira\Strangler\StranglerProxy;
 use Cosmira\Strangler\Tests\Fixtures\ApplicationEnded;
@@ -615,6 +619,210 @@ final class ConventionTest extends TestCase
             self::assertSame(['name' => 'Desk'], $query['filter']);
             self::assertSame('1', $query['page']);
         }
+    }
+
+    public function testRequestOnlyAliasesDoNotRenameFiltersOrSorts(): void
+    {
+        $config = Strangler::proxy('catalog')->uppercase('PERSON_ID')
+            ->fields(['category' => 'CATEGORY_ID'])
+            ->request(fields: ['DISPLAY_NAME' => 'name'])
+            ->query(filters: ['display_name' => 'query'])
+            ->get('get', '/people')->build()['config'];
+        $_GET = ['filter' => ['DISPLAY_NAME' => 'Alice'], 'sort' => ['DISPLAY_NAME' => 'ASC']];
+        $this->forward($config, 'get', '', new Response(200, [], '{"data":[],"meta":{"total":0}}'));
+        parse_str($this->lastRequest()->getUri()->getQuery(), $query);
+        self::assertSame(['query' => 'Alice'], $query['filter']);
+        self::assertSame('display_name', $query['sort']);
+    }
+
+    public function testValidationFieldNamesDoNotDependOnUnrelatedSharedAliases(): void
+    {
+        foreach ([false, true] as $shared) {
+            $builder = Strangler::proxy('catalog')->uppercase('PERSON_ID')
+                ->request(fields: ['TITLE' => 'name'])
+                ->mapJsonErrors(static fn ($json, $response, $context) => (new ErrorResponse($context['errorFields'] ?? [], []))($json, $response));
+            if ($shared) {
+                $builder->fields(['category' => 'CATEGORY_ID']);
+            }
+            $result = $this->forward($builder->post('create', '/people')->build()['config'],
+                'create', '{"TITLE":""}', new Response(422, [], '{"errors":{"name":["required"]}}'));
+            self::assertSame(['TITLE' => ['required' => []]], $this->decoded($result)['meta']);
+        }
+    }
+
+    public function testValidationUsesTheInputAliasActuallySupplied(): void
+    {
+        $config = Strangler::proxy('catalog')->uppercase('PERSON_ID')
+            ->request(fields: ['DISPLAY_NAME' => 'name', 'TITLE' => 'name'])
+            ->mapJsonErrors(static fn ($json, $response, $context) => (new ErrorResponse($context['errorFields'] ?? [], []))($json, $response))
+            ->post('create', '/people')->build()['config'];
+        foreach (['DISPLAY_NAME', 'TITLE'] as $field) {
+            $result = $this->forward($config, 'create', json_encode([$field => ''], JSON_THROW_ON_ERROR),
+                new Response(422, [], '{"errors":{"name":["required"]}}'));
+            self::assertSame([$field => ['required' => []]], $this->decoded($result)['meta']);
+        }
+    }
+
+    public function testSharedFieldsTranslateWritesFiltersSortsResponsesAndErrors(): void
+    {
+        $config = Strangler::proxy('catalog')->uppercase('PERSON_ID')
+            ->fields(['name' => 'TITLE'])
+            ->response(fields: ['parent_id' => 'PARENT_GROUP_ID'])
+            ->mapJsonErrors(static fn ($json, $response, $context) => (new ErrorResponse($context['errorFields'] ?? $context['responseFields'] ?? [], []))($json, $response))
+            ->post('create', '/people')->get('get', '/people')->build()['config'];
+        $result = $this->forward($config, 'create', '{"TITLE":"today","SN":"Name"}',
+            new Response(201, [], '{"data":{"id":"p","name":"today"}}'));
+        self::assertSame('{"name":"today","sn":"Name"}', (string) $this->lastRequest()->getBody());
+        self::assertSame(['PERSON_ID' => 'p', 'TITLE' => 'today'], $this->responseData($result));
+
+        $_GET = ['filter' => ['TITLE' => 'today'], 'sort' => ['TITLE' => 'DESC']];
+        $this->forward($config, 'get', '', new Response(200, [], '{"data":[],"meta":{"total":0}}'));
+        parse_str($this->lastRequest()->getUri()->getQuery(), $query);
+        self::assertSame(['name' => 'today'], $query['filter']);
+        self::assertSame('-name', $query['sort']);
+
+        $_GET = [];
+        $result = $this->forward($config, 'create', '{"TITLE":"invalid"}',
+            new Response(422, [], '{"errors":{"name":["invalid"],"parent_id":["invalid"]}}'));
+        $meta = $this->decoded($result)['meta'];
+        self::assertIsArray($meta);
+        self::assertArrayHasKey('TITLE', $meta);
+        self::assertArrayHasKey('PARENT_GROUP_ID', $meta);
+    }
+
+    public function testDirectionalExceptionsOverrideSharedFieldsIndependentlyOfCallOrder(): void
+    {
+        foreach ([true, false] as $sharedFirst) {
+            $builder = Strangler::proxy('catalog')->uppercase('PERSON_ID');
+            if ($sharedFirst) {
+                $builder->fields(['name' => 'TITLE']);
+            }
+            $builder->request(fields: ['TITLE' => 'input_name'])
+                ->response(fields: ['name' => 'OUTPUT_NAME'])
+                ->mapJsonErrors(static fn ($json, $response, $context) => (new ErrorResponse($context['errorFields'] ?? [], []))($json, $response));
+            if (! $sharedFirst) {
+                $builder->fields(['name' => 'TITLE']);
+            }
+            $config = $builder->get('get', '/people')->post('create', '/people')->build()['config'];
+            $_GET = [];
+            $result = $this->forward($config, 'create', '{"TITLE":"today"}',
+                new Response(201, [], '{"data":{"id":"p","name":"today"}}'));
+            self::assertSame('{"input_name":"today"}', (string) $this->lastRequest()->getBody());
+            self::assertSame(['PERSON_ID' => 'p', 'OUTPUT_NAME' => 'today'], $this->responseData($result));
+            $_GET = ['filter' => ['TITLE' => 'today'], 'sort' => ['TITLE' => 'ASC']];
+            $this->forward($config, 'get', '', new Response(200, [], '{"data":[],"meta":{"total":0}}'));
+            parse_str($this->lastRequest()->getUri()->getQuery(), $query);
+            self::assertSame(['name' => 'today'], $query['filter']);
+            self::assertSame('name', $query['sort']);
+            $_GET = [];
+            $result = $this->forward($config, 'create', '{"TITLE":"invalid"}',
+                new Response(422, [], '{"errors":{"input_name":["invalid"]}}'));
+            $meta = $this->decoded($result)['meta'];
+            self::assertIsArray($meta);
+            self::assertArrayHasKey('TITLE', $meta);
+            self::assertArrayNotHasKey('OUTPUT_NAME', $meta);
+        }
+    }
+
+    public function testRouteCallbacksUseOriginalValuesAndOnlyRunForTheirAction(): void
+    {
+        $calls = [];
+        $config = Strangler::proxy('catalog')->uppercase('PERSON_ID')
+            ->put('move', '/people/{id}/groups',
+                parameters: static function (array $query, array $payload) use (&$calls): array {
+                    $calls[] = [$query, $payload];
+
+                    return ['id' => $payload['PERSON_ID']];
+                },
+                body: static fn (array $payload): array => ['ids' => [$payload['PARENT_GROUP_ID']]],
+            )
+            ->post('create', '/people')->build()['config'];
+        $_GET = ['filter' => ['SN' => 'Name']];
+        $this->forward($config, 'move', '{"PERSON_ID":"p/a","PARENT_GROUP_ID":"g"}',
+            new Response(200, [], '{"data":{"id":"p/a"}}'));
+        self::assertSame('/people/p%2Fa/groups', $this->lastRequest()->getUri()->getPath());
+        self::assertSame('{"ids":["g"]}', (string) $this->lastRequest()->getBody());
+        self::assertSame([[['filter' => ['SN' => 'Name']], ['PERSON_ID' => 'p/a', 'PARENT_GROUP_ID' => 'g']]], $calls);
+        $_GET = [];
+        $this->forward($config, 'create', '{"SN":"Name"}', new Response(201, [], '{"data":{"id":"p"}}'));
+        self::assertCount(1, $calls);
+        self::assertSame('{"sn":"Name"}', (string) $this->lastRequest()->getBody());
+    }
+
+    public function testRouteBodyCanReuseConfiguredNamingAndNestedValueConversions(): void
+    {
+        $config = Strangler::proxy('catalog')->uppercase('PERSON_ID')
+            ->fields(['name' => 'TITLE'])
+            ->request(values: [
+                'contacts' => Mapping::recordsWith(
+                    Fields::uppercase(),
+                    values: ['meta' => Format::jsonString(...)],
+                ),
+            ])
+            ->post('create', '/people', body: static function (array $payload, callable $map): array|\stdClass|false {
+                unset($payload['GROUPS']);
+
+                return $map($payload);
+            })->build()['config'];
+        $this->forward($config, 'create', '{"PERSON_ID":"p","GROUPS":[{"GROUP_ID":"g"}],"TITLE":"today","CONTACTS":[{"META":{"KeepCase":true}}]}',
+            new Response(201, [], '{"data":{"id":"p"}}'));
+        self::assertSame([
+            'name' => 'today', 'contacts' => [['meta' => '{"KeepCase":true}']],
+        ], json_decode((string) $this->lastRequest()->getBody(), true));
+        self::assertFalse($this->forward($config, 'create', '{"TITLE":"today","name":"other"}', new Response(201)));
+        self::assertCount(1, $this->history);
+    }
+
+    public function testBinaryRouteKeepsBytesAndStillMapsErrors(): void
+    {
+        $config = Strangler::proxy('catalog')->uppercase('PERSON_ID')
+            ->mapJsonErrors(static fn ($json, $response) => (new ErrorResponse([], []))($json, $response))
+            ->fields(['name' => 'TITLE'])
+            ->get('image', '/people/{id}/photo', binary: true)->build()['config'];
+        $_GET = ['id' => 'p', 'filter' => ['TITLE' => 'Alice'], 'sort' => ['TITLE' => 'DESC']];
+        self::assertSame("\x89PNG\x00", $this->forward($config, 'image', '',
+            new Response(200, ['Content-Type' => 'image/png'], "\x89PNG\x00")));
+        parse_str($this->lastRequest()->getUri()->getQuery(), $query);
+        self::assertSame(['name' => 'Alice'], $query['filter']);
+        self::assertSame('-name', $query['sort']);
+        $result = $this->forward($config, 'image', '', new Response(404, [], '{"code":"not_found"}'));
+        self::assertSame(['state' => 'error', 'error' => 'not_found'], $this->decoded($result));
+    }
+
+    public function testRouteBodyReceivesOriginalFieldsConsumedByBodyBindings(): void
+    {
+        $config = Strangler::proxy('catalog')->uppercase('PERSON_ID')
+            ->post('create', '/groups/{group}/people',
+                fromBody: ['group' => 'GROUPS.*.GROUP_ID'],
+                body: static fn (array $payload): array => ['original_groups' => $payload['GROUPS']],
+            )->build()['config'];
+        $this->forward($config, 'create', '{"GROUPS":[{"GROUP_ID":"g"}]}',
+            new Response(201, [], '{"data":{"id":"p"}}'));
+        self::assertSame('/groups/g/people', $this->lastRequest()->getUri()->getPath());
+        self::assertSame('{"original_groups":[{"GROUP_ID":"g"}]}', (string) $this->lastRequest()->getBody());
+    }
+
+    public function testRouteCallbacksCanKeepTheRequestNativeBeforeTransport(): void
+    {
+        foreach (['parameters', 'body'] as $stage) {
+            $options = [$stage => static fn (): false => false];
+            $config = Strangler::proxy('catalog')->uppercase('PERSON_ID')
+                ->post('create', '/people', ...$options)->build()['config'];
+            self::assertFalse($this->forward($config, 'create', '{}', new Response(201)));
+        }
+        self::assertSame([], $this->history);
+    }
+
+    public function testRouteParameterConflictsAndInvalidValuesStayNative(): void
+    {
+        foreach ([['parent' => 'other'], ['parent' => []], ['parent' => null]] as $parameters) {
+            $config = Strangler::proxy('catalog')->uppercase('PERSON_ID')
+                ->request(parameters: static fn (): array => ['parent' => 'original'])
+                ->post('create', '/parents/{parent}/people', parameters: static fn (): array => $parameters)
+                ->build()['config'];
+            self::assertFalse($this->forward($config, 'create', '{}', new Response(201)));
+        }
+        self::assertSame([], $this->history);
     }
 
     /** @return array<array-key, mixed> */

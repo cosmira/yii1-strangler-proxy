@@ -65,6 +65,107 @@ final class ControllerContractTest extends TestCase
         $_GET = [];
     }
 
+    public function testApplicationContractIsConfiguredOnceBeforeLocalFieldsAndBindsTheModelLazily(): void
+    {
+        $contract = new class extends ControllerContract
+        {
+            public static int $models = 0;
+            public static int $configurations = 0;
+
+            public function configure(Strangler $proxy): void
+            {
+                self::$configurations++;
+                $proxy->fields(['name' => 'TITLE']);
+            }
+
+            public function model(CController $controller): CActiveRecord
+            {
+                self::$models++;
+
+                return new class(null) extends CActiveRecord
+                {
+                    public function primaryKey(): string
+                    {
+                        return 'ITEM_ID';
+                    }
+                };
+            }
+
+            public function payload(CController $controller): array
+            {
+                return [];
+            }
+        };
+        $application = Yii::app();
+        self::assertInstanceOf(WebApplication::class, $application);
+        $application->getParams()->add('strangler', ['controller_contract' => $contract::class]);
+        $config = Strangler::proxy('example')->fields(['name' => 'OUTPUT_NAME'])
+            ->post('create', '/items')->build()['config'];
+        self::assertSame(1, $contract::$configurations);
+        self::assertSame(0, $contract::$models);
+
+        $bound = ControllerContract::resolveConfig($config, $this->controller);
+        self::assertSame(1, $contract::$models);
+        $mapping = new InlineMapping($bound['mappings'] ?? [], [
+            'action' => 'create', 'query' => [], 'payload' => ['OUTPUT_NAME' => 'today'],
+        ]);
+        $result = $mapping->request([], ['OUTPUT_NAME' => 'today'], null);
+        self::assertIsArray($result);
+        self::assertSame(['name' => 'today'], $result['payload']);
+    }
+
+    public function testExplicitContractInstanceOverridesTheApplicationContractOfTheSameClass(): void
+    {
+        $contract = new class extends ControllerContract
+        {
+            public function __construct(private string $name = 'TITLE') {}
+
+            public function identifier(): string
+            {
+                return 'ITEM_ID';
+            }
+
+            public function configure(Strangler $proxy): void
+            {
+                $proxy->fields(['name' => $this->name]);
+            }
+
+            public function model(CController $controller): CActiveRecord
+            {
+                throw new \LogicException('The identifier is already declared.');
+            }
+
+            public function payload(CController $controller): array
+            {
+                return [];
+            }
+        };
+        $application = Yii::app();
+        self::assertInstanceOf(WebApplication::class, $application);
+        $application->getParams()->add('strangler', ['controller_contract' => $contract::class]);
+        $override = new ($contract::class)('LOCAL_TITLE');
+
+        $config = Strangler::proxy('example')->using($override)
+            ->post('create', '/items')->build()['config'];
+
+        self::assertSame($override, $config['controllerContract'] ?? null);
+        $mapping = new InlineMapping($config['mappings'] ?? [], [
+            'action' => 'create', 'query' => [], 'payload' => ['LOCAL_TITLE' => 'Desk'],
+        ]);
+        $result = $mapping->request([], ['LOCAL_TITLE' => 'Desk'], null);
+        self::assertIsArray($result);
+        self::assertSame(['name' => 'Desk'], $result['payload']);
+    }
+
+    public function testInvalidApplicationContractIsRejectedDuringDeclaration(): void
+    {
+        $application = Yii::app();
+        self::assertInstanceOf(WebApplication::class, $application);
+        $application->getParams()->add('strangler', ['controller_contract' => \stdClass::class]);
+        $this->expectException(InvalidArgumentException::class);
+        Strangler::proxy('example');
+    }
+
     public function testNativeSearchIsSelectedBeforeReadingControllerModelMetadata(): void
     {
         $contract = new class extends ControllerContract

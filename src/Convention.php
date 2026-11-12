@@ -46,6 +46,7 @@ final class Convention
      * Input names are independent of response aliases.
      */
     private Fields $input;
+    private Fields $queryInput;
     /**
      * The default Yii success envelope and its response-only record schema.
      */
@@ -61,7 +62,8 @@ final class Convention
      * @param (callable(
      *     mixed, ResponseInterface, array{action: string}
      * ): ?ResponseInterface)|null $resultUsing
-     * @param RequestRules $rules
+     * @param array<string, string> $fields
+     * @param RequestRules          $rules
      */
     public function __construct(
         /**
@@ -75,15 +77,18 @@ final class Convention
         array $sortAliases = [],
         ?callable $resultUsing = null,
         private array $rules = [],
+        array $fields = [],
     ) {
-        $input = Fields::uppercase()->rename(array_flip($requestFields));
+        $input = Fields::uppercase()->rename($fields);
+        $queryInput = $input;
         foreach ($filterAliases as $field => $name) {
-            $input = $input->filterAs($field, $name);
+            $queryInput = $queryInput->filterAs($field, $name);
         }
         foreach ($sortAliases as $field => $name) {
-            $input = $input->sortAs($field, $name);
+            $queryInput = $queryInput->sortAs($field, $name);
         }
         $this->input = $input;
+        $this->queryInput = $queryInput;
         $this->output = $output;
         $this->resultUsing = $resultUsing === null ? null : $resultUsing(...);
     }
@@ -138,11 +143,21 @@ final class Convention
     }
 
     /**
+     * @param array<array-key, mixed> $payload
+     *
+     * @return array<string, string>
+     */
+    public function validationFields(array $payload): array
+    {
+        return array_flip(array_intersect_key($this->requestFields, $payload));
+    }
+
+    /**
      * Share the compiled query convention with application semantic adapters.
      */
     public function queryMapper(): Query
     {
-        return Query::legacy($this->input)->pagination(max: PHP_INT_MAX);
+        return Query::legacy($this->queryInput)->pagination(max: PHP_INT_MAX);
     }
 
     /**

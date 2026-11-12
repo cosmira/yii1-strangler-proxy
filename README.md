@@ -1,6 +1,6 @@
 # Yii 1 Strangler Proxy
 
-Documentation for **5.4.0**.
+Documentation for **5.5.0**.
 
 [![Tests][tests-badge]][tests-workflow]
 [![PHP 8.2–8.5][php-badge]](composer.json)
@@ -87,6 +87,8 @@ Put the backend path in each route.
 
 ## When the APIs differ
 
+The catalog examples use `id` and `name` under `data`.
+
 Without a controller contract, `uppercase()` enables naming, query translation,
 and the Yii response envelope. Its argument names the native primary key:
 
@@ -95,7 +97,7 @@ use Cosmira\Strangler\Strangler;
 
 Strangler::proxy('catalog')
     ->uppercase('ITEM_ID')
-    ->response(fields: ['updated_at' => 'CHANGE_DATE'])
+    ->fields(['name' => 'TITLE'])
     ->get('get', '/api/items')
     ->get('view', '/api/items/{id}')
     ->post('create', '/api/items')
@@ -105,14 +107,15 @@ Strangler::proxy('catalog')
 ```
 
 This convention expects backend records under `data`. For the `view` action,
-`{"data":{"id":42,"updated_at":"2026-11-08"}}` becomes
-`{"state":"data","data":{"ITEM_ID":42,"CHANGE_DATE":"2026-11-08"}}`.
+`{"data":{"id":42,"name":"Desk"}}` becomes
+`{"state":"data","data":{"ITEM_ID":42,"TITLE":"Desk"}}`.
 Lists also require `meta.total`. Ordinary response attributes become uppercase;
 input, filter, and sort names become lowercase. Describe only naming or structural
 differences. The proxy does not restrict names to the backend's supported fields.
 
-Response aliases do not change input names. Use `request(fields: [...])` for input
-differences. A controller contract supplies the native error envelope; otherwise
+`fields()` shares aliases across writes, responses, filters, ordering and validation
+field names. Use `request(fields: [...])` or `response(fields: [...])` for directional
+exceptions. A controller contract supplies the native error envelope; otherwise
 [configure error mapping](docs/api-adaptation.md#preserve-errors-and-headers).
 
 See [API adaptation](docs/api-adaptation.md) for body-to-route bindings, relations,
@@ -141,18 +144,28 @@ class ApiContract extends ControllerContract
 }
 ```
 
-Keep one fluent filter in each controller. Declare routes and resource-specific differences:
+Register the contract once in the existing application configuration:
+
+```php
+'params' => [
+    'strangler' => [
+        'controller_contract' => ApiContract::class,
+    ],
+],
+```
+
+Keep the other Strangler settings. Each controller declares only routes and
+resource-specific differences:
 
 ```php
 use Cosmira\Strangler\Strangler;
 
 Strangler::proxy('catalog')
-    ->using(new ApiContract())
     ->get('view', '/api/items/{id}')
     ->build();
 ```
 
-`using()` enables naming, query, and response conventions. The package reads the
+The configured contract enables naming, query, and response conventions. The package reads the
 native model's primary key when handling a selected request, after preceding Yii
 filters. Building the filter does not read the model. Conventional
 `get`, `view`, `create`, `edit`, and `delete` actions also check the incoming method
@@ -169,7 +182,6 @@ can reuse that declaration instead of repeating field maps or branching on recor
 
 ```php
 return Strangler::proxy('catalog')
-    ->using(new ApiContract())
     ->response(relations: [
         'items' => ItemController::class,
         'owner' => ['controller' => PersonController::class, 'many' => false],

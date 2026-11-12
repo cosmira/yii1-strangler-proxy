@@ -62,6 +62,7 @@ final class StranglerProxyTest extends TestCase
         }
         $_GET = [];
         $_POST = [];
+        $_SERVER['REQUEST_METHOD'] = 'GET';
         $_SERVER['HTTP_HOST'] = 'legacy.test';
         $_SERVER['SCRIPT_FILENAME'] = __DIR__.'/bootstrap.php';
         $_SERVER['SCRIPT_NAME'] = '/index.php';

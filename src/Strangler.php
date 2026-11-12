@@ -18,6 +18,8 @@ use InvalidArgumentException;
 /**
  * Build the Yii filter configuration for migrated actions.
  *
+ * @phpstan-import-type Modifier from Query as QueryModifier
+ * @phpstan-import-type BodyModifier from JsonResource
  * @phpstan-import-type Relation from ResponseGraph
  * @phpstan-import-type AttributeMapper from ResponseGraph
  * @phpstan-import-type Finalizer from ResponseGraph
@@ -289,6 +291,15 @@ final class Strangler
     private ?Closure $queryAdapter = null;
 
     /**
+     * Structural query changes that retain automatic field and pagination mapping.
+     *
+     * @var (Closure(
+     *     array<array-key, mixed>, array{action: string}
+     * ): (array<array-key, mixed>|false))|null
+     */
+    private ?Closure $queryModifier = null;
+
+    /**
      * Response graph and envelope differences applied to the compiled defaults.
      *
      * @var list<Closure(JsonResource): JsonResource>
@@ -406,7 +417,7 @@ final class Strangler
         foreach ($fields as $source => $target) {
             self::validateFieldMap([$source => $target]);
         }
-        self::validateFormatters($values);
+        Convention::validateFormatters($values);
         $this->config['requestRelations'] = NativeRequestGuard::adaptRelations(
             $this->config['requestRelations'] ?? [], $relations, $actionNames,
         );
@@ -434,6 +445,7 @@ final class Strangler
      * @param Projection|'*'|null                                 $projection
      * @param array<string, Relation>                             $relations
      * @param array<string, string>                               $required
+     * @param BodyModifier|null                                   $body
      * @param list<string>|null                                   $empty
      * @param array<string, array{list<string|int>, string, int}> $rejectEmpty
      */
@@ -442,10 +454,11 @@ final class Strangler
         array $except = [], array $optional = [], ?callable $attributes = null,
         ?callable $after = null, callable|string|null $projection = null, array $relations = [],
         array $required = [], ?array $empty = null, array $rejectEmpty = [],
+        ?callable $body = null,
     ): self {
         $this->required = array_replace($this->required, $required);
         self::validateFieldMap($fields);
-        self::validateFormatters($values);
+        Convention::validateFormatters($values);
         $this->responseFields = array_replace($this->responseFields, $fields);
         $this->responseValues = array_replace($this->responseValues, $values);
         $this->relations = array_replace($this->relations, $relations);
@@ -464,11 +477,10 @@ final class Strangler
         if ($projection !== null) {
             $this->projection = $projection === '*' ? static fn (): null => null : $projection(...);
         }
-        if ($using !== null) {
-            $this->responseConfigurators[] = $using(...);
-        }
-        if ($empty !== null || $rejectEmpty !== []) {
-            $this->responseConfigurators[] = JsonResource::outcomes($empty, $rejectEmpty);
+        foreach (array_filter([
+            $using, JsonResource::outcomes($empty, $rejectEmpty, $body),
+        ]) as $configure) {
+            $this->responseConfigurators[] = $configure(...);
         }
 
         return $this;
@@ -480,6 +492,7 @@ final class Strangler
      * @param array<string, string>                 $filters
      * @param array<string, string>                 $sorts
      * @param array<string, string>|null            $includes
+     * @param QueryModifier|null                    $modify
      * @param QueryAdapter|null                     $using
      * @param array<string, callable(mixed): mixed> $values
      * @param RelationDefaults|null                 $defaults
@@ -495,6 +508,7 @@ final class Strangler
         array $values = [], array|callable|null $defaults = null,
         array $replaceFor = [], array $emptyFor = [], array $extendFor = [],
         array $mergeFor = ['view'], array $nativeOn = [], array $complete = [],
+        ?callable $modify = null,
     ): self {
         $this->selection = Selection::make(
             $defaults, $replaceFor, $emptyFor, $extendFor, $mergeFor, $this->selection,
@@ -503,7 +517,7 @@ final class Strangler
         if (in_array('', $names, true)) {
             throw new InvalidArgumentException('Query aliases require nonempty names.');
         }
-        self::validateFormatters($values);
+        Convention::validateFormatters($values);
         $this->completeCollections = Query::collectionPages($complete) + $this->completeCollections;
         if ($nativeOn !== []) {
             $this->config['nativeQueryFilters'] = $nativeOn;
@@ -517,6 +531,9 @@ final class Strangler
         }
         if ($using !== null) {
             $this->queryAdapter = $using(...);
+        }
+        if ($modify !== null) {
+            $this->queryModifier = $modify(...);
         }
 
         return $this;
@@ -780,7 +797,8 @@ final class Strangler
                 $this->optionalAttributes, $this->attributeMappers, $this->recordFinalizers,
                 $this->includes !== null, $this->queryAdapter !== null, $this->projection !== null,
                 $this->payloadAdapter !== null, $this->queryValues,
-                $this->selection !== null, $this->required, $this->requestRules,
+                $this->selection !== null, $this->required,
+                $this->requestRules, $this->queryModifier,
             ];
             if (array_filter($fieldSettings) !== []) {
                 throw new InvalidArgumentException('Field mappings require a native identifier.');
@@ -864,6 +882,9 @@ final class Strangler
         }
         $adapter = $this->queryAdapter;
         $query = $adapter === null ? $query : $query->adapt($adapter);
+        if ($this->queryModifier !== null) {
+            $query = $query->modify($this->queryModifier);
+        }
         if ($this->selection !== null) {
             $query = $query->adapt($this->selection->query(...));
         }
@@ -951,22 +972,6 @@ final class Strangler
     }
 
     /**
-     * Reject invalid value converters before requests can reach the upstream service.
-     *
-     * @param array<string, mixed> $formatters
-     */
-    private static function validateFormatters(array $formatters): void
-    {
-        foreach ($formatters as $field => $formatter) {
-            if ($field === '' || ! is_callable($formatter)) {
-                throw new InvalidArgumentException(
-                    'Value differences require named callable formatters.',
-                );
-            }
-        }
-    }
-
-    /**
      * Validate field maps without invoking application callbacks.
      *
      * @param array<array-key, mixed>|callable $mapper
@@ -1005,7 +1010,7 @@ final class Strangler
             $this->mapPayload(
                 static fn (
                     array $payload, array $context, callable $map,
-                ) => $body($context['payload'] ?? $payload, $map, $context),
+                ) => $map($body($context['payload'] ?? $payload)),
                 [$key],
             );
         } elseif ($body !== null) {

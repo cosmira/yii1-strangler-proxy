@@ -80,6 +80,22 @@ final class Convention
     }
 
     /**
+     * Reject invalid value converters before requests can reach the upstream service.
+     *
+     * @param array<string, mixed> $formatters
+     */
+    public static function validateFormatters(array $formatters): void
+    {
+        foreach ($formatters as $field => $formatter) {
+            if ($field === '' || ! is_callable($formatter)) {
+                throw new InvalidArgumentException(
+                    'Value differences require named callable formatters.',
+                );
+            }
+        }
+    }
+
+    /**
      * Accumulate shared or action-specific request differences without replacing other rules.
      *
      * @param RequestRules          $registered

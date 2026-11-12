@@ -749,7 +749,7 @@ final class ConventionTest extends TestCase
         self::assertSame('{"sn":"Name"}', (string) $this->lastRequest()->getBody());
     }
 
-    public function testRouteBodyCanReuseConfiguredNamingAndNestedValueConversions(): void
+    public function testRouteBodyAutomaticallyAppliesConfiguredNamingAndNestedValueConversions(): void
     {
         $config = Strangler::proxy('catalog')->uppercase('PERSON_ID')
             ->fields(['name' => 'TITLE'])
@@ -759,10 +759,10 @@ final class ConventionTest extends TestCase
                     values: ['meta' => Format::jsonString(...)],
                 ),
             ])
-            ->post('create', '/people', body: static function (array $payload, callable $map): array|\stdClass|false {
+            ->post('create', '/people', body: static function (array $payload): array {
                 unset($payload['GROUPS']);
 
-                return $map($payload);
+                return $payload;
             })->build()['config'];
         $this->forward($config, 'create', '{"PERSON_ID":"p","GROUPS":[{"GROUP_ID":"g"}],"TITLE":"today","CONTACTS":[{"META":{"KeepCase":true}}]}',
             new Response(201, [], '{"data":{"id":"p"}}'));
@@ -771,6 +771,50 @@ final class ConventionTest extends TestCase
         ], json_decode((string) $this->lastRequest()->getBody(), true));
         self::assertFalse($this->forward($config, 'create', '{"TITLE":"today","name":"other"}', new Response(201)));
         self::assertCount(1, $this->history);
+    }
+
+    public function testResponseBodyModifierRetainsSharedFieldRulesAndCanReturnEmptyOrErrorResults(): void
+    {
+        $config = Strangler::proxy('catalog')->uppercase('PERSON_ID')
+            ->fields(['change_date' => 'UPDATED_AT'])
+            ->response(body: static function (mixed $body, array $context): mixed {
+                if ($context['action'] === 'copy') {
+                    return new Response(200, ['Content-Type' => 'application/json'], '{"state":"data"}');
+                }
+                if ($context['action'] === 'link') {
+                    return new Response(400, ['Content-Type' => 'application/json'],
+                        '{"state":"error","error":"exists_entity"}');
+                }
+                self::assertSame(201, $context['status']);
+                self::assertInstanceOf(\stdClass::class, $body);
+                $body->data = $body->person;
+                unset($body->person);
+
+                return $body;
+            })
+            ->post('create', '/people')->put('copy', '/people/{id}/groups')
+            ->put('link', '/people/{id}/workstations')->build()['config'];
+        $result = $this->forward($config, 'create', '{}',
+            new Response(201, [], '{"person":{"id":"p","change_date":"today"}}'));
+        self::assertSame(['state' => 'data', 'data' => ['PERSON_ID' => 'p', 'UPDATED_AT' => 'today']], $this->decoded($result));
+        $_GET = ['id' => 'p'];
+        self::assertSame(['state' => 'data'], $this->decoded($this->forward(
+            $config, 'copy', '{}', new Response(204),
+        )));
+        self::assertSame(200, $this->status);
+        self::assertSame(['state' => 'error', 'error' => 'exists_entity'], $this->decoded($this->forward(
+            $config, 'link', '{}', new Response(200, [], '{"data":{}}'),
+        )));
+        self::assertSame(400, $this->status);
+        self::assertCount(3, $this->history);
+    }
+
+    public function testRouteBodyCanKeepYiiBeforeAnyHttpAttempt(): void
+    {
+        $config = Strangler::proxy('catalog')->uppercase('PERSON_ID')
+            ->post('create', '/people', body: static fn (array $payload): false => false)->build()['config'];
+        self::assertFalse($this->forward($config, 'create', '{}', new Response(201)));
+        self::assertSame([], $this->history);
     }
 
     public function testBinaryRouteKeepsBytesAndStillMapsErrors(): void

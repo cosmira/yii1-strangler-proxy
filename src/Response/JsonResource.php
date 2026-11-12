@@ -15,6 +15,7 @@ use stdClass;
 /**
  * Callable Yii-style resource configuration for Strangler::mapJsonResponse().
  *
+ * @phpstan-type BodyModifier callable(mixed, array{action: string, status: int}): mixed
  * @phpstan-type ProjectionContext array{action: string, query?: array<array-key, mixed>}
  */
 final class JsonResource
@@ -69,6 +70,13 @@ final class JsonResource
      */
     private ?int $responseStatus = 200;
     /**
+     * Application body changes performed before field and envelope mapping.
+     *
+     * @var (Closure(mixed, array{action: string, status: int}): mixed)|null
+     */
+    private ?Closure $bodyModifier = null;
+
+    /**
      * Application contract validation applied to the final generated response.
      *
      * @var list<Closure(ResponseInterface): void>
@@ -98,23 +106,29 @@ final class JsonResource
     }
 
     /**
-     * Configure strict data-envelope results without an application callback.
+     * Configure result handling and an optional structural body modifier.
      *
+     * @param BodyModifier|null                                   $body
      * @param list<string>|null                                   $empty
      * @param array<string, array{list<string|int>, string, int}> $rejectEmpty
      *
-     * @return Closure(self): self
+     * @return (Closure(self): self)|null
      */
-    public static function outcomes(?array $empty, array $rejectEmpty): Closure
-    {
+    public static function outcomes(
+        ?array $empty, array $rejectEmpty, ?callable $body = null,
+    ): ?Closure {
+        if ($empty === null && $rejectEmpty === [] && $body === null) {
+            return null;
+        }
         $rules = self::make()->requireData()->empty($empty ?? ['delete']);
         foreach ($rejectEmpty as $action => [$path, $error, $status]) {
             $rules = $rules->rejectEmpty($path, $error, $status, [$action]);
         }
 
-        return static function (self $resource) use ($empty, $rules): self {
+        return static function (self $resource) use ($empty, $rules, $rejectEmpty, $body): self {
             $copy = clone $resource;
-            $copy->requiresData = true;
+            $copy->requiresData = $copy->requiresData || $empty !== null || $rejectEmpty !== [];
+            $copy->bodyModifier = $body === null ? $copy->bodyModifier : $body(...);
             if ($empty !== null) {
                 $copy->emptyActions = $rules->emptyActions;
             }
@@ -314,7 +328,13 @@ final class JsonResource
         ResponseInterface $response,
         array $context,
     ): ResponseInterface {
-        $rejected = $this->operationResult($json, $response, $context['action']);
+        $source = $this->bodyModifier === null ? $json : ($this->bodyModifier)(
+            $json, ['action' => $context['action'], 'status' => $response->getStatusCode()],
+        );
+        if ($source instanceof ResponseInterface) {
+            return $this->validate($source);
+        }
+        $rejected = $this->operationResult($source, $response, $context['action']);
         if ($rejected !== null) {
             return $this->validate($rejected);
         }
@@ -327,9 +347,9 @@ final class JsonResource
 
         $mapper = $this->recordMapper($context);
         $body = in_array($context['action'], $this->collectionActions, true)
-            ? Mapping::collection($json, $mapper, $this->responseEnvelope,
+            ? Mapping::collection($source, $mapper, $this->responseEnvelope,
                 totalFrom: $this->totalSource, totalTo: $this->totalTarget)
-            : Mapping::item($json, $mapper, $this->responseEnvelope);
+            : Mapping::item($source, $mapper, $this->responseEnvelope);
 
         return $this->validate(Json::response($response, $body, $this->responseStatus));
     }

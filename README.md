@@ -1,6 +1,10 @@
 # Yii 1 Strangler Proxy
 
-Documentation for **5.5.0**.
+Documentation for the next release (unreleased).
+
+Route `body` callbacks now run before automatic field and value mapping.
+Callbacks from 5.5 that called the supplied mapper must return the modified body directly.
+New query and response body modifiers also require this unreleased version.
 
 [![Tests][tests-badge]][tests-workflow]
 [![PHP 8.2–8.5][php-badge]](composer.json)
@@ -26,7 +30,7 @@ mapping, and selected multipart uploads.
 Install the package in your Yii application:
 
 ```shell
-composer require cosmira/yii1-strangler-proxy:5.4.0
+composer require cosmira/yii1-strangler-proxy:^5.5
 ```
 
 Load Composer's `vendor/autoload.php` before the Yii bootstrap. Commit your

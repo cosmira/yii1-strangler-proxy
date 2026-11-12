@@ -213,27 +213,57 @@ values are URL parameters; they do not remove or rename body fields. Return
 resolved values do not reach the backend. Database exceptions are not fallback
 signals.
 
-A `body` closure receives the original body, a callable for the configured
-default payload transformation, and the original request context. A closure may
-accept only the arguments it needs. It returns the complete upstream body,
-without further automatic naming, or `false` to keep Yii.
-
-For a structural change that should retain configured names and value conversions,
-call the supplied mapper explicitly:
+A route `body` closure receives the original body. Return the changed structure;
+shared names, request value conversions, nested record conversions and identifier
+removal apply automatically afterwards. Return `false` to keep Yii before HTTP.
 
 ```php
-body: static function (array $payload, callable $map): array|stdClass|false {
+body: static function (array $payload): array {
     unset($payload['GROUPS']);
 
-    return $map($payload);
+    return $payload;
 },
 ```
 
-The mapper retains shared fields, request value conversions, nested record
-conversions, identifier removal and collision checks. Without a naming convention,
-it returns the supplied body unchanged. This replaces ordinary payload mapping
-only for that action. Existing array body declarations remain supported.
+Without a naming convention, the returned structure is sent unchanged. Existing
+array body declarations select their complete upstream structure as before.
 No callback causes retries or native fallback after an upstream attempt.
+
+This changes the callback contract from 5.5: remove the supplied mapper argument
+and return the structure directly. These semantics require the next release.
+
+### Change query and response structures
+
+Use ordinary PHP for differences beyond field names. A query modifier receives
+the original query and `['action' => ...]`. Field names, filters, sorting and
+pagination are translated after it returns. Returning `false` keeps Yii before HTTP.
+
+```php
+->query(modify: static function (array $query, array $context): array {
+    $query['with'] = ['contacts'];
+
+    return $query;
+})
+```
+
+A response body modifier runs on decoded success JSON before automatic record
+mapping. Its context contains `action` and the upstream HTTP `status`.
+Return the modified JSON or a PSR response for an application-specific result. An exception after HTTP never
+replays the native action.
+
+```php
+->response(body: static function (mixed $body, array $context): mixed {
+    if ($context['action'] === 'copy') {
+        return new \GuzzleHttp\Psr7\Response(200,
+            ['Content-Type' => 'application/json'], '{"state":"data"}');
+    }
+
+    return $body;
+})
+```
+
+These modifiers require the next release. `fields()` remains the shared naming
+map for input, output, filters and sorting; modifiers describe structural differences.
 
 ### Select the outgoing body
 

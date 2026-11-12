@@ -23,7 +23,7 @@ use UnexpectedValueException;
  * @internal
  *
  * @phpstan-type RouteBody callable(
- *     array<array-key, mixed>, DefaultPayload, Context
+ *     array<array-key, mixed>
  * ): (array<array-key, mixed>|stdClass|false)
  * @phpstan-type RequestCheck callable(array<array-key, mixed>, string, CController): void
  * @phpstan-type Context array{
@@ -37,7 +37,7 @@ use UnexpectedValueException;
  * ): (array<array-key, mixed>|false)
  * @phpstan-type PayloadMapper Convention|CustomPayloadMapper
  * @phpstan-type DefaultPayload callable(
- *     array<array-key, mixed>
+ *     array<array-key, mixed>|stdClass|false
  * ): (array<array-key, mixed>|stdClass|false)
  * @phpstan-type CustomPayloadMapper array<array-key, string>|callable(
  *     array<array-key, mixed>, Context, DefaultPayload
@@ -320,12 +320,15 @@ final readonly class InlineMapping
     /**
      * Reuse configured naming and values after a route changes the body structure.
      *
-     * @param array<array-key, mixed> $payload
+     * @param array<array-key, mixed>|stdClass|false $payload
      *
      * @return array<array-key, mixed>|stdClass|false
      */
-    private function defaultPayload(array $payload): array|stdClass|false
+    private function defaultPayload(array|stdClass|false $payload): array|stdClass|false
     {
+        if ($payload === false) {
+            return false;
+        }
         $convention = $this->mappings['convention'] ?? null;
 
         return $convention?->payload($payload, $this->context()) ?? $payload;

@@ -15,6 +15,27 @@ use PHPUnit\Framework\TestCase;
 /** @phpstan-import-type Context from \Cosmira\Strangler\InlineMapping */
 final class DirectionalQueryTest extends TestCase
 {
+    public function testQueryModifierRunsBeforeSharedFieldAndPaginationMapping(): void
+    {
+        $mapper = $this->queryMapper(Strangler::proxy('directory')->uppercase('PERSON_ID')
+            ->fields(['change_date' => 'UPDATED_AT'])
+            ->query(modify: static function (array $query, array $context): array|false {
+                self::assertSame('get', $context['action']);
+                if (isset($query['unsupported'])) {
+                    return false;
+                }
+                $query['filter'] = ['UPDATED_AT' => $query['since']];
+                unset($query['since']);
+
+                return $query;
+            })->get('get', '/people'));
+        $context = ['action' => 'get', 'query' => [], 'payload' => null];
+        self::assertSame([
+            'filter' => ['change_date' => 'today'], 'page' => 3, 'per_page' => 10,
+        ], $mapper(['since' => 'today', 'start' => 20, 'limit' => 10], $context));
+        self::assertFalse($mapper(['unsupported' => true], $context));
+    }
+
     public function testMalformedIncludeContainersAreRejectedBeforeForwarding(): void
     {
         $mapper = $this->queryMapper(Strangler::proxy('directory')

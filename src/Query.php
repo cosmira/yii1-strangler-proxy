@@ -9,7 +9,13 @@ use Cosmira\Strangler\Schema\Fields;
 use Cosmira\Strangler\Schema\Mapping;
 use InvalidArgumentException;
 
-/** Callable legacy query configuration for Strangler::mapQuery(). */
+/**
+ * Translate legacy queries without exposing field mapping to modifiers.
+ *
+ * @phpstan-type Modifier callable(
+ *     array<array-key, mixed>, array{action: string}
+ * ): (array<array-key, mixed>|false)
+ */
 final class Query
 {
     /**
@@ -215,6 +221,22 @@ final class Query
         $copy->defaults = $this;
 
         return $copy;
+    }
+
+    /**
+     * Change query structure before applying the configured naming and pagination.
+     *
+     * @param Modifier $modify
+     */
+    public function modify(callable $modify): self
+    {
+        return $this->adapt(static function (
+            array $query, array $context, self $defaults,
+        ) use ($modify): array|false {
+            $modified = $modify($query, $context);
+
+            return $modified === false ? false : $defaults($modified, $context);
+        });
     }
 
     /**

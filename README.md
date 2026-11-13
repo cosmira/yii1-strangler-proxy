@@ -1,11 +1,9 @@
 # Yii 1 Strangler Proxy
 
-Documentation for **8.0.0**.
+Documentation for **8.1.0**.
 
-Route body arrays and closures now use the same field conversions and application
-checks. When upgrading, check array declarations that previously bypassed those
-rules. A route can select a record from the incoming JSON with `request:` and
-translate its successful upstream result with `response:`.
+Use `patch()` for partial updates. A response body modifier can check the
+upstream result against the original request before the proxy maps its fields.
 
 [![Tests][tests-badge]][tests-workflow]
 [![PHP 8.2–8.5][php-badge]](composer.json)
@@ -31,7 +29,7 @@ mapping, and selected multipart uploads.
 Install the package in your Yii application:
 
 ```shell
-composer require cosmira/yii1-strangler-proxy:^8.0
+composer require cosmira/yii1-strangler-proxy:^8.1
 ```
 
 Load Composer's `vendor/autoload.php` before the Yii bootstrap. Commit your

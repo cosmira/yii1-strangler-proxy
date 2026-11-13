@@ -779,6 +779,9 @@ final class ConventionTest extends TestCase
             ->fields(['change_date' => 'UPDATED_AT'])
             ->response(body: static function (mixed $body, array $context): mixed {
                 if ($context['action'] === 'copy') {
+                    self::assertSame('p', $context['query']['id'] ?? null);
+                    self::assertSame(['GROUP_ID' => 'g'], $context['payload'] ?? null);
+
                     return new Response(200, ['Content-Type' => 'application/json'], '{"state":"data"}');
                 }
                 if ($context['action'] === 'link') {
@@ -799,7 +802,7 @@ final class ConventionTest extends TestCase
         self::assertSame(['state' => 'data', 'data' => ['PERSON_ID' => 'p', 'UPDATED_AT' => 'today']], $this->decoded($result));
         $_GET = ['id' => 'p'];
         self::assertSame(['state' => 'data'], $this->decoded($this->forward(
-            $config, 'copy', '{}', new Response(204),
+            $config, 'copy', '{"GROUP_ID":"g"}', new Response(204),
         )));
         self::assertSame(200, $this->status);
         self::assertSame(['state' => 'error', 'error' => 'exists_entity'], $this->decoded($this->forward(

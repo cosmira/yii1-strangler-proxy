@@ -15,7 +15,8 @@ use stdClass;
 /**
  * Callable Yii-style resource configuration for Strangler::mapJsonResponse().
  *
- * @phpstan-type BodyModifier callable(mixed, array{action: string, status: int}): mixed
+ * @phpstan-type BodyModifier callable(mixed, array{action: string, status: int, query?: array<array-key, mixed>,
+ *     payload?: array<array-key, mixed>|null, identifier?: string}): mixed
  * @phpstan-type ProjectionContext array{action: string, query?: array<array-key, mixed>}
  */
 final class JsonResource
@@ -72,7 +73,8 @@ final class JsonResource
     /**
      * Application body changes performed before field and envelope mapping.
      *
-     * @var (Closure(mixed, array{action: string, status: int}): mixed)|null
+     * @var (Closure(mixed, array{action: string, status: int, query?: array<array-key, mixed>,
+     *     payload?: array<array-key, mixed>|null, identifier?: string}): mixed)|null
      */
     private ?Closure $bodyModifier = null;
 
@@ -329,7 +331,7 @@ final class JsonResource
         array $context,
     ): ResponseInterface {
         $source = $this->bodyModifier === null ? $json : ($this->bodyModifier)(
-            $json, ['action' => $context['action'], 'status' => $response->getStatusCode()],
+            $json, ['status' => $response->getStatusCode()] + $context,
         );
         if ($source instanceof ResponseInterface) {
             return $this->validate($source);

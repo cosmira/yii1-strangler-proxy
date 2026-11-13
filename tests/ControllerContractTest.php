@@ -477,8 +477,8 @@ final class ControllerContractTest extends TestCase
                     $seen[] = $original;
                 },
                 using: static fn (array $body): array|false => is_array($body['add'] ?? null) && isset($body['add'][0]) ? $body : false,
-            )->route(
-                'attach', 'PATCH', '/items/{id}/links', body: ['add' => ['LINK_ID']],
+            )->patch(
+                'attach', '/items/{id}/links', body: ['add' => ['LINK_ID']],
                 request: static fn (array $rows): array|false => count($rows) === 1 && is_array($rows[0] ?? null) ? $rows[0] : false,
                 response: static function (mixed $json, ResponseInterface $response, array $context) use (&$seen): ResponseInterface {
                     $seen[] = $context['payload'];

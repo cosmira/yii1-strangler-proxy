@@ -704,6 +704,24 @@ final class Strangler
     }
 
     /**
+     * Forward a partial update with its request and response adaptations.
+     *
+     * @param Body|RouteBody|null $body
+     * @param RouteResolver|null  $parameters
+     * @param RouteRequest|null   $request
+     * @param ResponseMapper|null $response
+     */
+    public function patch(
+        string $action, string $path, array|callable|null $body = null,
+        ?callable $parameters = null, ?callable $request = null, ?callable $response = null,
+    ): self {
+        return $this->route(
+            $action, 'PATCH', $path, body: $body, parameters: $parameters,
+            request: $request, response: $response,
+        );
+    }
+
+    /**
      * Map a legacy action to an upstream DELETE route.
      *
      * @param array<string, string|list<string>> $fromBody

@@ -236,8 +236,8 @@ the URL identifier and body fields. Native checks and the response callback
 receive the original input.
 
 ```php
-->route(
-    'attach', 'PATCH', '/items/{id}/links',
+->patch(
+    'attach', '/items/{id}/links',
     body: ['add' => ['LINK_ID']],
     request: $this->singleLink(...),
     response: $this->linkAdded(...),
@@ -264,7 +264,7 @@ pagination are translated after it returns. Returning `false` keeps Yii before H
 ```
 
 A response body modifier runs on decoded success JSON before automatic record
-mapping. Its context contains `action` and the upstream HTTP `status`.
+mapping. Its context includes the action, the upstream HTTP status, and the original query and payload.
 Return the modified JSON or a PSR response for an application-specific result. An exception after HTTP never
 replays the native action.
 
@@ -288,7 +288,6 @@ Use `body` when an operation changes the payload structure:
 
 ```php
 Strangler::proxy('directory')
-    ->using(new ApiContract())
     ->put('move', '/people/{id}/groups', body: ['ids' => ['PARENT_GROUP_ID']])
     ->build();
 ```

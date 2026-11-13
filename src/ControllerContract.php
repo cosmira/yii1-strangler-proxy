@@ -48,6 +48,16 @@ abstract class ControllerContract
     public function configure(Strangler $proxy): void {}
 
     /**
+     * Declare page sizes for actions whose native default is an unlimited collection.
+     *
+     * @return array<string, int>
+     */
+    protected function collectionPages(CController $controller): array
+    {
+        return [];
+    }
+
+    /**
      * Bind a deferred declaration to the current controller without mutating its snapshot.
      *
      * @internal
@@ -60,7 +70,17 @@ abstract class ControllerContract
     {
         $resolve = $config['resolve'] ?? null;
 
-        return $resolve === null ? $config : $resolve($controller);
+        $resolved = $resolve === null ? $config : $resolve($controller);
+        $contract = $resolved['controllerContract'] ?? null;
+        $pages = $contract?->collectionPages($controller) ?? [];
+        if ($pages !== []) {
+            $mappings = $resolved['mappings'] ?? [];
+            $mappings['completeCollections'] =
+                ($mappings['completeCollections'] ?? []) + Query::collectionPages($pages);
+            $resolved['mappings'] = $mappings;
+        }
+
+        return $resolved;
     }
 
     /**

@@ -114,6 +114,52 @@ final class ControllerContractTest extends TestCase
         self::assertSame(['name' => 'today'], $result['payload']);
     }
 
+    public function testNativeCollectionDefaultsPreserveExplicitLimitsAndLocalPageSizes(): void
+    {
+        $contract = new class extends ControllerContract
+        {
+            protected function collectionPages(CController $controller): array
+            {
+                return $controller->getId() === 'paged' ? [] : ['get' => 100];
+            }
+
+            public function model(CController $controller): CActiveRecord
+            {
+                return new class(null) extends CActiveRecord
+                {
+                    public function primaryKey(): string
+                    {
+                        return 'ITEM_ID';
+                    }
+                };
+            }
+
+            public function payload(CController $controller): array
+            {
+                return [];
+            }
+        };
+        $builder = Strangler::proxy('catalog')->using($contract)->get('get', '/items');
+        $config = $builder->build()['config'];
+        $bound = ControllerContract::resolveConfig($config, $this->controller);
+        $mappings = $bound['mappings'] ?? [];
+        self::assertSame(['get' => 100], $mappings['completeCollections'] ?? null);
+        foreach ([[], ['limit' => -1], ['limit' => 20]] as $query) {
+            $mapping = new InlineMapping($mappings, [
+                'action' => 'get', 'method' => 'GET', 'requestMethod' => 'GET',
+                'query'  => $query, 'payload' => null,
+            ]);
+            self::assertSame(($query['limit'] ?? -1) === -1, $mapping->collection() !== null);
+        }
+        $paged = ControllerContract::resolveConfig($config, new Controller('paged'));
+        self::assertArrayNotHasKey('completeCollections', $paged['mappings'] ?? []);
+        $local = ControllerContract::resolveConfig(
+            $builder->query(complete: ['get' => 50])->build()['config'], $this->controller,
+        );
+        $mappings = $local['mappings'] ?? [];
+        self::assertSame(['get' => 50], $mappings['completeCollections'] ?? null);
+    }
+
     public function testExplicitContractInstanceOverridesTheApplicationContractOfTheSameClass(): void
     {
         $contract = new class extends ControllerContract

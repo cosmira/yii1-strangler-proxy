@@ -1,6 +1,6 @@
 # Yii 1 Strangler Proxy
 
-Documentation for **6.0.0**.
+Documentation for **6.1.0**.
 
 Route `body` callbacks now run before automatic field and value mapping.
 Callbacks from 5.5 that called the supplied mapper must return the modified body directly.
@@ -30,7 +30,7 @@ mapping, and selected multipart uploads.
 Install the package in your Yii application:
 
 ```shell
-composer require cosmira/yii1-strangler-proxy:^6.0
+composer require cosmira/yii1-strangler-proxy:^6.1
 ```
 
 Load Composer's `vendor/autoload.php` before the Yii bootstrap. Commit your

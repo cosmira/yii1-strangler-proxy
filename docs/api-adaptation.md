@@ -983,3 +983,11 @@ result, like a native unlimited response; there is no silent record or byte cap.
 Unmapped binary/file responses keep their existing streamed output. Offset pages
 do not provide a database snapshot: use stable server ordering; concurrent edits
 can still replace records without changing the total.
+
+Applications that already define a `ControllerContract` can declare unlimited
+collection defaults once with the protected `collectionPages(CController $controller): array`
+hook (6.1.0). Return action names and transport page sizes, for example
+`['get' => 100]`, only for native actions whose default is unlimited. Return `[]`
+for paginated native defaults. Controller filters then need only their routes;
+explicit positive request limits still select a single page. An explicit local
+`query(complete: ...)` page size takes precedence over the shared declaration.

@@ -362,7 +362,7 @@ final class ControllerContractTest extends TestCase
         Strangler::proxy('example')->request(relations: [' ']);
     }
 
-    public function testNativeChecksRunOnceAfterStructuralGuardsBeforeMapping(): void
+    public function testNativeChecksRunOnceOnTheOriginalPayloadBeforeTransport(): void
     {
         $_GET = ['id' => 'item'];
         $_SERVER['REQUEST_METHOD'] = 'PUT';
@@ -411,6 +411,54 @@ final class ControllerContractTest extends TestCase
         self::assertSame('original', $payload['META']->opaqueKey);
         self::assertSame([['parent_id' => 'parent', 'meta' => ['opaqueKey' => 'original']]], $bodies);
         self::assertSame(2, $reads);
+    }
+
+    public function testJsonBodyAndRouteAreValidatedBeforeNativeChecksWithoutRepeatingHttp(): void
+    {
+        $_GET = [];
+        $_SERVER['REQUEST_METHOD'] = 'PUT';
+        $payload = ['ITEM_ID' => 'item', 'PARENT_ID' => 'parent'];
+        $events = [];
+        $config = Strangler::proxy('example')->using($this->contract($this->finder()))
+            ->request(
+                reader: static function () use (&$payload): array {
+                    return $payload;
+                },
+                before: static function (array $original) use (&$events): void {
+                    $events[] = ['check', $original];
+                },
+            )->put('move', '/items/{id}/parents', body: static function (array $original) use (&$events): array|false {
+                $events[] = ['body', $original];
+
+                return isset($original['PARENT_ID']) ? ['ids' => [$original['PARENT_ID']]] : false;
+            })->build()['config'];
+        $client = new Client(['handler' => static function (RequestInterface $request) use (&$events) {
+            $events[] = ['http', $request->getUri()->getPath(), (string) $request->getBody()];
+
+            return new FulfilledPromise(new Response(204));
+        }]);
+        $proxy = new StranglerProxy($client);
+        foreach ([['PARENT_ID' => 'parent'], ['ITEM_ID' => ' ', 'PARENT_ID' => 'parent'], ['ITEM_ID' => 'item']] as $invalid) {
+            $payload = $invalid;
+            self::assertFalse($proxy->handle($this->controller, $config, 'move'));
+            self::assertSame([['body', $invalid]], $events);
+            $events = [];
+        }
+        $payload = ['ITEM_ID' => 'item', 'PARENT_ID' => 'parent'];
+        ob_start();
+
+        try {
+            self::assertTrue($proxy->handle($this->controller, $config, 'move'));
+        } finally {
+            ob_end_clean();
+        }
+        self::assertSame([
+            ['body', $payload], ['check', $payload], ['http', '/items/item/parents', '{"ids":["parent"]}'],
+        ], $events);
+        $events = [];
+        $_GET = ['id' => 'other'];
+        self::assertFalse($proxy->handle($this->controller, $config, 'move'));
+        self::assertSame([], $events);
     }
 
     public function testNativeGuardConfigurationRejectsBlankNamesAndInvalidMethods(): void

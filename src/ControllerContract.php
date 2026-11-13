@@ -6,6 +6,7 @@ namespace Cosmira\Strangler;
 
 use CActiveRecord;
 use CController;
+use Cosmira\Strangler\Internal\Payload\NativeRequestGuard;
 use Cosmira\Strangler\Response\ErrorResponse;
 use Cosmira\Strangler\Response\Json;
 use Cosmira\Strangler\Response\Record;
@@ -329,7 +330,9 @@ abstract class ControllerContract
     ): bool {
         $method = $this->conventionalMethod($action);
         if ($method === null) {
-            return false;
+            return NativeRequestGuard::hasConflictingIdentity(
+                $payload, $query, $identifier ?? $this->identifier(),
+            );
         }
 
         return StranglerProxy::application()->getRequest()->getRequestType() !== $method

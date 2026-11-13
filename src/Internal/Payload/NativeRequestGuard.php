@@ -130,7 +130,7 @@ final readonly class NativeRequestGuard
         return ($this->methods !== [] && ! in_array($method, $this->methods, true))
             || $this->hasUnsupportedFields($payload)
             || $this->containsNativeValue($payload)
-            || $this->hasConflictingIdentity($payload, $query, $identifier)
+            || self::hasConflictingIdentity($payload, $query, $identifier)
             || $this->hasInvalidRequiredFields($payload, $query, $identifier);
     }
 
@@ -170,7 +170,7 @@ final readonly class NativeRequestGuard
      * @param array<array-key, mixed> $payload
      * @param array<array-key, mixed> $query
      */
-    private function hasConflictingIdentity(
+    public static function hasConflictingIdentity(
         array $payload, array $query, ?string $identifier,
     ): bool {
         if ($identifier === null || ! isset($query['id'], $payload[$identifier])) {

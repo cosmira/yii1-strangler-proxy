@@ -247,9 +247,6 @@ final readonly class StranglerProxy
 
             return false;
         }
-        if (isset($config['beforeRequest'])) {
-            ($config['beforeRequest'])($payload, $actionKey, $controller);
-        }
         $mapping = $inline?->withPayload($payload, $snapshot['body']);
 
         $prepared = self::prepareRequest(
@@ -260,9 +257,12 @@ final readonly class StranglerProxy
 
             return false;
         }
-        $this->sendPrepared($config, $actionKey, $route['path'], $prepared, $mapping);
+        $check = $config['beforeRequest'] ?? null;
 
-        return true;
+        return $this->sendPrepared(
+            $config, $actionKey, $route['path'], $prepared, $mapping,
+            $check === null ? null : static fn () => $check($payload, $actionKey, $controller),
+        );
     }
 
     /**
@@ -277,7 +277,8 @@ final readonly class StranglerProxy
         string $routeTemplate,
         array $prepared,
         ?InlineMapping $inline,
-    ): void {
+        ?Closure $beforeRequest,
+    ): bool {
         $outgoing = $prepared['outgoing'];
 
         try {
@@ -286,6 +287,9 @@ final readonly class StranglerProxy
                 $outgoing['payload'], $prepared['routeId'], $prepared['parameters'],
             );
         } catch (InvalidArgumentException) {
+            if (isset($config['controllerContract'])) {
+                return false;
+            }
             YiiRuntime::logRejection(
                 $config, $actionKey, $routeTemplate, 'strangler_route_parameter_missing',
             );
@@ -293,9 +297,14 @@ final readonly class StranglerProxy
                 400, 'strangler_route_parameter_missing', $inline,
             );
 
-            return;
+            return true;
+        }
+        if ($beforeRequest !== null) {
+            $beforeRequest();
         }
         $this->transport->send($config, $actionKey, $outgoing, $routeTemplate, $inline);
+
+        return true;
     }
 
     /**
@@ -384,7 +393,8 @@ final readonly class StranglerProxy
                 : ($body[$placeholder] ?? $body[$upper]
                     ?? $query[strtolower($placeholder)] ?? null));
 
-            if (! is_scalar($value) || in_array((string) $value, ['', '.', '..'], true)) {
+            if (! is_scalar($value) || trim((string) $value) === ''
+                || in_array((string) $value, ['.', '..'], true)) {
                 throw new InvalidArgumentException('Missing Strangler route parameter.');
             }
 

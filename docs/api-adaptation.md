@@ -538,7 +538,7 @@ to uppercase.
 
 After structural guards pass, `before` receives the original payload, normalized
 action name and native controller. Use it for existing authorization checks, not
-payload conversion. Checks run in registration order before mapping and HTTP;
+payload conversion. Checks run in registration order after body/query mapping and URL resolution, before HTTP;
 changing their array argument does not change the forwarded snapshot. Exceptions
 propagate through the native Yii error handling. Readers receive the native
 controller and normalized action; keep them for parsing an input envelope or file.
@@ -991,3 +991,20 @@ hook (6.1.0). Return action names and transport page sizes, for example
 for paginated native defaults. Controller filters then need only their routes;
 explicit positive request limits still select a single page. An explicit local
 `query(complete: ...)` page size takes precedence over the shared declaration.
+
+### JSON preparation order in 7.0
+
+The controller model supplies the native primary-key name. `{id}` uses the request
+identifier or the original JSON primary key without a route-parameter callback.
+Custom native actions reject conflicting query/body identifiers using the same
+comparison as structural request guards.
+
+Body modifiers can return `false` before native checks run. After mapping, URL
+parameters are resolved and checked for missing, empty or whitespace-only values.
+With a `ControllerContract`, an unresolved URL leaves the request in Yii before
+HTTP. A standalone proxy retains its controlled 400 route-parameter error.
+
+`request(before:)` now runs after successful structural preparation and still
+receives the original payload. It runs once before transport; exceptions stop the
+request. Body and URL modifiers must prepare data without performing writes.
+No failure after HTTP starts repeats the native action.

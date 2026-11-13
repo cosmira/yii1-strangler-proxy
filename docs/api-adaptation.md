@@ -230,7 +230,7 @@ array body declarations select their complete upstream structure as before.
 No callback causes retries or native fallback after an upstream attempt.
 
 This changes the callback contract from 5.5: remove the supplied mapper argument
-and return the structure directly. These semantics require the next release.
+and return the structure directly. These semantics are available in 6.0.0.
 
 ### Change query and response structures
 
@@ -262,7 +262,7 @@ replays the native action.
 })
 ```
 
-These modifiers require the next release. `fields()` remains the shared naming
+These modifiers are available in 6.0.0. `fields()` remains the shared naming
 map for input, output, filters and sorting; modifiers describe structural differences.
 
 ### Select the outgoing body

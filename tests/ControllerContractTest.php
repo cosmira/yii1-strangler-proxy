@@ -461,6 +461,58 @@ final class ControllerContractTest extends TestCase
         self::assertSame([], $events);
     }
 
+    public function testRouteSelectsOneLinkAndPreservesTheNativeBatchForChecksAndResults(): void
+    {
+        $_SERVER['REQUEST_METHOD'] = 'PUT';
+        $row = ['ITEM_ID' => 'owner', 'LINK_ID' => 'link'];
+        $input = [$row, $row];
+        $sent = [];
+        $seen = [];
+        $config = Strangler::proxy('example')->using($this->contract($this->finder()))
+            ->request(
+                reader: static function () use (&$input): array {
+                    return $input;
+                },
+                before: static function (array $original) use (&$seen): void {
+                    $seen[] = $original;
+                },
+                using: static fn (array $body): array|false => is_array($body['add'] ?? null) && isset($body['add'][0]) ? $body : false,
+            )->route(
+                'attach', 'PATCH', '/items/{id}/links', body: ['add' => ['LINK_ID']],
+                request: static fn (array $rows): array|false => count($rows) === 1 && is_array($rows[0] ?? null) ? $rows[0] : false,
+                response: static function (mixed $json, ResponseInterface $response, array $context) use (&$seen): ResponseInterface {
+                    $seen[] = $context['payload'];
+
+                    return new Response(200, [], '{"state":"data"}');
+                },
+            )->build()['config'];
+        $client = new Client(['handler' => static function (RequestInterface $request) use (&$sent) {
+            $sent[] = [$request->getMethod(), $request->getUri()->getPath(), (string) $request->getBody()];
+
+            return new FulfilledPromise(new Response(200, [], '{"meta":{"added_ids":["link"]}}'));
+        }]);
+        $proxy = new StranglerProxy($client);
+        self::assertFalse($proxy->handle($this->controller, $config, 'attach'));
+        $input = [['ITEM_ID' => 'owner']];
+        self::assertFalse($proxy->handle($this->controller, $config, 'attach'));
+        $input = [$row];
+        $_GET = ['id' => 'other'];
+        self::assertFalse($proxy->handle($this->controller, $config, 'attach'));
+        self::assertSame([], $seen);
+        self::assertSame([], $sent);
+        $_GET = [];
+        ob_start();
+
+        try {
+            self::assertTrue($proxy->handle($this->controller, $config, 'attach'));
+            self::assertSame('{"state":"data"}', ob_get_contents());
+        } finally {
+            ob_end_clean();
+        }
+        self::assertSame([$input, $input], $seen);
+        self::assertSame([['PATCH', '/items/owner/links', '{"add":["link"]}']], $sent);
+    }
+
     public function testNativeGuardConfigurationRejectsBlankNamesAndInvalidMethods(): void
     {
         foreach ([[''], [' ']] as $names) {

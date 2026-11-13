@@ -443,6 +443,42 @@ final readonly class StranglerProxy
         array $snapshot,
         ?InlineMapping $inline,
     ): array|false {
+        $select = $route['request'] ?? null;
+        if ($select === null) {
+            return self::prepareValues(
+                $controller, $config, $actionKey, $route, $snapshot, $inline,
+            );
+        }
+        $row = $select($snapshot['payload']);
+        if ($row === false || NativeRequestGuard::hasConflictingIdentity(
+            $row, $_GET, $config['bodyIdentifier'] ?? null,
+        )) {
+            return false;
+        }
+
+        return self::prepareValues(
+            $controller, $config, $actionKey, $route,
+            ['payload' => $row, 'body' => null], $inline?->withPayload($row),
+        );
+    }
+
+    /**
+     * Resolve route values and translate the selected input to an upstream request.
+     *
+     * @param Config                                                     $config
+     * @param Route                                                      $route
+     * @param array{payload: array<array-key, mixed>, body: string|null} $snapshot
+     *
+     * @return Prepared|false
+     */
+    private static function prepareValues(
+        CController $controller,
+        array $config,
+        string $actionKey,
+        array $route,
+        array $snapshot,
+        ?InlineMapping $inline,
+    ): array|false {
         $bound = self::bodyBindings($route['fromBody'] ?? [], $snapshot, $inline);
         if ($bound === false) {
             return false;

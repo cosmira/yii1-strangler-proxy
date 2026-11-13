@@ -15,6 +15,14 @@ use Psr\Http\Message\ResponseInterface;
 
 final class RouteBodyTest extends TestCase
 {
+    public function testRouteBodyCanBeDeclaredBeforeTheYiiApplicationStarts(): void
+    {
+        \Yii::setApplication(null);
+        $config = Strangler::proxy('example')->put('move', '/links', body: ['ids' => ['LINK_ID']])->build()['config'];
+        $mapping = new InlineMapping($config['mappings'] ?? [], ['action' => 'move', 'query' => [], 'payload' => ['LINK_ID' => 'one']]);
+        self::assertSame(['ids' => ['one']], $mapping->request([], [], null)['payload'] ?? null);
+    }
+
     public function testRoutesConstructBodiesWithoutSendingUnselectedNativeFields(): void
     {
         foreach (['get', 'post', 'put', 'delete'] as $method) {

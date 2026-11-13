@@ -41,6 +41,7 @@ use InvalidArgumentException;
  * @phpstan-type RouteResolver callable(
  *     array<array-key, mixed>, array<array-key, mixed>
  * ): (array<string, mixed>|false)
+ * @phpstan-type RouteRequest callable(array<array-key, mixed>): (array<array-key, mixed>|false)
  *
  * @phpstan-import-type RouteBody from InlineMapping
  *
@@ -59,7 +60,7 @@ use InvalidArgumentException;
  * ): ?array<string, mixed>
  * @phpstan-type Route array{
  *     method: string, path: string, fromBody?: array<string, string|list<string>>,
- *     parameters?: RouteResolver
+ *     parameters?: RouteResolver, request?: RouteRequest
  * }
  * @phpstan-type BoundConfig array{
  *     feature?: string,
@@ -989,34 +990,33 @@ final class Strangler
      * @param array<string, string|list<string>> $fromBody
      * @param Body|RouteBody|null                $body
      * @param RouteResolver|null                 $parameters
+     * @param RouteRequest|null                  $request
+     * @param ResponseMapper|null                $response
      */
     public function route(
         string $action, string $method, string $path, array $fromBody = [],
         array|callable|null $body = null,
-        ?callable $parameters = null,
+        ?callable $parameters = null, ?callable $request = null, ?callable $response = null,
     ): self {
         $method = strtoupper($method);
         $key = $this->routeKey($action, $method, $path);
 
         BodyParameters::validate($fromBody, $path);
-        $route = ['method' => $method, 'path' => $path];
-        if ($fromBody !== []) {
-            $route['fromBody'] = $fromBody;
-        }
-        if ($parameters !== null) {
-            $route['parameters'] = $parameters;
-        }
-        if (is_callable($body)) {
+        if ($body !== null) {
+            $select = is_callable($body) ? $body : BodyParameters::mapper($body);
             $this->mapPayload(
                 static fn (
                     array $payload, array $context, callable $map,
-                ) => $map($body($context['payload'] ?? $payload)),
+                ) => $map($select($context['payload'] ?? $payload)),
                 [$key],
             );
-        } elseif ($body !== null) {
-            $this->mapPayload(BodyParameters::mapper($body), [$key]);
         }
-        $this->routes[$key] = $route;
+        if ($response !== null) {
+            $this->mapJsonResponse($response, [$key]);
+        }
+        $this->routes[$key] = ['method' => $method, 'path' => $path] + array_filter([
+            'fromBody' => $fromBody, 'parameters' => $parameters, 'request' => $request,
+        ]);
 
         return $this;
     }

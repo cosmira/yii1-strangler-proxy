@@ -225,12 +225,29 @@ body: static function (array $payload): array {
 },
 ```
 
-Without a naming convention, the returned structure is sent unchanged. Existing
-array body declarations select their complete upstream structure as before.
+Without a naming convention, the returned structure is sent unchanged. As of 8.0, array body declarations pass their selected fields through the same
+convention and application adapter as closures.
 No callback causes retries or native fallback after an upstream attempt.
 
-This changes the callback contract from 5.5: remove the supplied mapper argument
-and return the structure directly. These semantics are available in 6.0.0.
+If a legacy client submits a row or a list of rows, `route(request:)` can
+select the single row suitable for the upstream operation. Return false for
+batches that must keep their native write semantics. The selected row supplies
+the URL identifier and body fields. Native checks and the response callback
+receive the original input.
+
+```php
+->route(
+    'attach', 'PATCH', '/items/{id}/links',
+    body: ['add' => ['LINK_ID']],
+    request: $this->singleLink(...),
+    response: $this->linkAdded(...),
+)
+```
+
+The response callback receives decoded JSON, the upstream PSR-7 response and
+the request context. It returns the final PSR-7 response. HTTP errors still use
+the error mapper. Throw `InvalidUpstreamResponse` if a successful reply lacks
+the operation result needed by the legacy client.
 
 ### Change query and response structures
 

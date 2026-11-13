@@ -795,7 +795,7 @@ final class StranglerProxyTest extends TestCase
     #[DataProvider('httpMethods')]
     public function testMethodsQueryAndPayloadPolicy(string $method, bool $hasBody): void
     {
-        $_GET = ['r' => 'legacy/action', 'q' => 'a b'];
+        $_GET = ['r' => 'legacy/action', 'q' => 'a b', '_method' => 'DELETE'];
         $_SERVER['HTTP_ACCEPT'] = 'text/html';
         $_SERVER['HTTP_X_STRANGLER'] = 'spoof';
         $_SERVER['HTTP_X_USER_ID'] = 'spoof';
@@ -808,7 +808,8 @@ final class StranglerProxyTest extends TestCase
         $this->capture(fn () => $proxy->handle($this->controller, $config, 'GET'));
         $request = $this->history[0]['request'];
         self::assertSame($method, $request->getMethod());
-        self::assertSame('q=a%20b', $request->getUri()->getQuery());
+        self::assertSame('q=a%20b&_method=DELETE', $request->getUri()->getQuery());
+        self::assertSame($method === 'POST' ? 'POST' : '', $request->getHeaderLine('X-Http-Method-Override'));
         self::assertSame($hasBody ? '{"value":42}' : '', (string) $request->getBody());
         self::assertSame('application/json', $request->getHeaderLine('Accept'));
         self::assertFalse($request->hasHeader('X-Custom-Header'));

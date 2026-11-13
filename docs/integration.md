@@ -212,7 +212,7 @@ Action names are lowercase.
 
 Request callbacks receive `($value, $request)`. The snapshot has original `action`,
 `query`, and `payload`; errors before body reading have `payload=null`. Query mapping
-receives query parameters without `r`. Query callbacks return an array or `false`.
+receives query parameters without `r`. The default query mapper forwards additional parameters, including nested values, alongside translated filters and pagination. When both produce the same key, the translated value takes precedence. Query callbacks return an array or `false`.
 Payload callbacks return an array, a `stdClass`, or `false`. A flat payload map creates
 an object, including `{}` when empty. `false` keeps Yii before any HTTP attempt.
 Exceptions do not select the old handler. Query bypass skips payload mapping.

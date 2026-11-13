@@ -42,6 +42,7 @@ final class FluentMappingTest extends TestCase
             'include'  => 'author',
             'page'     => 2,
             'per_page' => 5,
+            '_'        => 4,
         ], $mapped);
     }
 
@@ -49,7 +50,8 @@ final class FluentMappingTest extends TestCase
     {
         $mapper = Query::legacy()->pagination(default: 5, max: 10);
 
-        self::assertFalse($mapper(['unknown' => 1], ['action' => 'get']));
+        self::assertSame(['page' => 1, 'per_page' => 5, 't' => '42', 'extra' => ['x', 'y']],
+            $mapper(['t' => '42', 'extra' => ['x', 'y']], ['action' => 'get']));
         self::assertFalse($mapper(['limit' => 11], ['action' => 'get']));
         self::assertFalse($mapper(['fields' => ['name']], ['action' => 'show']));
     }

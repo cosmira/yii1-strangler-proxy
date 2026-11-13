@@ -249,6 +249,11 @@ final readonly class UpstreamTransport
             'Accept'             => 'application/json',
         ]);
 
+        if ($method === 'POST' && array_key_exists('_method', $query)) {
+            // Laravel reads the override header before the client's query parameter.
+            $headers['X-Http-Method-Override'] = 'POST';
+        }
+
         $options = [
             'headers'                       => $headers,
             'query'                         => $query,

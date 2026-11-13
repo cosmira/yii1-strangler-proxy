@@ -54,7 +54,7 @@ final class Query
      *
      * @var list<string>
      */
-    private array $ignored = ['id', '_'];
+    private array $ignored = ['id'];
     /**
      * Page size used when the client omits its limit.
      */
@@ -267,7 +267,10 @@ final class Query
         } catch (InvalidArgumentException) {
             return false;
         }
-        $mapped = Mapping::legacyQuery($values, $filters, $sorts,
+        $native = array_intersect_key($values, array_flip([
+            'id', 'r', 'filter', 'sort', 'with', 'start', 'limit', 'fields', 'without', 'merge_with', 'data',
+        ]));
+        $mapped = Mapping::legacyQuery($native, $filters, $sorts,
             $includes, $this->defaultLimit, $this->maxLimit);
         if ($mapped === false) {
             return false;
@@ -280,7 +283,7 @@ final class Query
             $mapped['filter'] = $this->formatValues($filterValues);
         }
 
-        return $mapped;
+        return $mapped + array_diff_key($values, $native);
     }
 
     /**

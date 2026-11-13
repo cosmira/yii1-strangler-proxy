@@ -11,7 +11,7 @@ use Psr\Http\Message\ResponseInterface;
 use stdClass;
 
 /**
- * Assemble one native unlimited collection from validated Laravel paginator pages.
+ * Assemble the requested native offset window from validated Laravel paginator pages.
  *
  * @internal
  *
@@ -55,27 +55,35 @@ final class CollectionPages
          * Number of records requested in each upstream page.
          */
         private readonly int $pageSize,
+        private readonly ?int $limit,
     ) {
         $this->page = intdiv($start, $pageSize) + 1;
     }
 
     /**
-     * Select unlimited native reads without changing explicit positive limits.
+     * Translate unlimited reads and positive limits that cross an upstream page boundary.
      *
      * @param array<array-key, mixed> $query
      */
-    public static function fromQuery(array $query, int $pageSize): ?self
+    public static function fromQuery(array $query, ?int $pageSize): ?self
     {
-        if (array_key_exists('limit', $query)
-            && filter_var($query['limit'], FILTER_VALIDATE_INT) !== -1) {
+        $start = filter_var($query['start'] ?? 0, FILTER_VALIDATE_INT);
+        $limit = filter_var($query['limit'] ?? -1, FILTER_VALIDATE_INT);
+        if ($start === false || $start < -1 || $limit === false || $limit === 0 || $limit < -1) {
             return null;
         }
-        $start = filter_var($query['start'] ?? 0, FILTER_VALIDATE_INT);
-        if ($start === false || $start < -1 || intdiv(max(0, $start), $pageSize) === PHP_INT_MAX) {
+        $start = max(0, $start);
+        if ($limit > 0) {
+            if ($start % $limit === 0) {
+                return null;
+            }
+            $pageSize = $limit;
+        }
+        if ($pageSize === null || intdiv($start, $pageSize) === PHP_INT_MAX) {
             return null;
         }
 
-        return new self(max(0, $start), $pageSize);
+        return new self($start, $pageSize, $limit === -1 ? null : $limit);
     }
 
     /**
@@ -146,12 +154,13 @@ final class CollectionPages
         }
         $this->validatePage($json->meta ?? null, count($data));
         array_push($this->records, ...$data);
-        if ($this->page < $this->lastPage) {
+        $skip = $this->start % $this->pageSize;
+        if ($this->page < $this->lastPage && ($this->limit === null || count($this->records) - $skip < $this->limit)) {
             $this->page++;
 
             return null;
         }
-        $json->data = array_slice($this->records, $this->start % $this->pageSize);
+        $json->data = array_slice($this->records, $skip, $this->limit);
 
         return Json::response($response, $json);
     }
@@ -199,7 +208,7 @@ final class CollectionPages
             );
         }
         $json->meta = (object) ['total' => count($data)];
-        $json->data = array_slice($data, $this->start);
+        $json->data = array_slice($data, $this->start, $this->limit);
 
         return Json::response($response, $json);
     }

@@ -12,6 +12,7 @@ use CWebApplication;
 use GuzzleHttp\ClientInterface;
 use InvalidArgumentException;
 use JsonException;
+use Psr\Http\Message\ResponseInterface;
 use Throwable;
 
 /**
@@ -52,6 +53,23 @@ final readonly class StranglerProxy
         $this->transport = new UpstreamTransport(
             $client, $this->emitter, $clock ?? static fn (): float => microtime(true),
         );
+    }
+
+    /**
+     * Send one application-defined step to the configured upstream without ending the Yii request.
+     *
+     * @param array<array-key, mixed>      $query
+     * @param array<array-key, mixed>|null $body
+     */
+    public function request(string $method, string $path, array $query = [], ?array $body = null): ResponseInterface
+    {
+        if (! in_array($method, ['GET', 'POST', 'PATCH', 'PUT', 'DELETE'], true)
+            || ! preg_match('~^/(?!/)[^?#\\\\\x00-\x20]*$~D', $path)
+            || preg_match('~(?:^|/)[.]{1,2}(?:/|$)~', rawurldecode($path))) {
+            throw new InvalidArgumentException('Expected a local upstream resource path and HTTP method.');
+        }
+
+        return $this->transport->request($method, $path, $query, $body);
     }
 
     /**

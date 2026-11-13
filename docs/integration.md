@@ -251,7 +251,7 @@ correct string form. `Mapping::validationErrors()` collects unknown fields under
 
 `Mapping::legacyQuery()` takes explicit filter, sort, and include maps. Its defaults
 are `defaultLimit=20` and `maxLimit=100`. It returns `filter`, CSV `sort/include`, and
-`page/per_page`. Unsupported query shapes or unaligned offsets return `false`.
+`page/per_page`. A conventional GET collection reads both pages when a requested window crosses a page boundary. The low-level single-page mapper returns `false` for unaligned offsets.
 It never rounds an offset into a different page.
 
 ## Independent read and write flags

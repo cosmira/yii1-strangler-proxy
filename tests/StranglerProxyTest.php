@@ -109,6 +109,21 @@ final class StranglerProxyTest extends TestCase
         self::assertCount(2, $this->history);
     }
 
+    public function testApplicationStepsReturnEachResponseWithTheTrustedTransportOptions(): void
+    {
+        $proxy = $this->proxy($this->client([new Response(201), new Response(404)]));
+        self::assertSame(201, $proxy->request('POST', '/parents/a/items', ['_method' => 'DELETE'], ['id' => 'b'])->getStatusCode());
+        self::assertSame(404, $proxy->request('DELETE', '/parents/a/items/b')->getStatusCode());
+        self::assertCount(2, $this->history);
+        $first = $this->history[0]['request'];
+        self::assertSame('7', $first->getHeaderLine('X-User-Id'));
+        self::assertSame('POST', $first->getHeaderLine('X-Http-Method-Override'));
+        self::assertSame('{"id":"b"}', (string) $first->getBody());
+        self::assertSame('', (string) $this->history[1]['request']->getBody());
+        $this->expectException(InvalidArgumentException::class);
+        $proxy->request('GET', '//another-host/path');
+    }
+
     public function testInjectedClientSuppliesTheResponseWithoutOpeningANetworkConnection(): void
     {
         $this->application->getParams()->add('strangler', [
@@ -1455,7 +1470,7 @@ final class StranglerProxyTest extends TestCase
      * @param list<int>          $pages
      */
     #[DataProvider('completeCollectionQueries')]
-    public function testCompleteCollectionsPreserveNativeUnlimitedReads(array $query, array $expected, array $pages): void
+    public function testCollectionWindowsPreserveNativeOffsetAndTotal(array $query, array $expected, array $pages): void
     {
         $_GET = $query + ['sort' => ['ID' => 'ASC']];
         $config = Strangler::proxy('example')->uppercase('ID')
@@ -1494,6 +1509,10 @@ final class StranglerProxyTest extends TestCase
             [['start' => 23], range(24, 45), [2, 3]],
             [['start' => 23, 'limit' => -1], range(24, 45), [2, 3]],
             [['start' => 100], [], [6]],
+            [['start' => 3, 'limit' => 20], range(4, 23), [1, 2]],
+            [['start' => 27, 'limit' => 20], range(28, 45), [2, 3]],
+            [['start' => 43, 'limit' => 20], [44, 45], [3]],
+            [['start' => 101, 'limit' => 20], [], [6]],
         ];
     }
 
@@ -1547,6 +1566,23 @@ final class StranglerProxyTest extends TestCase
         self::assertSame(['state' => 'error', 'error' => 'invalid_upstream_response'],
             json_decode($result, true, flags: JSON_THROW_ON_ERROR));
         self::assertCount(2, $this->history);
+    }
+
+    public function testConventionalOffsetWindowKeepsTheBoundedDefault(): void
+    {
+        $config = Strangler::proxy('example')->uppercase('ID')->get('get', '/items')->build()['config'];
+        $client = $this->client(array_map($this->collectionPage(...), [1, 1, 2]));
+        foreach ([[[], range(1, 20)], [['start' => 3, 'limit' => 20], range(4, 23)]] as [$query, $expected]) {
+            $_GET = $query;
+            $body = $this->capture(fn () => $this->proxy($client)->handle($this->controller, $config, 'get'));
+            $json = json_decode($body, true, flags: JSON_THROW_ON_ERROR);
+            self::assertIsArray($json);
+            self::assertIsArray($json['data']);
+            self::assertIsArray($json['meta']);
+            self::assertSame($expected, array_column($json['data'], 'ID'));
+            self::assertSame(45, $json['meta']['totalCount']);
+        }
+        self::assertCount(3, $this->history);
     }
 
     public function testCompleteCollectionsKeepExplicitPaginationInOneRequest(): void

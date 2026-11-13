@@ -243,9 +243,10 @@ final readonly class InlineMapping
     public function collection(): ?CollectionPages
     {
         $collections = $this->mappings['completeCollections'] ?? [];
-        $size = $collections[$this->context['action']] ?? null;
-        if ($size === null || ($this->context['method'] ?? '') !== 'GET'
-            || ($this->context['requestMethod'] ?? '') !== 'GET') {
+        $action = $this->context['action'];
+        $size = $collections[$action] ?? null;
+        if (($size === null && ($action !== 'get' || ! isset($this->mappings['convention'])))
+            || ($this->context['method'] ?? '') !== 'GET' || ($this->context['requestMethod'] ?? '') !== 'GET') {
             return null;
         }
 

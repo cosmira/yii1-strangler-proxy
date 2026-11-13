@@ -52,6 +52,30 @@ final readonly class UpstreamTransport
     ) {}
 
     /**
+     * Use the same transport policy for an intermediate JSON request.
+     *
+     * @param array<array-key, mixed>      $query
+     * @param array<array-key, mixed>|null $body
+     */
+    public function request(string $method, string $path, array $query, ?array $body): ResponseInterface
+    {
+        $settings = YiiRuntime::settings();
+        if (YiiRuntime::baseUri($settings) === '') {
+            return new Response(500, [], '{"error":"strangler_not_configured"}');
+        }
+        $options = self::requestOptions($settings, $method, $query, $body ?? [], null);
+        if ($body === null) {
+            unset($options['json']);
+        }
+        [$response] = $this->attempt(
+            $this->client ?? new Client(), [], 'request', ['method' => $method, 'path' => $path],
+            $path, $options, ($this->clock)(),
+        );
+
+        return $response ?? new Response(503, [], '{"error":"service_temporarily_unavailable"}');
+    }
+
+    /**
      * Send one upstream attempt and translate its response.
      *
      * @param Config $config

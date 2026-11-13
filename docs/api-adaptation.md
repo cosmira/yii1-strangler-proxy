@@ -978,8 +978,9 @@ The package requests successive Laravel paginator pages on the same trusted path
 retaining mapped filters, sort and includes. It combines their `data` before the
 normal response mapping and preserves `meta.total` for native `totalCount`.
 A nonnegative native `start` skips that many records, including offsets inside an
-upstream page; `start=-1` means zero. A positive explicit limit keeps the existing
-single-page translation and unsupported queries still run natively before any
+upstream page; `start=-1` means zero. A positive explicit limit reads the pages intersecting the requested window.
+For example, `start=23&limit=20` reads pages 2 and 3 and returns rows 24–43.
+Unsupported queries still run natively before any
 upstream attempt. Only declared actions resolving to GET, called with GET, collect
 pages. Writes are never replayed.
 
@@ -1005,7 +1006,7 @@ collection defaults once with the protected `collectionPages(CController $contro
 hook (6.1.0). Return action names and transport page sizes, for example
 `['get' => 100]`, only for native actions whose default is unlimited. Return `[]`
 for paginated native defaults. Controller filters then need only their routes;
-explicit positive request limits still select a single page. An explicit local
+positive limits read one page when aligned or up to two overlapping pages otherwise. An explicit local
 `query(complete: ...)` page size takes precedence over the shared declaration.
 
 ### JSON preparation order in 7.0
@@ -1024,3 +1025,17 @@ HTTP. A standalone proxy retains its controlled 400 route-parameter error.
 receives the original payload. It runs once before transport; exceptions stop the
 request. Body and URL modifiers must prepare data without performing writes.
 No failure after HTTP starts repeats the native action.
+
+
+### Send a request from a Yii filter
+
+When one form changes several resources, its Yii filter can send each request through the configured upstream client. Apply the feature flag and native access checks before the first write.
+
+```php
+$proxy = new StranglerProxy();
+$response = $proxy->request('POST', '/api/people/' . rawurlencode($personId) . '/groups', [], [
+    'group_id' => $groupId,
+]);
+```
+
+Use `Cosmira\Strangler\StranglerProxy`. The method returns the upstream PSR-7 response, including HTTP errors. A transport failure returns 503. The filter checks each result, stops on the first failure and sends one response to the form. A write that timed out may already have committed.

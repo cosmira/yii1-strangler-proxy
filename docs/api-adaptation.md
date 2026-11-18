@@ -123,6 +123,9 @@ attributes or response fields. Ordinary filters and sorts still need no list.
 `query(includes: ['groups' => 'groups_all'])` declares a relation-name difference;
 ordinary undeclared names still pass through the convention. Multiple legacy names
 may share one upstream include; an empty target omits that include.
+For relations the upstream always returns, use
+`includes: Query::alreadyIncluded(['owner', 'tags'])`. Other requested includes
+are forwarded as usual.
 
 Native scalar `with` flags select their associative keys: an encoded
 `with[IDENTITY_NAME]=true` selects `IDENTITY_NAME`, so
@@ -405,6 +408,13 @@ configurator. It preserves previously declared naming and value differences.
 `configureRecord()` extends its existing record schema; a full custom record
 callback cannot be extended as a schema. `JsonResource::validateUsing()` adds a
 final generated-response check. Failures propagate without replaying HTTP or Yii.
+
+A route can declare its upstream success status, for example
+`->post('create', '/items', expects: 201)`. Intermediate requests use the same
+option: `$proxy->request('POST', '/items', body: $record, expects: 201)`.
+Any other 2xx becomes a 502 `invalid_upstream_response` before JSON mapping,
+file streaming or collection pagination. Upstream errors retain their existing
+handling. Omitting `expects` accepts any successful status.
 
 An explicit `mapQuery()`, `mapPayload()` or `mapJsonResponse()` replaces that stage
 for its registered actions, regardless of whether `uppercase()` appears before or

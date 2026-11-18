@@ -10,6 +10,7 @@ use Cosmira\Strangler\Strangler;
 use GuzzleHttp\Psr7\Response;
 use InvalidArgumentException;
 use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\Attributes\TestWith;
 use PHPUnit\Framework\TestCase;
 
 /** @phpstan-import-type Context from \Cosmira\Strangler\InlineMapping */
@@ -128,6 +129,27 @@ final class DirectionalQueryTest extends TestCase
         ], $mapper(['with' => ['groups', 'memberships', 'path', 'counts', 'contacts']], [
             'action' => 'get', 'query' => [], 'payload' => null,
         ]));
+    }
+
+    public function testAlreadyIncludedRelationsAreOmittedFromTheUpstreamQuery(): void
+    {
+        $mapper = $this->queryMapper(Strangler::proxy('catalog')->uppercase('ITEM_ID')
+            ->query(includes: ['author' => 'owner'] + Query::alreadyIncluded(['tags', 'summary']))
+            ->get('get', '/items'));
+
+        self::assertSame([
+            'include' => 'owner,comments', 'page' => 1, 'per_page' => 20,
+        ], $mapper(['with' => ['tags', 'author', 'summary', 'comments']], [
+            'action' => 'get', 'query' => [], 'payload' => null,
+        ]));
+    }
+
+    #[TestWith([''])]
+    #[TestWith([42])]
+    public function testAlreadyIncludedRequiresNonemptyRelationNames(mixed $relation): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        Query::alreadyIncluded([$relation]);
     }
 
     public function testQueryExceptionsKeepPayloadResponseAndOrdinaryFieldsIndependent(): void

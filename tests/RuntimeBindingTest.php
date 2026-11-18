@@ -24,6 +24,7 @@ use GuzzleHttp\Client;
 use GuzzleHttp\Handler\MockHandler;
 use GuzzleHttp\Psr7\Response;
 use PHPUnit\Framework\Attributes\DataProvider;
+use PHPUnit\Framework\Attributes\TestWith;
 use PHPUnit\Framework\TestCase;
 use Yii;
 
@@ -61,7 +62,9 @@ final class RuntimeBindingTest extends TestCase
         $_GET = [];
     }
 
-    public function testNativeIdentifierIsResolvedAfterPrecedingYiiFilters(): void
+    #[TestWith([200])]
+    #[TestWith([204])]
+    public function testNativeIdentifierIsResolvedAfterPrecedingYiiFilters(int $status): void
     {
         $scope = new class extends CFilter
         {
@@ -83,11 +86,11 @@ final class RuntimeBindingTest extends TestCase
         });
         $contract = new NativeControllerContract($model);
         $filter = Strangler::proxy('example')->using($contract)
-            ->response(fields: ['name' => 'TITLE'])->get('get', '/items')->build();
+            ->response(fields: ['name' => 'TITLE'])->get('get', '/items', expects: 200)->build();
         self::assertSame(0, $contract->models);
         self::assertSame(0, $contract->reads);
         $filter['client'] = new Client(['handler' => new MockHandler([
-            new Response(200, [], '{"data":[{"id":"item","name":"Desk"}],"meta":{"total":1}}'),
+            new Response($status, [], $status === 204 ? '' : '{"data":[{"id":"item","name":"Desk"}],"meta":{"total":1}}'),
         ])]);
         $chain = CFilterChain::create($this->controller, $this->controller->createAction('get'), [$filter]);
         $chain->insertAt(0, $scope);
@@ -95,7 +98,13 @@ final class RuntimeBindingTest extends TestCase
 
         try {
             $chain->run();
-            self::assertSame(['state' => 'data', 'data' => [['NATIVE_ID' => 'item', 'TITLE' => 'Desk']], 'meta' => ['totalCount' => 1]], json_decode((string) ob_get_contents(), true));
+            $json = json_decode((string) ob_get_contents(), true);
+            if ($status === 204) {
+                self::assertSame(502, http_response_code());
+                self::assertSame(['state' => 'error', 'error' => 'invalid_upstream_response'], $json);
+            } else {
+                self::assertSame(['state' => 'data', 'data' => [['NATIVE_ID' => 'item', 'TITLE' => 'Desk']], 'meta' => ['totalCount' => 1]], $json);
+            }
         } finally {
             ob_end_clean();
         }

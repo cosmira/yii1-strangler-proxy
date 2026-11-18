@@ -22,8 +22,8 @@ use Throwable;
  * @phpstan-import-type RequestValues from InlineMapping
  *
  * @phpstan-type Prepared array{
- *     outgoing: array{method: string, path: string, query: array<array-key, mixed>,
- *         payload: array<array-key, mixed>, body: string|null},
+ *     outgoing: array{method: string, path: string, expects: int|null,
+ *         query: array<array-key, mixed>, payload: array<array-key, mixed>, body: string|null},
  *     pathQuery: array<array-key, mixed>, routeId: mixed, parameters: array<string, int|string>
  * }
  */
@@ -61,15 +61,17 @@ final readonly class StranglerProxy
      * @param array<array-key, mixed>      $query
      * @param array<array-key, mixed>|null $body
      */
-    public function request(string $method, string $path, array $query = [], ?array $body = null): ResponseInterface
-    {
+    public function request(
+        string $method, string $path, array $query = [], ?array $body = null,
+        ?int $expects = null,
+    ): ResponseInterface {
         if (! in_array($method, ['GET', 'POST', 'PATCH', 'PUT', 'DELETE'], true)
             || ! preg_match('~^/(?!/)[^?#\\\\\x00-\x20]*$~D', $path)
             || preg_match('~(?:^|/)[.]{1,2}(?:/|$)~', rawurldecode($path))) {
             throw new InvalidArgumentException('Expected a local upstream resource path and HTTP method.');
         }
 
-        return $this->transport->request($method, $path, $query, $body);
+        return $this->transport->request($method, $path, $query, $body, $expects);
     }
 
     /**
@@ -531,6 +533,7 @@ final readonly class StranglerProxy
         return [
             'outgoing' => [
                 'method'       => strtoupper($route['method']),
+                'expects'      => $route['expects'] ?? null,
                 'path'         => $route['path'],
                 'query'        => $mapped['query'],
                 'payload'      => $mapped['payload'],

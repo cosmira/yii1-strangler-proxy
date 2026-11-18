@@ -91,6 +91,116 @@ final class StranglerProxyTest extends TestCase
         http_response_code(200);
     }
 
+    #[TestWith(['export', 200, 502])]
+    #[TestWith(['export', 206, 206])]
+    #[TestWith(['export', 204, 502])]
+    #[TestWith(['export', 299, 502])]
+    #[TestWith(['export', 199, 199])]
+    #[TestWith(['export', 300, 300])]
+    #[TestWith(['export', 403, 403])]
+    #[TestWith(['preview', 206, 502])]
+    #[TestWith(['inspect', 204, 204])]
+    public function testExpectedStatusesApplyOnlyToDeclaredActions(
+        string $action, int $status, int $expected,
+    ): void {
+        $config = Strangler::proxy('example')
+            ->get('export', '/file', binary: true, expects: 206)
+            ->get('preview', '/file', expects: 200)->get('inspect', '/file')->build()['config'];
+        $bytes = $status === 204 ? '' : "file\x00bytes";
+        $client = $this->client([new Response($status, ['Content-Type' => 'application/octet-stream'], $bytes)]);
+        $result = $this->capture(fn () => $this->proxy($client)->handle($this->controller, $config, $action));
+
+        self::assertSame($expected, http_response_code());
+        self::assertSame($expected === 502 ? '{"state":"error","error":"invalid_upstream_response"}' : $bytes, $result);
+        self::assertCount(1, $this->history);
+    }
+
+    public function testUnexpectedStatusOnALaterPageDiscardsTheCollection(): void
+    {
+        $config = Strangler::proxy('example')
+            ->query(complete: ['get' => 20])->get('get', '/items', expects: 200)->build()['config'];
+        $client = $this->client([$this->collectionPage(1), $this->collectionPage(2, 206)]);
+
+        $result = $this->capture(fn () => $this->proxy($client)->handle($this->controller, $config, 'get'));
+
+        self::assertSame(502, http_response_code());
+        self::assertSame('{"state":"error","error":"invalid_upstream_response"}', $result);
+        self::assertCount(2, $this->history);
+    }
+
+    public function testUnexpectedWriteSuccessUsesTheErrorMapperWithoutReplayingTheWrite(): void
+    {
+        $_SERVER['REQUEST_METHOD'] = 'POST';
+        $config = Strangler::proxy('example')
+            ->mapJsonErrors(static fn (mixed $json, ResponseInterface $response): ResponseInterface => new Response($response->getStatusCode(), [], 'mapped:'.json_encode($json, JSON_THROW_ON_ERROR)))
+            ->post('create', '/items', expects: 201)->build()['config'];
+        $client = $this->client([new Response(200, [], '{"data":{"id":1}}')]);
+
+        $result = $this->capture(fn () => $this->proxy($client)->handle($this->controller, $config, 'create'));
+
+        self::assertSame(502, http_response_code());
+        self::assertSame('mapped:{"state":"error","error":"invalid_upstream_response"}', $result);
+        self::assertCount(1, $this->history);
+        self::assertFalse($this->controller->ran);
+    }
+
+    public function testEveryVerbCarriesItsDeclaredStatusToTheTransport(): void
+    {
+        $config = Strangler::proxy('example')->put('edit', '/items', expects: 200)
+            ->patch('rename', '/items', expects: 202)->delete('remove', '/items', expects: 204)
+            ->route('inspect', 'HEAD', '/items', expects: 203)->build()['config'];
+        $client = $this->client(array_fill(0, 4, new Response(201)));
+        foreach (['edit', 'rename', 'remove', 'inspect'] as $action) {
+            $this->capture(fn () => $this->proxy($client)->handle($this->controller, $config, $action));
+            self::assertSame(502, http_response_code());
+        }
+        self::assertCount(4, $this->history);
+    }
+
+    #[TestWith([199])]
+    #[TestWith([300])]
+    public function testRoutesRequireAnExpectedSuccessStatus(int $status): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        Strangler::proxy('example')->get('get', '/items', expects: $status);
+    }
+
+    #[TestWith([200, 201, 502])]
+    #[TestWith([201, 201, 201])]
+    #[TestWith([299, 299, 299])]
+    #[TestWith([403, 201, 403])]
+    #[TestWith([200, null, 200])]
+    public function testIntermediateRequestsHonorTheirExpectedStatus(
+        int $upstream, ?int $expects, int $expected,
+    ): void {
+        $proxy = $this->proxy($this->client([new Response($upstream, [], 'upstream')]));
+        $response = $proxy->request('POST', '/items', body: ['name' => 'desk'], expects: $expects);
+
+        self::assertSame($expected, $response->getStatusCode());
+        self::assertSame($expected === 502 ? '{"state":"error","error":"invalid_upstream_response"}' : 'upstream',
+            (string) $response->getBody());
+        self::assertCount(1, $this->history);
+    }
+
+    public function testIntermediateWriteReportsUnavailableBackendWithoutRetrying(): void
+    {
+        $failure = new ConnectException('offline', new HttpRequest('POST', '/items'));
+        $proxy = $this->proxy($this->client([$failure]));
+
+        $response = $proxy->request('POST', '/items', expects: 201);
+
+        self::assertSame(503, $response->getStatusCode());
+        self::assertSame('{"error":"service_temporarily_unavailable"}', (string) $response->getBody());
+        self::assertCount(1, $this->history);
+    }
+
+    public function testIntermediateRequestsRejectInvalidExpectationsBeforeTransport(): void
+    {
+        $proxy = $this->proxy($this->client([]));
+        $this->expectException(InvalidArgumentException::class);
+        $proxy->request('POST', '/items', expects: 400);
+    }
+
     public function testPlainCollectionCombinesPagesWithoutAFieldNamingConvention(): void
     {
         $config = Strangler::proxy('example')->query(complete: ['get' => 1])
@@ -532,6 +642,9 @@ final class StranglerProxyTest extends TestCase
 
         self::assertSame(500, http_response_code());
         self::assertSame(['state' => 'error', 'error' => 'strangler_not_configured'], json_decode($body, true));
+        $response = $proxy->request('POST', '/api/items');
+        self::assertSame(500, $response->getStatusCode());
+        self::assertSame('{"error":"strangler_not_configured"}', (string) $response->getBody());
         self::assertCount(0, $this->history);
     }
 
@@ -1792,12 +1905,12 @@ final class StranglerProxyTest extends TestCase
         }
     }
 
-    private function collectionPage(int $page): Response
+    private function collectionPage(int $page, int $status = 200): Response
     {
         $first = ($page - 1) * 20 + 1;
         $ids = $first > 45 ? [] : range($first, min($page * 20, 45));
 
-        return new Response(200, [], json_encode([
+        return new Response($status, [], json_encode([
             'data'  => array_map(static fn (int $id): array => ['id' => $id], $ids),
             'meta'  => ['current_page' => $page, 'last_page' => 3, 'per_page' => 20, 'total' => 45],
             'links' => ['next' => 'https://untrusted.test/never-follow'],

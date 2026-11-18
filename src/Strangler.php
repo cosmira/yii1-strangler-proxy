@@ -6,6 +6,7 @@ namespace Cosmira\Strangler;
 
 use CController;
 use Closure;
+use Cosmira\Strangler\Internal\Http\ExpectedStatus;
 use Cosmira\Strangler\Internal\Payload\BodyParameters;
 use Cosmira\Strangler\Internal\Payload\NativeRequestGuard;
 use Cosmira\Strangler\Response\JsonResource;
@@ -60,7 +61,7 @@ use InvalidArgumentException;
  * ): ?array<string, mixed>
  * @phpstan-type Route array{
  *     method: string, path: string, fromBody?: array<string, string|list<string>>,
- *     parameters?: RouteResolver, request?: RouteRequest
+ *     parameters?: RouteResolver, request?: RouteRequest, expects?: int
  * }
  * @phpstan-type BoundConfig array{
  *     feature?: string,
@@ -665,9 +666,9 @@ final class Strangler
      */
     public function get(
         string $action, string $path, array $fromBody = [], array|callable|null $body = null,
-        ?callable $parameters = null, bool $binary = false,
+        ?callable $parameters = null, bool $binary = false, ?int $expects = null,
     ): self {
-        $this->route($action, 'GET', $path, $fromBody, $body, $parameters);
+        $this->route($action, 'GET', $path, $fromBody, $body, $parameters, expects: $expects);
         if ($binary) {
             $this->binaryActions[] = strtolower($action);
         }
@@ -684,9 +685,11 @@ final class Strangler
      */
     public function post(
         string $action, string $path, array $fromBody = [], array|callable|null $body = null,
-        ?callable $parameters = null,
+        ?callable $parameters = null, ?int $expects = null,
     ): self {
-        return $this->route($action, 'POST', $path, $fromBody, $body, $parameters);
+        return $this->route(
+            $action, 'POST', $path, $fromBody, $body, $parameters, expects: $expects,
+        );
     }
 
     /**
@@ -698,9 +701,11 @@ final class Strangler
      */
     public function put(
         string $action, string $path, array $fromBody = [], array|callable|null $body = null,
-        ?callable $parameters = null,
+        ?callable $parameters = null, ?int $expects = null,
     ): self {
-        return $this->route($action, 'PUT', $path, $fromBody, $body, $parameters);
+        return $this->route(
+            $action, 'PUT', $path, $fromBody, $body, $parameters, expects: $expects,
+        );
     }
 
     /**
@@ -714,10 +719,11 @@ final class Strangler
     public function patch(
         string $action, string $path, array|callable|null $body = null,
         ?callable $parameters = null, ?callable $request = null, ?callable $response = null,
+        ?int $expects = null,
     ): self {
         return $this->route(
             $action, 'PATCH', $path, body: $body, parameters: $parameters,
-            request: $request, response: $response,
+            request: $request, response: $response, expects: $expects,
         );
     }
 
@@ -730,9 +736,11 @@ final class Strangler
      */
     public function delete(
         string $action, string $path, array $fromBody = [], array|callable|null $body = null,
-        ?callable $parameters = null,
+        ?callable $parameters = null, ?int $expects = null,
     ): self {
-        return $this->route($action, 'DELETE', $path, $fromBody, $body, $parameters);
+        return $this->route(
+            $action, 'DELETE', $path, $fromBody, $body, $parameters, expects: $expects,
+        );
     }
 
     /**
@@ -1015,10 +1023,12 @@ final class Strangler
         string $action, string $method, string $path, array $fromBody = [],
         array|callable|null $body = null,
         ?callable $parameters = null, ?callable $request = null, ?callable $response = null,
+        ?int $expects = null,
     ): self {
         $method = strtoupper($method);
         $key = $this->routeKey($action, $method, $path);
 
+        ExpectedStatus::validate($expects);
         BodyParameters::validate($fromBody, $path);
         if ($body !== null) {
             $select = is_callable($body) ? $body : BodyParameters::mapper($body);
@@ -1034,6 +1044,7 @@ final class Strangler
         }
         $this->routes[$key] = ['method' => $method, 'path' => $path] + array_filter([
             'fromBody' => $fromBody, 'parameters' => $parameters, 'request' => $request,
+            'expects'  => $expects,
         ]);
 
         return $this;

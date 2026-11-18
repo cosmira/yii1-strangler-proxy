@@ -391,7 +391,7 @@ final readonly class InlineMapping
         } catch (InvalidUpstreamResponse) {
             return $status < 400
                 ? $this->mapInvalidResponse($response)
-                : $this->invalidResponse($response);
+                : Json::invalidResponse($response);
         }
     }
 
@@ -400,7 +400,7 @@ final readonly class InlineMapping
      */
     private function mapInvalidResponse(ResponseInterface $upstream): ResponseInterface
     {
-        $response = $this->invalidResponse($upstream);
+        $response = Json::invalidResponse($upstream);
         $handler = $this->select($this->mappings['errors'] ?? []);
         if ($handler === null) {
             return $response;
@@ -414,16 +414,6 @@ final readonly class InlineMapping
         } catch (InvalidUpstreamResponse) {
             return $response;
         }
-    }
-
-    /**
-     * Replace unusable upstream bytes with a stable error envelope.
-     */
-    private function invalidResponse(ResponseInterface $upstream): ResponseInterface
-    {
-        return Json::response($upstream, [
-            'state' => 'error', 'error' => 'invalid_upstream_response',
-        ], 502);
     }
 
     /**

@@ -41,6 +41,16 @@ final class Json
     }
 
     /**
+     * Replace unusable upstream bytes with a stable error envelope.
+     */
+    public static function invalidResponse(ResponseInterface $upstream): ResponseInterface
+    {
+        return self::response($upstream, [
+            'state' => 'error', 'error' => 'invalid_upstream_response',
+        ], 502);
+    }
+
+    /**
      * Serialize JSON with the original status unless the caller replaces it.
      */
     public static function response(

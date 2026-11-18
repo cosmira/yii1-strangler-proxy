@@ -94,6 +94,26 @@ final class Query
     }
 
     /**
+     * Omit includes for relations the upstream already returns.
+     *
+     * @param list<mixed> $relations
+     *
+     * @return array<string, string>
+     */
+    public static function alreadyIncluded(array $relations): array
+    {
+        $includes = [];
+        foreach ($relations as $relation) {
+            if (! is_string($relation) || $relation === '') {
+                throw new InvalidArgumentException('Included relations require nonempty names.');
+            }
+            $includes[$relation] = '';
+        }
+
+        return $includes;
+    }
+
+    /**
      * Normalize action names and reject invalid collection page sizes.
      *
      * @param array<string, int> $actions

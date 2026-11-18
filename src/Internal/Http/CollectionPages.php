@@ -137,9 +137,7 @@ final class CollectionPages
         try {
             return $this->append($response);
         } catch (InvalidUpstreamResponse) {
-            return Json::response($response, [
-                'state' => 'error', 'error' => 'invalid_upstream_response',
-            ], 502);
+            return Json::invalidResponse($response);
         }
     }
 

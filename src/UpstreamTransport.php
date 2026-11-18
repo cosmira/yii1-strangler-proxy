@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Cosmira\Strangler;
 
 use Closure;
+use Cosmira\Strangler\Internal\Http\ExpectedStatus;
 use Cosmira\Strangler\Internal\Http\HttpHeaders;
 use GuzzleHttp\Client;
 use GuzzleHttp\ClientInterface;
@@ -57,8 +58,10 @@ final readonly class UpstreamTransport
      * @param array<array-key, mixed>      $query
      * @param array<array-key, mixed>|null $body
      */
-    public function request(string $method, string $path, array $query, ?array $body): ResponseInterface
-    {
+    public function request(
+        string $method, string $path, array $query, ?array $body, ?int $expects,
+    ): ResponseInterface {
+        ExpectedStatus::validate($expects);
         $settings = YiiRuntime::settings();
         if (YiiRuntime::baseUri($settings) === '') {
             return new Response(500, [], '{"error":"strangler_not_configured"}');
@@ -72,7 +75,9 @@ final readonly class UpstreamTransport
             $path, $options, ($this->clock)(),
         );
 
-        return $response ?? new Response(503, [], '{"error":"service_temporarily_unavailable"}');
+        return $response === null
+            ? new Response(503, [], '{"error":"service_temporarily_unavailable"}')
+            : ExpectedStatus::check($response, $expects);
     }
 
     /**
@@ -80,7 +85,7 @@ final readonly class UpstreamTransport
      *
      * @param Config $config
      * @param array{method: string, path: string, query: array<array-key, mixed>,
-     *     payload: array<array-key, mixed>, body: string|null} $outgoing
+     *     payload: array<array-key, mixed>, body: string|null, expects: int|null} $outgoing
      */
     public function send(
         array $config,
@@ -111,7 +116,7 @@ final readonly class UpstreamTransport
      * @param array<array-key, mixed> $settings
      * @param Config                  $config
      * @param array{method: string, path: string, query: array<array-key, mixed>,
-     *     payload: array<array-key, mixed>, body: string|null} $outgoing
+     *     payload: array<array-key, mixed>, body: string|null, expects: int|null} $outgoing
      */
     private function dispatch(
         array $settings,
@@ -150,7 +155,8 @@ final readonly class UpstreamTransport
 
                 return;
             }
-            $complete = $collection === null ? $response : $collection->response($response);
+            $checked = ExpectedStatus::check($response, $outgoing['expects']);
+            $complete = $collection === null ? $checked : $collection->response($checked);
         } while ($complete === null);
 
         $snapshot = $this->responseSnapshot($complete, $inline);
@@ -222,7 +228,7 @@ final readonly class UpstreamTransport
      * @param array<array-key, mixed> $settings
      * @param Config                  $config
      * @param array{method: string, path: string, query: array<array-key, mixed>,
-     *     payload: array<array-key, mixed>, body: string|null} $outgoing
+     *     payload: array<array-key, mixed>, body: string|null, expects: int|null} $outgoing
      *
      * @return Options
      */

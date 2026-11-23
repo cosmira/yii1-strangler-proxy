@@ -1,6 +1,6 @@
 # Yii 1 Strangler Proxy
 
-Documentation for **9.0.0**. [Upgrading from 8.4](docs/compatibility.md#upgrade-from-84).
+Documentation for **9.x**. [Upgrading from 8.4](docs/compatibility.md#upgrade-from-84).
 
 [![Tests][tests-badge]][tests-workflow]
 [![PHP 8.2–8.5][php-badge]](composer.json)
@@ -17,6 +17,7 @@ mapping, and selected multipart uploads.
 - [Installation](#installation)
 - [Forward your first action](#forward-your-first-action)
 - [Read and save a JSON object](#read-and-save-a-json-object)
+- [Choose a route from the submitted form](#choose-a-route-from-the-submitted-form)
 - [Save one form through two REST endpoints](#save-one-form-through-two-rest-endpoints)
 - [Describe contract differences](#when-the-apis-differ)
 - [Connect existing REST controllers](#connect-existing-rest-controllers)
@@ -28,7 +29,7 @@ mapping, and selected multipart uploads.
 Install the package in your Yii application:
 
 ```shell
-composer require cosmira/yii1-strangler-proxy:^9.0
+composer require cosmira/yii1-strangler-proxy:^9.1
 ```
 
 Load Composer's `vendor/autoload.php` before the Yii bootstrap. Commit your
@@ -113,6 +114,29 @@ The submitted JSON `{"CAPTION":null,"LABELS":[],"LISTED":0}` reaches the backend
 `{"caption":null,"labels":[],"listed":false}`. A request missing `LABELS` stays in Yii.
 This mapping works on a controller without an Active Record model.
 See [field types and responses](docs/api-adaptation.md#json-object-fields).
+
+## Choose a route from the submitted form
+
+One Yii `PUT` action edits a term's text or moves the term to another category. The URL contains the term's
+`id` and its `source_category_id`. Each supported form changes exactly one field.
+
+```php
+Strangler::proxy('catalog')
+    ->choose('edit', 'PUT', static function (Strangler $routes, array $form): ?Strangler {
+        $term = '/api/categories/{source_category_id}/terms/{id}';
+
+        return match (array_keys($form)) {
+            ['TEXT'] => $routes->put('edit', $term, body: ['text' => 'TEXT']),
+            ['MOVE_TO'] => $routes->post('edit', $term . '/move', body: ['category_id' => 'MOVE_TO']),
+            default => null,
+        };
+    })
+    ->build();
+```
+
+Submitting `{"MOVE_TO":"legal"}` sends one `POST` with `{"category_id":"legal"}`.
+Submitting both fields returns `null` from the selector and lets Yii handle the whole form.
+See [reusing a prepared form](docs/api-adaptation.md#reuse-a-prepared-form) when selection needs a database lookup.
 
 ## Save one form through two REST endpoints
 
@@ -255,7 +279,7 @@ The [catalog example](examples/catalog/README.md) runs Yii and a backend against
 one SQLite dataset. It requires `pdo_sqlite`:
 
 ```shell
-git clone --branch 9.0.0 --depth 1 https://github.com/cosmira/yii1-strangler-proxy.git
+git clone --branch 9.1.0 --depth 1 https://github.com/cosmira/yii1-strangler-proxy.git
 cd yii1-strangler-proxy
 composer install
 composer example:verify

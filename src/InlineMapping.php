@@ -448,11 +448,13 @@ final readonly class InlineMapping
     /**
      * Isolate JSON containers between callbacks without changing arrays into objects.
      *
+     * @internal
+     *
      * @param array<array-key, mixed> $values
      *
      * @return array<array-key, mixed>
      */
-    private static function copy(array $values): array
+    public static function copy(array $values): array
     {
         foreach ($values as $key => $value) {
             if (is_array($value)) {

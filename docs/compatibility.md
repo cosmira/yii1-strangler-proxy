@@ -1,11 +1,17 @@
-# Check a 9.0 integration
+# Check a 9.x integration
 
 Keep the feature disabled until the application's contract tests pass with
-`cosmira/yii1-strangler-proxy` **9.0.0**.
+`cosmira/yii1-strangler-proxy` **9.1.0**.
+
+## Upgrade from 9.0
+
+Existing routes keep their behavior. To use `choose()`, require
+`cosmira/yii1-strangler-proxy:^9.1`. Test each supported form and the form
+that should stay in Yii. See [choosing a route](../README.md#choose-a-route-from-the-submitted-form).
 
 ## Upgrade from 8.4
 
-1. In your Yii application, run `composer require cosmira/yii1-strangler-proxy:^9.0`
+1. In your Yii application, run `composer require cosmira/yii1-strangler-proxy:^9.1`
    and review the updated lock file.
 2. Check which HTTP method each existing client actually sends. Routes using
    `jsonFields()` accept the outgoing verb by default. Declare a different input verb

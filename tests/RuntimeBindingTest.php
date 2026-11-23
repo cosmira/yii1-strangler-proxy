@@ -64,7 +64,8 @@ final class RuntimeBindingTest extends TestCase
 
     #[TestWith([200])]
     #[TestWith([204])]
-    public function testNativeIdentifierIsResolvedAfterPrecedingYiiFilters(int $status): void
+    #[TestWith([200, true])]
+    public function testNativeIdentifierIsResolvedAfterPrecedingYiiFilters(int $status, bool $chosen = false): void
     {
         $scope = new class extends CFilter
         {
@@ -85,8 +86,9 @@ final class RuntimeBindingTest extends TestCase
             return 'NATIVE_ID';
         });
         $contract = new NativeControllerContract($model);
-        $filter = Strangler::proxy('example')->using($contract)
-            ->response(fields: ['name' => 'TITLE'])->get('get', '/items', expects: 200)->build();
+        $builder = Strangler::proxy('example')->using($contract)->response(fields: ['name' => 'TITLE']);
+        $items = static fn (Strangler $routes): Strangler => $routes->get('get', '/items', expects: 200);
+        $filter = ($chosen ? $builder->choose('get', 'GET', $items) : $items($builder))->build();
         self::assertSame(0, $contract->models);
         self::assertSame(0, $contract->reads);
         $filter['client'] = new Client(['handler' => new MockHandler([

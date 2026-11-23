@@ -63,6 +63,12 @@ use InvalidArgumentException;
  *     StranglerProxy, array<array-key, mixed>, array<array-key, mixed>
  * ): \Generator<array-key, \Psr\Http\Message\ResponseInterface, mixed, void>
  * @phpstan-type Action array{incoming: string, run: ActionHandler}
+ * @phpstan-type Selector callable(
+ *     self, array<array-key, mixed>, array<array-key, mixed>
+ * ): ?self
+ * @phpstan-type Choice array{
+ *     incoming: string, choose: callable(array<array-key, mixed>, array<array-key, mixed>): ?self
+ * }
  * @phpstan-type Route array{
  *     method: string, path: string, incoming?: string,
  *     fromBody?: array<string, string|list<string>>, parameters?: RouteResolver,
@@ -90,7 +96,8 @@ use InvalidArgumentException;
  *     files?: array<string, array<string, string>>
  * }
  * @phpstan-type Config array{
- *     actions?: array<string, Action>, actionOptions?: BoundConfig,
+ *     actions?: array<string, Action>, choices?: array<string, Choice>,
+ *     actionOptions?: BoundConfig,
  *     resolve?: callable(CController): BoundConfig,
  *     feature?: string,
  *     nativeQueryFilters?: list<string>,
@@ -161,6 +168,13 @@ final class Strangler
      * @var array<string, Action>
      */
     private array $actions = [];
+
+    /**
+     * Defer each selection until the original Yii form is available.
+     *
+     * @var array<string, array{string, Selector}>
+     */
+    private array $choices = [];
 
     /**
      * Explicit native identifier; otherwise the controller model supplies it at runtime.
@@ -814,6 +828,19 @@ final class Strangler
     }
 
     /**
+     * Choose one route or custom action for the native form. Return null to continue in Yii.
+     *
+     * @param Selector $select
+     */
+    public function choose(string $action, string $incoming, callable $select): self
+    {
+        $key = $this->actionKey($action);
+        $this->choices[$key] = [self::incomingMethod($incoming), $select];
+
+        return $this;
+    }
+
+    /**
      * Export the Yii filter definition with its routes and bypass fields.
      *
      * @return array{0: class-string<StranglerFilter>, config: Config}
@@ -830,10 +857,68 @@ final class Strangler
         $config['routes'] = $routes;
         if ($this->actions !== []) {
             $config['actions'] = $this->actions;
+        }
+        if ($this->choices !== []) {
+            $config['choices'] = $this->compiledChoices();
+        }
+        if ($this->actions !== [] || $this->choices !== []) {
             $config['actionOptions'] = $this->withHooks($this->config);
         }
 
         return [StranglerFilter::class, 'config' => $config];
+    }
+
+    /**
+     * Keep the final shared mappings, then give each request its own empty route table.
+     *
+     * @return array<string, Choice>
+     */
+    private function compiledChoices(): array
+    {
+        $defaults = clone $this;
+        $defaults->actions = [];
+        $defaults->routes = [];
+        $defaults->choices = [];
+        $bypass = $defaults->config['bypassPayload'] ?? null;
+        unset(
+            $defaults->config['bypass'],
+            $defaults->config['nativeQueryFilters'],
+            $defaults->config['bypassPayload'],
+        );
+
+        $choices = [];
+        foreach ($this->choices as $action => [$incoming, $select]) {
+            $choices[$action] = [
+                'incoming' => $incoming,
+                'choose'   => static function (array $form, array $query) use (
+                    $defaults, $select, $action, $incoming, $bypass,
+                ): ?self {
+                    if ($bypass !== null && $bypass($form, $action, $query)) {
+                        return null;
+                    }
+                    $branch = clone $defaults;
+                    $selected = $select(
+                        $branch, InlineMapping::copy($form), InlineMapping::copy($query),
+                    );
+                    if ($selected === null) {
+                        return null;
+                    }
+                    if ($selected !== $branch || $branch->choices !== []
+                        || array_keys($branch->routes + $branch->actions) !== [$action]) {
+                        throw new InvalidArgumentException(
+                            "Choose one route or action for {$action} on the supplied builder.",
+                        );
+                    }
+                    if (isset($branch->routes[$action])) {
+                        $branch->routes[$action]['incoming'] ??= $incoming;
+                    }
+
+                    return $branch;
+                },
+            ];
+        }
+
+        return $choices;
     }
 
     /**
@@ -843,7 +928,7 @@ final class Strangler
      */
     private function routeConfiguration(): array
     {
-        if ($this->routes === [] && $this->actions !== []) {
+        if ($this->routes === [] && ($this->actions !== [] || $this->choices !== [])) {
             return $this->config;
         }
         $contract = ControllerContract::forModel($this->config);
@@ -1191,7 +1276,7 @@ final class Strangler
     }
 
     /**
-     * Reserve each Yii action name once across single routes and custom actions.
+     * Reserve each Yii action name across routes, custom actions and form selectors.
      */
     private function actionKey(string $action): string
     {
@@ -1199,7 +1284,8 @@ final class Strangler
             throw new InvalidArgumentException('Strangler routes require an action and path.');
         }
         $key = strtolower($action);
-        if (isset($this->actions[$key]) || isset($this->routes[$key])) {
+        if (isset($this->routes[$key]) || isset($this->actions[$key])
+            || isset($this->choices[$key])) {
             throw new InvalidArgumentException('Duplicate Strangler action: '.$action);
         }
 

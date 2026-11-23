@@ -18,6 +18,7 @@ use Throwable;
 /**
  * @phpstan-import-type Config from Strangler
  * @phpstan-import-type Action from Strangler
+ * @phpstan-import-type Choice from Strangler
  * @phpstan-import-type ActionHandler from Strangler
  * @phpstan-import-type Route from Strangler
  * @phpstan-import-type Context from InlineMapping
@@ -28,6 +29,7 @@ use Throwable;
  *         query: array<array-key, mixed>, payload: array<array-key, mixed>, body: string|null},
  *     pathQuery: array<array-key, mixed>, routeId: mixed, parameters: array<string, int|string>
  * }
+ * @phpstan-type Snapshot array{payload: array<array-key, mixed>, body: string|null}
  */
 final class StranglerProxy
 {
@@ -119,14 +121,15 @@ final class StranglerProxy
      *
      * @param Config $config
      *
-     * @return Action|Route|null
+     * @return Action|Choice|Route|null
      */
     private static function declaration(array $config, string $action): ?array
     {
         $routes = $config['routes'] ?? [];
         $actions = $config['actions'] ?? [];
+        $choices = $config['choices'] ?? [];
 
-        return $routes[$action] ?? $actions[$action] ?? null;
+        return $routes[$action] ?? $actions[$action] ?? $choices[$action] ?? null;
     }
 
     /**
@@ -145,6 +148,19 @@ final class StranglerProxy
         $route = self::declaration($config, $actionKey);
         if (self::queryIsNative($controller, $config, $actionKey, $route['incoming'] ?? null)) {
             return true;
+        }
+        if (isset($route['choose'])) {
+            $original = $payload === null
+                ? self::readPayload($controller, $config['actionOptions'] ?? [], $actionKey, $route['incoming'])
+                : ['payload' => $payload, 'body' => null];
+            $selected = $route['choose']($original['payload'], $_GET);
+            if ($selected === null) {
+                return true;
+            }
+            $config = $selected->build()['config'];
+            $form = self::readPayload($controller, $config, $actionKey, snapshot: $original);
+
+            return self::shouldBypass($controller, $config, $actionKey, $form['payload']);
         }
         if (isset($route['run'])) {
             return self::payloadIsNative(
@@ -245,7 +261,18 @@ final class StranglerProxy
      */
     public function handle(CController $controller, array $config, string $actionId): bool
     {
-        $actionKey = self::normalizeActionKey($actionId);
+        return $this->dispatch($controller, $config, self::normalizeActionKey($actionId));
+    }
+
+    /**
+     * A chosen destination consumes the same native form and raw body as its selector.
+     *
+     * @param Config        $config
+     * @param Snapshot|null $snapshot
+     */
+    private function dispatch(
+        CController $controller, array $config, string $actionKey, ?array $snapshot = null,
+    ): bool {
         $route = self::declaration($config, $actionKey);
         if ($route === null) {
             YiiRuntime::logDecision($config, $actionKey, 'route_unmapped');
@@ -258,8 +285,8 @@ final class StranglerProxy
 
             return false;
         }
-        $bound = isset($route['run']) ? ($config['actionOptions'] ?? [])
-            : ControllerContract::resolveConfig($config, $controller);
+        $bound = isset($route['method']) ? ControllerContract::resolveConfig($config, $controller)
+            : ($config['actionOptions'] ?? []);
         unset($bound['bypass'], $bound['nativeQueryFilters']);
 
         $context = [
@@ -267,7 +294,7 @@ final class StranglerProxy
             'method'        => $route['method'] ?? $route['incoming'],
             'requestMethod' => self::application()->getRequest()->getRequestType(),
         ];
-        if (isset($route['run'])) {
+        if (! isset($route['method'])) {
             $context['plainJson'] = true;
         }
         if (isset($bound['bodyIdentifier'])) {
@@ -277,20 +304,35 @@ final class StranglerProxy
             ? new InlineMapping($bound['mappings'], $context) : null;
 
         try {
-            $snapshot = self::readPayload($controller, $bound, $actionKey);
+            $original = self::readPayload(
+                $controller, $bound, $actionKey,
+                isset($route['choose']) ? $route['incoming'] : null, $snapshot,
+            );
         } catch (JsonException) {
             $this->emitter->error(400, 'strangler_invalid_payload', $inline);
 
             return true;
         }
+        if (isset($route['choose'])) {
+            $selected = $route['choose']($original['payload'], $_GET);
+            if ($selected === null) {
+                YiiRuntime::logDecision($config, $actionKey, 'bypass_payload');
+
+                return false;
+            }
+
+            return $this->dispatch(
+                $controller, $selected->build()['config'], $actionKey, $original,
+            );
+        }
         if (isset($route['run'])) {
             return $this->runAction(
-                $controller, $bound, $actionKey, $route['run'], $snapshot['payload'],
-                $inline?->withPayload($snapshot['payload'], $snapshot['body']),
+                $controller, $bound, $actionKey, $route['run'], $original['payload'],
+                $inline?->withPayload($original['payload'], $original['body']),
             );
         }
 
-        return $this->forward($controller, $bound, $actionKey, $route, $inline, $snapshot);
+        return $this->forward($controller, $bound, $actionKey, $route, $inline, $original);
     }
 
     /**
@@ -420,19 +462,26 @@ final class StranglerProxy
     /**
      * Read one payload snapshot while preserving the original JSON body.
      *
-     * @param Config $config
+     * @param Config        $config
+     * @param Snapshot|null $snapshot
      *
-     * @return array{payload: array<array-key, mixed>, body: string|null}
+     * @return Snapshot
      */
     private static function readPayload(
         CController $controller,
         array $config,
         string $actionKey,
+        ?string $incoming = null,
+        ?array $snapshot = null,
     ): array {
         $plain = isset($config['mappings']['jsonFields']);
-        $method = $config['routes'][$actionKey]['method'] ?? null;
+        $method = $incoming ?? $config['routes'][$actionKey]['method'] ?? null;
         if ($plain && in_array($method, ['GET', 'HEAD'], true)) {
             return ['payload' => [], 'body' => null];
+        }
+        if ($snapshot !== null) {
+            return $plain && $snapshot['body'] !== null
+                ? self::plainJsonPayload($snapshot['body']) : $snapshot;
         }
         $reader = $config['payloadReader'] ?? null;
         if ($reader === null && isset($config['controllerContract'])) {
@@ -451,18 +500,11 @@ final class StranglerProxy
         }
 
         $body = self::application()->getRequest()->getRawBody();
+        if ($plain) {
+            return self::plainJsonPayload($body);
+        }
         if (trim($body) === '') {
             return ['payload' => [], 'body' => $body];
-        }
-
-        if ($plain) {
-            $decoded = json_decode($body, flags: JSON_THROW_ON_ERROR);
-
-            return [
-                'payload' => is_array($decoded) || $decoded instanceof \stdClass
-                    ? (array) $decoded : [],
-                'body' => null,
-            ];
         }
 
         $decoded = json_decode($body, true, flags: JSON_THROW_ON_ERROR | JSON_BIGINT_AS_STRING);
@@ -471,6 +513,21 @@ final class StranglerProxy
         }
 
         return ['payload' => $decoded, 'body' => $body];
+    }
+
+    /**
+     * Keep JSON objects and numbers distinct from lists and strings for typed fields.
+     *
+     * @return Snapshot
+     */
+    private static function plainJsonPayload(string $body): array
+    {
+        $decoded = trim($body) === '' ? null : json_decode($body, flags: JSON_THROW_ON_ERROR);
+
+        return [
+            'payload' => is_array($decoded) || $decoded instanceof \stdClass ? (array) $decoded : [],
+            'body'    => null,
+        ];
     }
 
     /**

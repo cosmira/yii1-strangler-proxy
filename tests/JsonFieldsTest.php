@@ -220,6 +220,59 @@ final class JsonFieldsTest extends TestCase
         self::assertSame('{"count":10}', (string) $this->sent[0]->getBody());
     }
 
+    public function testChosenRouteValidatesJsonTypesFromTheOriginalBody(): void
+    {
+        $_SERVER['REQUEST_METHOD'] = 'PATCH';
+        $proxy = Strangler::proxy('catalog')->choose('save', 'PATCH', function (Strangler $routes): Strangler {
+            $this->request->body = '{"label":"different"}';
+
+            return $routes->jsonFields(['label' => 'string'])->patch('save', '/items');
+        });
+
+        $this->request->body = '{"label":9223372036854775808}';
+        self::assertFalse($this->dispatch($proxy, 'save', new Response(200)));
+        self::assertCount(0, $this->sent);
+
+        $this->request->body = '{"label":"9223372036854775808"}';
+        self::assertSame('{"state":"data"}', $this->dispatch($proxy, 'save', new Response(200, [], '{"data":null}')));
+        self::assertCount(1, $this->sent);
+        self::assertSame('{"label":"9223372036854775808"}', (string) $this->sent[0]->getBody());
+    }
+
+    public function testChosenRouteUsesTheSameJsonTypesForBypassAndDispatch(): void
+    {
+        $_SERVER['REQUEST_METHOD'] = 'PATCH';
+        $this->request->body = '{"label":"Desk","metadata":{}}';
+        $proxy = Strangler::proxy('catalog')->choose('save', 'PATCH', static fn (Strangler $routes): Strangler => $routes
+            ->jsonFields(['label' => 'string'])
+            ->request(bypass: static fn (array $form): bool => $form['metadata'] instanceof \stdClass)
+            ->patch('save', '/items'));
+
+        self::assertTrue(StranglerProxy::shouldBypass($this->controller, $proxy->build()['config'], 'save'));
+        self::assertFalse($this->dispatch($proxy, 'save', new Response(200)));
+        self::assertSame([], $this->sent);
+    }
+
+    #[TestWith(['GET'])]
+    #[TestWith(['HEAD'])]
+    public function testChosenJsonReadIgnoresTheNativeRequestBody(string $method): void
+    {
+        $_SERVER['REQUEST_METHOD'] = $method;
+        $this->request->body = '{';
+        $proxy = Strangler::proxy('catalog')->jsonFields(['label' => 'string'])
+            ->choose('get', $method, static function (Strangler $routes, array $form) use ($method): Strangler {
+                self::assertSame([], $form);
+
+                return $routes->route('get', $method, '/stock');
+            });
+
+        $result = $this->dispatch($proxy, 'get', new Response(200, [], $method === 'HEAD' ? '' : '{"data":{"label":"Ink"}}'));
+        self::assertSame($method === 'HEAD' ? '' : '{"state":"data","data":{"label":"Ink"}}', $result);
+        self::assertCount(1, $this->sent);
+        self::assertSame($method, $this->sent[0]->getMethod());
+        self::assertSame('', (string) $this->sent[0]->getBody());
+    }
+
     public function testNativeGuardsAndBeforeHooksSeeTheOriginalWrite(): void
     {
         $_SERVER['REQUEST_METHOD'] = 'POST';

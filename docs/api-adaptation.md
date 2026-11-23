@@ -235,6 +235,40 @@ Consumed leaves and newly empty ancestors disappear from the forwarded body;
 sibling metadata remains. Query/payload callbacks keep the original body in their
 context, while the payload argument contains the remaining body.
 
+### Reuse a prepared form
+
+`choose()` calls the selector once per matching dispatch with a request-local builder,
+the original parsed form and the original Yii query. Configure a custom payload reader on
+the outer proxy so it can supply that form. The selector may read stored values. Declare
+the write on the supplied builder and return it with a route or `action()` for the same
+Yii action name. Return `null` to continue the Yii filter chain. The selector sees the form before
+the selected route validates required fields and binds the model. Check any field you use to choose a route.
+
+For example, a term form can remove a category and display the refreshed term. Here the controller's
+`removedCategory()` compares the form with the saved links. It returns the one removed category ID
+or `null` for forms that require other changes.
+
+```php
+->choose('edit', 'PUT', function (Strangler $routes, array $form, array $query): ?Strangler {
+    $category = $this->removedCategory($query['id'], $form);
+    if ($category === null) {
+        return null;
+    }
+
+    $id = rawurlencode((string) $query['id']);
+    $link = '/api/categories/' . rawurlencode((string) $category) . '/terms/' . $id;
+
+    return $routes->action('edit', 'PUT', static function (StranglerProxy $api) use ($link, $id): \Generator {
+        yield $api->request('DELETE', $link, expects: 204);
+        yield $api->request('GET', '/api/terms/' . $id, expects: 200);
+    });
+})
+```
+
+The generator captures the prepared link. A `mapJsonErrors()` callback on the same builder can
+capture it too, while its context still contains the original Yii payload. Once the first request
+is sent, an upstream failure is returned to the client. If the read fails, the unlink stays committed.
+
 ### Compute parameters and bodies per route
 
 Use a closure when route parameters need application logic or a database lookup:

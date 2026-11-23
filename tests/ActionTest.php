@@ -99,6 +99,92 @@ final class ActionTest extends TestCase
         self::assertSame('', (string) $this->requests[1]->getBody());
     }
 
+    public function testConfirmedWriteKeepsTheReceiptReadableAndSendsTheNextStep(): void
+    {
+        $receipt = '{"id":"9223372036854775808"}';
+        $builder = Strangler::proxy('catalog')
+            ->action('get', 'POST', static function (StranglerProxy $api) use ($receipt): Generator {
+                $created = yield $api->write('POST', '/items', ['locale' => 'en'], ['name' => 'Desk'], 201,
+                    confirm: static fn (mixed $json): bool => $json instanceof \stdClass && ($json->id ?? null) === '9223372036854775808',
+                );
+                self::assertInstanceOf(ResponseInterface::class, $created);
+                self::assertSame('/items/42', $created->getHeaderLine('Location'));
+                self::assertSame($receipt, $created->getBody()->getContents());
+                yield $api->write('PATCH', '/items/42');
+            });
+
+        $stream = new NoSeekStream(Utils::streamFor($receipt));
+        self::assertSame('saved', $this->dispatch($builder, [
+            new Response(201, ['Location' => '/items/42'], $stream), new Response(200, [], 'saved'),
+        ]));
+        self::assertCount(2, $this->requests);
+        self::assertSame('locale=en', $this->requests[0]->getUri()->getQuery());
+        self::assertSame('{"name":"Desk"}', (string) $this->requests[0]->getBody());
+    }
+
+    #[TestWith([103, 'early', 502])]
+    #[TestWith([302, '{"id":"42"}', 502])]
+    #[TestWith([202, 'pending', 502])]
+    #[TestWith([200, '{', 502])]
+    #[TestWith([200, '{"id":9223372036854775808}', 502])]
+    #[TestWith([200, 'null', 502])]
+    #[TestWith([400, 'bad form', 400])]
+    #[TestWith([422, 'invalid', 422])]
+    #[TestWith([503, 'unavailable', 503])]
+    public function testUnconfirmedWriteStopsBeforeTheNextStep(int $upstream, string $receipt, int $expected): void
+    {
+        $builder = Strangler::proxy('catalog')->action('get', 'POST', static function (StranglerProxy $api): Generator {
+            yield $api->write('PUT', '/items/42', confirm: static fn (mixed $json): bool => $json instanceof \stdClass && is_string($json->id ?? null));
+            self::fail('A failed receipt must stop the action.');
+        });
+
+        $body = $this->dispatch($builder, [new Response($upstream, [], $receipt)]);
+        self::assertSame($expected, http_response_code());
+        self::assertSame($expected === 502 ? '{"state":"error","error":"invalid_upstream_response"}' : $receipt, $body);
+        self::assertCount(1, $this->requests);
+        self::assertFalse($this->controller->ran);
+    }
+
+    #[TestWith(['', 200])]
+    #[TestWith([' ', 502])]
+    public function testNoContentWriteRequiresAnEmptyBodyAndSkipsJsonConfirmation(string $body, int $expected): void
+    {
+        $builder = Strangler::proxy('catalog')->action('get', 'POST', static function (StranglerProxy $api): Generator {
+            yield $api->write('DELETE', '/items/42', expects: 204, confirm: static fn (): never => self::fail('204 has no JSON.'));
+            yield $api->request('GET', '/items');
+        });
+
+        $result = $this->dispatch($builder, [new Response(204, [], $body), new Response(200, [], 'remaining items')]);
+        self::assertSame($expected, http_response_code());
+        self::assertSame($expected === 200 ? 'remaining items' : '{"state":"error","error":"invalid_upstream_response"}', $result);
+        self::assertCount($expected === 200 ? 2 : 1, $this->requests);
+    }
+
+    public function testWriteRejectsReadMethodsBeforeHttp(): void
+    {
+        $builder = Strangler::proxy('catalog')->action('get', 'POST', static function (StranglerProxy $api): Generator {
+            yield $api->write('GET', '/items');
+        });
+        $this->expectException(InvalidArgumentException::class);
+
+        try {
+            $this->dispatch($builder, []);
+        } finally {
+            self::assertSame([], $this->requests);
+        }
+    }
+
+    public function testAnApplicationExceptionDuringConfirmationEscapesTheAction(): void
+    {
+        $builder = Strangler::proxy('catalog')->action('get', 'POST', static function (StranglerProxy $api): Generator {
+            yield $api->write('PATCH', '/items/42', confirm: static fn (): never => throw new \JsonException('receipt policy'));
+            self::fail('Confirmation failed.');
+        });
+        $this->expectException(\JsonException::class);
+        $this->expectExceptionMessage('receipt policy');
+        $this->dispatch($builder, [new Response(200, [], '{}')]);
+    }
+
     public function testChosenRoutePreparesOnceAndMapsErrorsAgainstTheOriginalForm(): void
     {
         $form = ['category_ids' => ['old', 'new'], 'row' => 7];

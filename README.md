@@ -29,7 +29,7 @@ mapping, and selected multipart uploads.
 Install the package in your Yii application:
 
 ```shell
-composer require cosmira/yii1-strangler-proxy:^9.1
+composer require cosmira/yii1-strangler-proxy:^9.2
 ```
 
 Load Composer's `vendor/autoload.php` before the Yii bootstrap. Commit your
@@ -151,16 +151,22 @@ use Cosmira\Strangler\StranglerProxy;
 
 Strangler::proxy('catalog')
     ->action('saveListing', 'POST', static function (StranglerProxy $api, array $query, array $form): \Generator {
-        $item = '/api/items/' . rawurlencode((string) $query['id']);
+        $id = (string) $query['id'];
+        $item = '/api/items/' . rawurlencode($id);
 
-        yield $api->request('PATCH', $item, body: ['title' => $form['title']], expects: 200);
-        yield $api->request('PUT', $item . '/labels', body: ['ids' => $form['label_ids']], expects: 200);
+        yield $api->write(
+            'PATCH', $item, body: ['title' => $form['title']],
+            confirm: static fn (mixed $receipt): bool => $receipt instanceof \stdClass
+                && ($receipt->id ?? null) === $id,
+        );
+        yield $api->write('PUT', $item . '/labels', body: ['ids' => $form['label_ids']]);
     })
     ->build();
 ```
 
-On success the client receives the last response. If saving the title fails, the labels
-request is skipped. If replacing the labels fails, the client receives that error and the
+The labels request runs only when the title endpoint returns HTTP 200 and the same
+item ID in its receipt (for example, `{"id":"42"}`). On success the client receives the last response.
+If replacing the labels fails, the client receives that error and the
 title may already have changed. Choose this form of forwarding when the client can handle
 partial updates. See [HTML form input, failures and readback](docs/api-adaptation.md#send-a-request-from-a-yii-filter).
 
@@ -279,7 +285,7 @@ The [catalog example](examples/catalog/README.md) runs Yii and a backend against
 one SQLite dataset. It requires `pdo_sqlite`:
 
 ```shell
-git clone --branch 9.1.0 --depth 1 https://github.com/cosmira/yii1-strangler-proxy.git
+git clone --branch 9.2.0 --depth 1 https://github.com/cosmira/yii1-strangler-proxy.git
 cd yii1-strangler-proxy
 composer install
 composer example:verify

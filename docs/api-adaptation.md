@@ -259,7 +259,7 @@ or `null` for forms that require other changes.
     $link = '/api/categories/' . rawurlencode((string) $category) . '/terms/' . $id;
 
     return $routes->action('edit', 'PUT', static function (StranglerProxy $api) use ($link, $id): \Generator {
-        yield $api->request('DELETE', $link, expects: 204);
+        yield $api->write('DELETE', $link, expects: 204);
         yield $api->request('GET', '/api/terms/' . $id, expects: 200);
     });
 })
@@ -1121,6 +1121,17 @@ action needs several existing REST endpoints. The callback receives the configur
 uses the configured upstream transport and returns a PSR-7 response. Yield each request
 before starting the next one. Use a request guard to keep unsupported forms in Yii
 before the first step. Each selected action must yield at least one response.
+
+Use `write()` for a POST, PUT, PATCH or DELETE that must be acknowledged before continuing.
+It expects HTTP 200 by default. Pass `expects: 201` for creation or `expects: 204`
+for an empty acknowledgement. A different success status, an informational response or a redirect
+produces a 502 `invalid_upstream_response`. An upstream 4xx or 5xx continues through the usual error mapping.
+
+Pass `confirm:` when the next step depends on the response body. The predicate receives decoded JSON
+and must return `true`. Objects become `stdClass` and JSON numbers remain numbers. Malformed or missing JSON
+and a rejected receipt produce a 502. Exceptions from the predicate propagate. A 204 must contain
+zero bytes and skips the predicate. For other expected successes, omitting `confirm` leaves the body
+untouched. See the [catalog edit example](../README.md#save-one-form-through-two-rest-endpoints).
 
 The default reader expects a JSON request body. For an action receiving an ordinary
 HTML form POST, use `->request(reader: static fn (): array => $_POST)` on its proxy

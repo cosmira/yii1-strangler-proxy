@@ -8,8 +8,10 @@ use CController;
 use Closure;
 use Cosmira\Strangler\Internal\Payload\BodyParameters;
 use Cosmira\Strangler\Internal\Payload\NativeRequestGuard;
+use Cosmira\Strangler\Response\Json;
 use CWebApplication;
 use GuzzleHttp\ClientInterface;
+use GuzzleHttp\Psr7\Utils;
 use InvalidArgumentException;
 use JsonException;
 use Psr\Http\Message\ResponseInterface;
@@ -92,6 +94,56 @@ final class StranglerProxy
         return $this->transport->request(
             $method, $path, $query, $body, $expects, $this->requestConfig, $this->requestAction,
         );
+    }
+
+    /**
+     * Confirm one REST write before the action continues. A 204 receipt must be empty.
+     *
+     * @param array<array-key, mixed>      $query
+     * @param array<array-key, mixed>|null $body
+     * @param (callable(mixed): bool)|null $confirm Accept the decoded acknowledgement.
+     */
+    public function write(
+        string $method, string $path, array $query = [], ?array $body = null,
+        int $expects = 200, ?callable $confirm = null,
+    ): ResponseInterface {
+        if (! in_array($method, ['POST', 'PUT', 'PATCH', 'DELETE'], true)) {
+            throw new InvalidArgumentException('A write requires POST, PUT, PATCH or DELETE.');
+        }
+        $response = $this->request($method, $path, $query, $body, $expects);
+        $status = $response->getStatusCode();
+        if ($status >= 400) {
+            return $response;
+        }
+        if ($status !== $expects) {
+            return Json::invalidResponse($response);
+        }
+        if ($status === 204) {
+            return (string) $response->getBody() === ''
+                ? $response : Json::invalidResponse($response);
+        }
+
+        return $confirm === null ? $response : self::confirmJson($response, $confirm);
+    }
+
+    /**
+     * Leave confirmed response bytes readable even when the upstream stream cannot rewind.
+     *
+     * @param callable(mixed): bool $confirm
+     */
+    private static function confirmJson(
+        ResponseInterface $response, callable $confirm,
+    ): ResponseInterface {
+        $receipt = (string) $response->getBody();
+
+        try {
+            $json = json_decode($receipt, flags: JSON_THROW_ON_ERROR);
+        } catch (JsonException) {
+            return Json::invalidResponse($response);
+        }
+
+        return $confirm($json) === true
+            ? $response->withBody(Utils::streamFor($receipt)) : Json::invalidResponse($response);
     }
 
     /**

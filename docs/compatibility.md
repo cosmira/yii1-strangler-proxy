@@ -1,7 +1,13 @@
 # Check a 9.x integration
 
 Keep the feature disabled until the application's contract tests pass with
-`cosmira/yii1-strangler-proxy` **9.1.0**.
+`cosmira/yii1-strangler-proxy` **9.2.0**.
+
+## Upgrade from 9.1
+
+Require `cosmira/yii1-strangler-proxy:^9.2` to use `write()` in a custom action.
+Use it when the next step needs a specific success status or a receipt for the resource that changed.
+See [confirming a write](api-adaptation.md#send-a-request-from-a-yii-filter).
 
 ## Upgrade from 9.0
 
@@ -11,7 +17,7 @@ that should stay in Yii. See [choosing a route](../README.md#choose-a-route-from
 
 ## Upgrade from 8.4
 
-1. In your Yii application, run `composer require cosmira/yii1-strangler-proxy:^9.1`
+1. In your Yii application, run `composer require cosmira/yii1-strangler-proxy:^9.2`
    and review the updated lock file.
 2. Check which HTTP method each existing client actually sends. Routes using
    `jsonFields()` accept the outgoing verb by default. Declare a different input verb

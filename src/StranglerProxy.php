@@ -151,16 +151,18 @@ final class StranglerProxy
         }
         if (isset($route['choose'])) {
             $original = $payload === null
-                ? self::readPayload($controller, $config['actionOptions'] ?? [], $actionKey, $route['incoming'])
+                ? self::readPayload(
+                    $controller, $config['actionOptions'] ?? [], $actionKey, $route['incoming'],
+                )
                 : ['payload' => $payload, 'body' => null];
             $selected = $route['choose']($original['payload'], $_GET);
             if ($selected === null) {
                 return true;
             }
-            $config = $selected->build()['config'];
-            $form = self::readPayload($controller, $config, $actionKey, snapshot: $original);
+            $destination = $selected->build()['config'];
+            $form = self::readPayload($controller, $destination, $actionKey, snapshot: $original);
 
-            return self::shouldBypass($controller, $config, $actionKey, $form['payload']);
+            return self::shouldBypass($controller, $destination, $actionKey, $form['payload']);
         }
         if (isset($route['run'])) {
             return self::payloadIsNative(
@@ -525,7 +527,8 @@ final class StranglerProxy
         $decoded = trim($body) === '' ? null : json_decode($body, flags: JSON_THROW_ON_ERROR);
 
         return [
-            'payload' => is_array($decoded) || $decoded instanceof \stdClass ? (array) $decoded : [],
+            'payload' => is_array($decoded) || $decoded instanceof \stdClass
+                ? (array) $decoded : [],
             'body'    => null,
         ];
     }

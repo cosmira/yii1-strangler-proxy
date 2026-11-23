@@ -59,9 +59,14 @@ use InvalidArgumentException;
  * @phpstan-type ProjectionClosure Closure(
  *     array{action: string, query?: array<array-key, mixed>}
  * ): ?array<string, mixed>
+ * @phpstan-type ActionHandler callable(
+ *     StranglerProxy, array<array-key, mixed>, array<array-key, mixed>
+ * ): \Generator<array-key, \Psr\Http\Message\ResponseInterface, mixed, void>
+ * @phpstan-type Action array{incoming: string, run: ActionHandler}
  * @phpstan-type Route array{
- *     method: string, path: string, fromBody?: array<string, string|list<string>>,
- *     parameters?: RouteResolver, request?: RouteRequest, expects?: int
+ *     method: string, path: string, incoming?: string,
+ *     fromBody?: array<string, string|list<string>>, parameters?: RouteResolver,
+ *     request?: RouteRequest, expects?: int
  * }
  * @phpstan-type BoundConfig array{
  *     feature?: string,
@@ -84,17 +89,37 @@ use InvalidArgumentException;
  *     bypassPayloadFields?: array<string, list<string>>,
  *     files?: array<string, array<string, string>>
  * }
- * @phpstan-type DeferredConfig array{
- *     resolve: callable(CController): BoundConfig,
+ * @phpstan-type Config array{
+ *     actions?: array<string, Action>, actionOptions?: BoundConfig,
+ *     resolve?: callable(CController): BoundConfig,
  *     feature?: string,
  *     nativeQueryFilters?: list<string>,
- *     routes: array<string, Route>,
- *     bypass?: callable(CController, string, array<array-key, mixed>): bool
+ *     routes?: array<string, Route>,
+ *     mappings?: Settings,
+ *     bodyIdentifier?: string,
+ *     controllerContract?: ControllerContract,
+ *     responseRecord?: Record,
+ *     nativeParent?: string,
+ *     payloadReader?: callable(CController, string): array<array-key, mixed>,
+ *     requestGuards?: list<NativeRequestGuard>,
+ *     requestRelations?: array<string, list<string>>,
+ *     beforeRequest?: callable(array<array-key, mixed>, string, CController): void,
+ *     routeParameters?: callable(array{action: string, query: array<array-key, mixed>,
+ *         payload: array<array-key, mixed>|null}): (array<string, mixed>|false),
+ *     bypass?: callable(CController, string, array<array-key, mixed>): bool,
+ *     bypassPayload?: callable(array<array-key, mixed>, string, array<array-key, mixed>): bool,
+ *     afterAttempt?: callable(string, string): void,
+ *     bypassPayloadFields?: array<string, list<string>>,
+ *     files?: array<string, array<string, string>>
  * }
- * @phpstan-type Config BoundConfig|DeferredConfig
  */
 final class Strangler
 {
+    /**
+     * Methods accepted in route declarations on either side of the proxy.
+     */
+    private const HTTP_METHODS = ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'];
+
     /**
      * Collection actions mapped to their upstream page sizes.
      *
@@ -129,6 +154,13 @@ final class Strangler
      * @var array<string, Route>
      */
     private array $routes = [];
+
+    /**
+     * Application-defined requests indexed by the same Yii action names as routes.
+     *
+     * @var array<string, Action>
+     */
+    private array $actions = [];
 
     /**
      * Explicit native identifier; otherwise the controller model supplies it at runtime.
@@ -365,6 +397,18 @@ final class Strangler
         $this->isConventionEnabled = true;
         $this->identifier = $identifier;
         $this->except = [...$this->except, ...array_map(strtolower(...), $except)];
+
+        return $this;
+    }
+
+    /**
+     * Describe a model-free JSON object shared by this group's writes and successful reads.
+     *
+     * @param array<string, string> $fields
+     */
+    public function jsonFields(array $fields): self
+    {
+        $this->config['mappings']['jsonFields'] = new JsonFields($fields);
 
         return $this;
     }
@@ -667,8 +711,12 @@ final class Strangler
     public function get(
         string $action, string $path, array $fromBody = [], array|callable|null $body = null,
         ?callable $parameters = null, bool $binary = false, ?int $expects = null,
+        ?string $incoming = null,
     ): self {
-        $this->route($action, 'GET', $path, $fromBody, $body, $parameters, expects: $expects);
+        $this->route(
+            $action, 'GET', $path, $fromBody, $body, $parameters,
+            expects: $expects, incoming: $incoming,
+        );
         if ($binary) {
             $this->binaryActions[] = strtolower($action);
         }
@@ -685,10 +733,11 @@ final class Strangler
      */
     public function post(
         string $action, string $path, array $fromBody = [], array|callable|null $body = null,
-        ?callable $parameters = null, ?int $expects = null,
+        ?callable $parameters = null, ?int $expects = null, ?string $incoming = null,
     ): self {
         return $this->route(
-            $action, 'POST', $path, $fromBody, $body, $parameters, expects: $expects,
+            $action, 'POST', $path, $fromBody, $body, $parameters,
+            expects: $expects, incoming: $incoming,
         );
     }
 
@@ -701,10 +750,11 @@ final class Strangler
      */
     public function put(
         string $action, string $path, array $fromBody = [], array|callable|null $body = null,
-        ?callable $parameters = null, ?int $expects = null,
+        ?callable $parameters = null, ?int $expects = null, ?string $incoming = null,
     ): self {
         return $this->route(
-            $action, 'PUT', $path, $fromBody, $body, $parameters, expects: $expects,
+            $action, 'PUT', $path, $fromBody, $body, $parameters,
+            expects: $expects, incoming: $incoming,
         );
     }
 
@@ -719,11 +769,11 @@ final class Strangler
     public function patch(
         string $action, string $path, array|callable|null $body = null,
         ?callable $parameters = null, ?callable $request = null, ?callable $response = null,
-        ?int $expects = null,
+        ?int $expects = null, ?string $incoming = null,
     ): self {
         return $this->route(
             $action, 'PATCH', $path, body: $body, parameters: $parameters,
-            request: $request, response: $response, expects: $expects,
+            request: $request, response: $response, expects: $expects, incoming: $incoming,
         );
     }
 
@@ -736,11 +786,31 @@ final class Strangler
      */
     public function delete(
         string $action, string $path, array $fromBody = [], array|callable|null $body = null,
-        ?callable $parameters = null, ?int $expects = null,
+        ?callable $parameters = null, ?int $expects = null, ?string $incoming = null,
     ): self {
         return $this->route(
-            $action, 'DELETE', $path, $fromBody, $body, $parameters, expects: $expects,
+            $action, 'DELETE', $path, $fromBody, $body, $parameters,
+            expects: $expects, incoming: $incoming,
         );
+    }
+
+    /**
+     * Yield each upstream response before issuing the next request for this Yii action.
+     *
+     * @param ActionHandler $requests
+     */
+    public function action(string $action, string $incoming, callable $requests): self
+    {
+        $key = $this->actionKey($action);
+        $run = $requests(...);
+        if (! (new \ReflectionFunction($run))->isGenerator()) {
+            throw new InvalidArgumentException(
+                'Strangler actions must yield each upstream response.',
+            );
+        }
+        $this->actions[$key] = ['incoming' => self::incomingMethod($incoming), 'run' => $run];
+
+        return $this;
     }
 
     /**
@@ -750,20 +820,43 @@ final class Strangler
      */
     public function build(): array
     {
-        $contract = $this->config['controllerContract'] ?? null;
-        if ($contract !== null && $this->identifier === null && $contract->identifier() === null) {
-            $snapshot = clone $this;
-            $config = array_intersect_key(
-                $this->config, array_fill_keys(['feature', 'bypass', 'nativeQueryFilters'], true),
-            )
-                + ['resolve' => static fn (CController $controller): array => $snapshot->bound(
-                    $controller, $contract,
-                )];
-        } else {
-            $config = $this->configuration();
+        $routes = $this->routes;
+        if (isset($this->config['mappings']['jsonFields'])) {
+            foreach ($routes as $action => $route) {
+                $routes[$action]['incoming'] ??= $route['method'];
+            }
+        }
+        $config = $this->routeConfiguration();
+        $config['routes'] = $routes;
+        if ($this->actions !== []) {
+            $config['actions'] = $this->actions;
+            $config['actionOptions'] = $this->withHooks($this->config);
         }
 
-        return [StranglerFilter::class, 'config' => ['routes' => $this->routes] + $config];
+        return [StranglerFilter::class, 'config' => $config];
+    }
+
+    /**
+     * Delay record conventions until a routed request provides its native controller.
+     *
+     * @return Config
+     */
+    private function routeConfiguration(): array
+    {
+        if ($this->routes === [] && $this->actions !== []) {
+            return $this->config;
+        }
+        $contract = ControllerContract::forModel($this->config);
+        if ($contract === null || $this->identifier !== null || $contract->identifier() !== null) {
+            return $this->withHooks($this->compiled());
+        }
+        $snapshot = clone $this;
+
+        return array_intersect_key(
+            $this->config, array_fill_keys(['feature', 'bypass', 'nativeQueryFilters'], true),
+        ) + ['resolve' => static fn (CController $controller): array => $snapshot->bound(
+            $controller, $contract,
+        )];
     }
 
     /**
@@ -777,17 +870,18 @@ final class Strangler
         $bound = clone $this;
         $bound->identifier = $identifier;
 
-        return ['routes' => $bound->routes] + $bound->configuration();
+        return ['routes' => $bound->routes] + $bound->withHooks($bound->compiled());
     }
 
     /**
      * Attach native hooks to the compiled mapping configuration without reading a model.
      *
+     * @param BoundConfig $config
+     *
      * @return BoundConfig
      */
-    private function configuration(): array
+    private function withHooks(array $config): array
     {
-        $config = $this->compiled();
         if ($this->requestChecks !== []) {
             $config['beforeRequest'] = InlineMapping::beforeRequest($this->requestChecks);
         }
@@ -800,7 +894,7 @@ final class Strangler
             $mappings['errors'] = ($mappings['errors'] ?? []) + ['*' => $contract->error(...)];
             $config['mappings'] = $mappings;
         }
-        if (isset($config['nativeParent']) && ! isset($config['controllerContract'])) {
+        if (isset($config['nativeParent']) && ControllerContract::forModel($config) === null) {
             throw new InvalidArgumentException('within() requires a controller contract.');
         }
 
@@ -816,6 +910,18 @@ final class Strangler
     {
         $mappings = array_filter(['completeCollections' => $this->completeCollections])
             + ($this->config['mappings'] ?? []);
+        $jsonFields = $mappings['jsonFields'] ?? null;
+        if ($jsonFields !== null) {
+            $reads = array_keys(array_filter(
+                $this->routes, static fn (array $route): bool => $route['method'] !== 'HEAD',
+            ));
+            $mappings['response'] = InlineMapping::defaults(
+                $mappings['response'] ?? [], $jsonFields->response(...),
+                array_values(array_diff($reads, $this->binaryActions)),
+            );
+
+            return array_replace($this->config, ['mappings' => $mappings]);
+        }
         if (! $this->isConventionEnabled && ! isset($this->config['controllerContract'])) {
             $fieldSettings = [
                 $this->fields, $this->responseFields, $this->requestFields, $this->requestValues,
@@ -1023,11 +1129,12 @@ final class Strangler
         string $action, string $method, string $path, array $fromBody = [],
         array|callable|null $body = null,
         ?callable $parameters = null, ?callable $request = null, ?callable $response = null,
-        ?int $expects = null,
+        ?int $expects = null, ?string $incoming = null,
     ): self {
         $method = strtoupper($method);
         $key = $this->routeKey($action, $method, $path);
 
+        $incomingMethod = $incoming === null ? null : self::incomingMethod($incoming);
         ExpectedStatus::validate($expects);
         BodyParameters::validate($fromBody, $path);
         if ($body !== null) {
@@ -1044,10 +1151,23 @@ final class Strangler
         }
         $this->routes[$key] = ['method' => $method, 'path' => $path] + array_filter([
             'fromBody' => $fromBody, 'parameters' => $parameters, 'request' => $request,
-            'expects'  => $expects,
+            'expects'  => $expects, 'incoming' => $incomingMethod,
         ]);
 
         return $this;
+    }
+
+    /**
+     * Match the request method as reported by Yii before binding the controller.
+     */
+    private static function incomingMethod(string $method): string
+    {
+        $method = strtoupper($method);
+        if (! in_array($method, self::HTTP_METHODS, true)) {
+            throw new InvalidArgumentException('Unsupported incoming HTTP method.');
+        }
+
+        return $method;
     }
 
     /**
@@ -1055,19 +1175,32 @@ final class Strangler
      */
     private function routeKey(string $action, string $method, string $path): string
     {
-        if (! in_array($method, ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'], true)) {
+        if (! in_array($method, self::HTTP_METHODS, true)) {
             throw new InvalidArgumentException('Unsupported upstream HTTP method.');
         }
-        $key = strtolower($action);
-        if (isset($this->routes[$key])) {
-            throw new InvalidArgumentException('Duplicate Strangler action: '.$action);
-        }
-        if ($action === '' || $path === '') {
+        $key = $this->actionKey($action);
+        if ($path === '') {
             throw new InvalidArgumentException('Strangler routes require an action and path.');
         }
 
         if (! str_starts_with($path, '/') || str_starts_with($path, '//')) {
             throw new InvalidArgumentException('Strangler routes require one leading slash.');
+        }
+
+        return $key;
+    }
+
+    /**
+     * Reserve each Yii action name once across single routes and custom actions.
+     */
+    private function actionKey(string $action): string
+    {
+        if ($action === '') {
+            throw new InvalidArgumentException('Strangler routes require an action and path.');
+        }
+        $key = strtolower($action);
+        if (isset($this->actions[$key]) || isset($this->routes[$key])) {
+            throw new InvalidArgumentException('Duplicate Strangler action: '.$action);
         }
 
         return $key;

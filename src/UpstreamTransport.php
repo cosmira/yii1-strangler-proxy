@@ -10,6 +10,7 @@ use Cosmira\Strangler\Internal\Http\HttpHeaders;
 use GuzzleHttp\Client;
 use GuzzleHttp\ClientInterface;
 use GuzzleHttp\Exception\GuzzleException;
+use GuzzleHttp\Psr7\CachingStream;
 use GuzzleHttp\Psr7\Message;
 use GuzzleHttp\Psr7\Response;
 use GuzzleHttp\Psr7\Utils;
@@ -57,9 +58,11 @@ final readonly class UpstreamTransport
      *
      * @param array<array-key, mixed>      $query
      * @param array<array-key, mixed>|null $body
+     * @param Config                       $config
      */
     public function request(
         string $method, string $path, array $query, ?array $body, ?int $expects,
+        array $config, string $action,
     ): ResponseInterface {
         ExpectedStatus::validate($expects);
         $settings = YiiRuntime::settings();
@@ -71,13 +74,45 @@ final readonly class UpstreamTransport
             unset($options['json']);
         }
         [$response] = $this->attempt(
-            $this->client ?? new Client(), [], 'request', ['method' => $method, 'path' => $path],
-            $path, $options, ($this->clock)(),
+            $this->client ?? new Client(), $config, $action, ['method' => $method, 'path' => $path],
+            '', $options, ($this->clock)(),
         );
 
         return $response === null
             ? new Response(503, [], '{"error":"service_temporarily_unavailable"}')
             : ExpectedStatus::check($response, $expects);
+    }
+
+    /**
+     * Resume the action only after a successful response. The last response goes to Yii.
+     *
+     * @param Config                                                $config
+     * @param \Generator<array-key, ResponseInterface, mixed, void> $steps
+     */
+    public function sendAction(
+        array $config, string $action, \Generator $steps, ?InlineMapping $inline,
+    ): void {
+        $startedAt = ($this->clock)();
+        if (! $steps->valid()) {
+            throw new \LogicException(
+                'Strangler actions must yield at least one upstream response.',
+            );
+        }
+        do {
+            $response = $steps->current();
+            $status = $response->getStatusCode();
+            if ($status < 200 || $status >= 300) {
+                break;
+            }
+            $steps->send($response);
+        } while ($steps->valid());
+
+        $this->emitResponse(
+            $config, $action, '', $this->elapsed($startedAt),
+            $this->responseSnapshot($response, $inline),
+            YiiRuntime::application()->getRequest()->getRequestType(), null, $inline,
+            validateRaw: $config['controllerContract'] ?? null,
+        );
     }
 
     /**
@@ -426,7 +461,7 @@ final readonly class UpstreamTransport
             'status'  => 503,
             'body'    => '{"state":"error","error":"service_temporarily_unavailable"}',
             'headers' => ['Content-Type' => ['application/json; charset=utf-8']],
-        ], $method, null, $inline);
+        ], $method, null, $inline, headerTimeMs: 0);
     }
 
     /**
@@ -445,6 +480,8 @@ final readonly class UpstreamTransport
         string $method,
         ?int $upstreamStatus,
         ?InlineMapping $inline = null,
+        ?int $headerTimeMs = null,
+        ?ControllerContract $validateRaw = null,
     ): void {
         $result = ['time_ms' => $timeMs, 'method' => $method];
         if ($upstreamStatus !== null) {
@@ -452,18 +489,20 @@ final readonly class UpstreamTransport
         }
 
         try {
+            $legacy = new Response($response['status'], $response['headers'], $response['body']);
+            $contract = $validateRaw;
             if ($inline !== null && is_string($response['body'])) {
-                $mapped = $inline->response(new Response(
-                    $response['status'], $response['headers'], $response['body'],
-                ));
-                ($config['controllerContract'] ?? null)?->validateResponse($mapped);
-                $legacyResponse = [
-                    'status'  => $mapped->getStatusCode(),
-                    'body'    => (string) $mapped->getBody(),
-                    'headers' => $mapped->getHeaders(),
-                ];
-            } else {
-                $legacyResponse = $response;
+                $legacy = $inline->response($legacy);
+                $contract = $config['controllerContract'] ?? null;
+            }
+            if ($contract !== null) {
+                if (! $legacy->getBody()->isSeekable()) {
+                    $legacy = $legacy->withBody(new CachingStream($legacy->getBody()));
+                }
+                $contract->validateResponse($legacy);
+            }
+            if ($legacy->getBody()->isSeekable()) {
+                Message::rewindBody($legacy);
             }
         } catch (Throwable $exception) {
             YiiRuntime::logResult(
@@ -474,18 +513,11 @@ final readonly class UpstreamTransport
             throw $exception;
         }
         YiiRuntime::logResult($config, $actionKey, $routeTemplate, [
-            'reason' => 'forwarded', 'client_status' => $legacyResponse['status'],
+            'reason' => 'forwarded', 'client_status' => $legacy->getStatusCode(),
         ] + $result);
-        if (is_string($legacyResponse['body'])) {
-            $this->emitter->send(
-                $legacyResponse['status'], $legacyResponse['body'], $legacyResponse['headers'],
-                $upstreamStatus === null ? 0 : $timeMs,
-            );
-        } else {
-            $this->emitter->sendStream(
-                $legacyResponse['status'], $legacyResponse['body'], $legacyResponse['headers'],
-                $upstreamStatus === null ? 0 : $timeMs,
-            );
-        }
+        $this->emitter->sendStream(
+            $legacy->getStatusCode(), $legacy->getBody(), $legacy->getHeaders(),
+            $headerTimeMs ?? $timeMs,
+        );
     }
 }

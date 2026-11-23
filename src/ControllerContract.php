@@ -44,6 +44,19 @@ abstract class ControllerContract
     }
 
     /**
+     * Only record-based declarations consult ActiveRecord or native collection metadata.
+     *
+     * @internal
+     *
+     * @param Config $config
+     */
+    public static function forModel(array $config): ?self
+    {
+        return isset($config['mappings']['jsonFields'])
+            ? null : ($config['controllerContract'] ?? null);
+    }
+
+    /**
      * Register shared declarations before controller-specific differences.
      */
     public function configure(Strangler $proxy): void {}
@@ -72,7 +85,7 @@ abstract class ControllerContract
         $resolve = $config['resolve'] ?? null;
 
         $resolved = $resolve === null ? $config : $resolve($controller);
-        $contract = $resolved['controllerContract'] ?? null;
+        $contract = self::forModel($resolved);
         $pages = $contract?->collectionPages($controller) ?? [];
         if ($pages !== []) {
             $mappings = $resolved['mappings'] ?? [];
@@ -136,7 +149,12 @@ abstract class ControllerContract
     /**
      * Resolve the controller's native model with its existing scope.
      */
-    abstract public function model(CController $controller): CActiveRecord;
+    public function model(CController $controller): CActiveRecord
+    {
+        throw new \LogicException(
+            'Record-based declarations require a model for '.$controller::class.'.',
+        );
+    }
 
     /**
      * Resolve one native key from a model override or Yii's database table metadata.
@@ -289,14 +307,16 @@ abstract class ControllerContract
      * @param array{
      *     action?: string, query?: array<array-key, mixed>,
      *     payload?: array<array-key, mixed>|null, identifier?: string,
-     *     responseFields?: array<string, string>, errorFields?: array<string, string>
+     *     responseFields?: array<string, string>, errorFields?: array<string, string>,
+     *     plainJson?: true
      * } $context
      */
     public function error(
         mixed $json, ResponseInterface $response, array $context,
     ): ResponseInterface {
         $fields = $context['errorFields'] ?? $context['responseFields'] ?? [];
-        if ($response->getStatusCode() === 422 && ! isset($context['responseFields'])) {
+        $validatesModel = $response->getStatusCode() === 422 && ! isset($context['plainJson']);
+        if ($validatesModel && ! isset($context['responseFields'])) {
             $controller = StranglerProxy::application()->getController();
             $identifier = $context['identifier'] ?? $this->identifier()
                 ?? self::modelKey($this->model($controller));
@@ -304,8 +324,7 @@ abstract class ControllerContract
         }
         $mapped = (new ErrorResponse($fields, $this->errorCodes()))($json, $response);
         $action = $context['action'] ?? '';
-        if ($response->getStatusCode() === 422
-            && in_array($action, ['create', 'edit'], true)) {
+        if ($validatesModel && in_array($action, ['create', 'edit'], true)) {
             $errors = $this->validationErrors(
                 StranglerProxy::application()->getController(), $action, $context['payload'] ?? [],
             );
@@ -323,10 +342,11 @@ abstract class ControllerContract
      * @param array<array-key, mixed> $query
      * @param array<array-key, mixed> $payload
      * @param string|null             $identifier Resolved native identifier, before model metadata.
+     * @param string|null             $incoming   Explicit Yii verb for an overridden CRUD route.
      */
     public function shouldBypass(
         CController $controller, string $action, array $query, array $payload,
-        ?string $identifier = null,
+        ?string $identifier = null, ?string $incoming = null,
     ): bool {
         $method = $this->conventionalMethod($action);
         if ($method === null) {
@@ -335,7 +355,9 @@ abstract class ControllerContract
             );
         }
 
-        return StranglerProxy::application()->getRequest()->getRequestType() !== $method
+        $request = StranglerProxy::application()->getRequest();
+
+        return $request->getRequestType() !== ($incoming ?? $method)
             || $this->malformedQuery($action, $query)
             || ($payload !== [] && array_is_list($payload))
             || $this->conflictingIdentifier($controller, $query, $payload, $identifier);

@@ -1,9 +1,6 @@
 # Yii 1 Strangler Proxy
 
-Documentation for **8.1.0**.
-
-Use `patch()` for partial updates. A response body modifier can check the
-upstream result against the original request before the proxy maps its fields.
+Documentation for **9.0.0**. [Upgrading from 8.4](docs/compatibility.md#upgrade-from-84).
 
 [![Tests][tests-badge]][tests-workflow]
 [![PHP 8.2–8.5][php-badge]](composer.json)
@@ -19,6 +16,8 @@ mapping, and selected multipart uploads.
 
 - [Installation](#installation)
 - [Forward your first action](#forward-your-first-action)
+- [Read and save a JSON object](#read-and-save-a-json-object)
+- [Save one form through two REST endpoints](#save-one-form-through-two-rest-endpoints)
 - [Describe contract differences](#when-the-apis-differ)
 - [Connect existing REST controllers](#connect-existing-rest-controllers)
 - [Run the complete example](#run-the-complete-example)
@@ -29,7 +28,7 @@ mapping, and selected multipart uploads.
 Install the package in your Yii application:
 
 ```shell
-composer require cosmira/yii1-strangler-proxy:^8.1
+composer require cosmira/yii1-strangler-proxy:^9.0
 ```
 
 Load Composer's `vendor/autoload.php` before the Yii bootstrap. Commit your
@@ -68,8 +67,9 @@ Strangler::proxy('catalog')
     ->build(),
 ```
 
-Routes set outgoing HTTP methods. Authentication, incoming-method checks, CSRF,
-and resource access must run in preceding Yii filters.
+The route verb selects the outgoing HTTP method. Use `incoming:` when an existing
+client submits a different verb. Keep authentication, method validation, CSRF and
+resource access in preceding Yii filters.
 
 Forwarding skips the action and its lifecycle hooks. See
 [access checks and cleanup](docs/integration.md#access-checks-and-yii-hooks).
@@ -87,6 +87,58 @@ Expect the backend body `{"ID":42,"NAME":"Desk"}`, its status, and `X-Strangler:
 Set `params.strangler.features.catalog` to `false` and repeat: Yii should run `actionView()` instead.
 Use an HTTP(S) origin for `base_uri`, without a path, query, or credentials.
 Put the backend path in each route.
+
+## Read and save a JSON object
+
+A catalog page reads and saves the same preferences. The browser sends JSON to Yii
+with POST. The backend replaces the preferences with PUT. Declare the fields once.
+
+```php
+$path = '/api/catalogs/{catalogId}/preferences';
+
+Strangler::proxy('catalog')
+    ->mapQuery([])
+    ->jsonFields([
+        'caption' => 'string|null',
+        'labels'  => 'list<string>',
+        'listed'  => 'bool',
+    ])
+    ->get('preferences', $path)
+    ->put('savePreferences', $path, incoming: 'POST')
+    ->build();
+```
+
+With `?catalogId=summer`, both actions use `/api/catalogs/summer/preferences`.
+The submitted JSON `{"CAPTION":null,"LABELS":[],"LISTED":0}` reaches the backend as
+`{"caption":null,"labels":[],"listed":false}`. A request missing `LABELS` stays in Yii.
+This mapping works on a controller without an Active Record model.
+See [field types and responses](docs/api-adaptation.md#json-object-fields).
+
+## Save one form through two REST endpoints
+
+A catalog form submits its title and label IDs as JSON. The backend exposes the item
+and its labels separately. In the existing controller's filter, yield the requests in execution
+order. This example assumes preceding Yii filters have validated the ID, title and label IDs,
+and authorized both changes.
+
+```php
+use Cosmira\Strangler\Strangler;
+use Cosmira\Strangler\StranglerProxy;
+
+Strangler::proxy('catalog')
+    ->action('saveListing', 'POST', static function (StranglerProxy $api, array $query, array $form): \Generator {
+        $item = '/api/items/' . rawurlencode((string) $query['id']);
+
+        yield $api->request('PATCH', $item, body: ['title' => $form['title']], expects: 200);
+        yield $api->request('PUT', $item . '/labels', body: ['ids' => $form['label_ids']], expects: 200);
+    })
+    ->build();
+```
+
+On success the client receives the last response. If saving the title fails, the labels
+request is skipped. If replacing the labels fails, the client receives that error and the
+title may already have changed. Choose this form of forwarding when the client can handle
+partial updates. See [HTML form input, failures and readback](docs/api-adaptation.md#send-a-request-from-a-yii-filter).
 
 ## When the APIs differ
 
@@ -203,7 +255,7 @@ The [catalog example](examples/catalog/README.md) runs Yii and a backend against
 one SQLite dataset. It requires `pdo_sqlite`:
 
 ```shell
-git clone --branch 5.4.0 --depth 1 https://github.com/cosmira/yii1-strangler-proxy.git
+git clone --branch 9.0.0 --depth 1 https://github.com/cosmira/yii1-strangler-proxy.git
 cd yii1-strangler-proxy
 composer install
 composer example:verify

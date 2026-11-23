@@ -17,6 +17,8 @@ use Throwable;
 
 /**
  * @phpstan-import-type Config from Strangler
+ * @phpstan-import-type Action from Strangler
+ * @phpstan-import-type ActionHandler from Strangler
  * @phpstan-import-type Route from Strangler
  * @phpstan-import-type Context from InlineMapping
  * @phpstan-import-type RequestValues from InlineMapping
@@ -27,17 +29,29 @@ use Throwable;
  *     pathQuery: array<array-key, mixed>, routeId: mixed, parameters: array<string, int|string>
  * }
  */
-final readonly class StranglerProxy
+final class StranglerProxy
 {
     /**
      * Send upstream attempts through the HTTP transport boundary.
      */
-    private UpstreamTransport $transport;
+    private readonly UpstreamTransport $transport;
 
     /**
      * Send responses through the Yii output boundary.
      */
-    private ResponseEmitter $emitter;
+    private readonly ResponseEmitter $emitter;
+
+    /**
+     * Carry the owning filter's observer into the action's individual HTTP attempts.
+     *
+     * @var Config
+     */
+    private array $requestConfig = [];
+
+    /**
+     * Attribute intermediate failures to the originating action in Yii diagnostics.
+     */
+    private string $requestAction = 'request';
 
     /**
      * Supply a client and optional output/clock adapters.
@@ -65,13 +79,17 @@ final readonly class StranglerProxy
         string $method, string $path, array $query = [], ?array $body = null,
         ?int $expects = null,
     ): ResponseInterface {
-        if (! in_array($method, ['GET', 'POST', 'PATCH', 'PUT', 'DELETE'], true)
+        if (! in_array($method, ['GET', 'HEAD', 'POST', 'PATCH', 'PUT', 'DELETE'], true)
             || ! preg_match('~^/(?!/)[^?#\\\\\x00-\x20]*$~D', $path)
             || preg_match('~(?:^|/)[.]{1,2}(?:/|$)~', rawurldecode($path))) {
-            throw new InvalidArgumentException('Expected a local upstream resource path and HTTP method.');
+            throw new InvalidArgumentException(
+                'Expected a local upstream resource path and HTTP method.',
+            );
         }
 
-        return $this->transport->request($method, $path, $query, $body, $expects);
+        return $this->transport->request(
+            $method, $path, $query, $body, $expects, $this->requestConfig, $this->requestAction,
+        );
     }
 
     /**
@@ -87,14 +105,28 @@ final readonly class StranglerProxy
             return false;
         }
 
-        $routes = $config['routes'] ?? [];
-        if (! isset($routes[$actionKey])) {
+        if (self::declaration($config, $actionKey) === null) {
             YiiRuntime::logDecision($config, $actionKey, 'route_unmapped');
 
             return false;
         }
 
         return true;
+    }
+
+    /**
+     * Find a Yii action's destination in the filter declaration.
+     *
+     * @param Config $config
+     *
+     * @return Action|Route|null
+     */
+    private static function declaration(array $config, string $action): ?array
+    {
+        $routes = $config['routes'] ?? [];
+        $actions = $config['actions'] ?? [];
+
+        return $routes[$action] ?? $actions[$action] ?? null;
     }
 
     /**
@@ -110,13 +142,20 @@ final readonly class StranglerProxy
         ?array $payload = null,
     ): bool {
         $actionKey = self::normalizeActionKey($actionId);
-        if (self::queryIsNative($controller, $config, $actionKey)) {
+        $route = self::declaration($config, $actionKey);
+        if (self::queryIsNative($controller, $config, $actionKey, $route['incoming'] ?? null)) {
             return true;
         }
-
+        if (isset($route['run'])) {
+            return self::payloadIsNative(
+                $controller, $config['actionOptions'] ?? [], $actionKey, $payload,
+            );
+        }
         $bound = ControllerContract::resolveConfig($config, $controller);
 
-        return self::payloadIsNative($controller, $bound, $actionKey, $payload);
+        return self::payloadIsNative(
+            $controller, $bound, $actionKey, $payload, ControllerContract::forModel($bound),
+        );
     }
 
     /**
@@ -125,9 +164,11 @@ final readonly class StranglerProxy
      * @param Config $config
      */
     private static function queryIsNative(
-        CController $controller, array $config, string $action,
+        CController $controller, array $config, string $action, ?string $incoming,
     ): bool {
-        if (NativeRequestGuard::hasNativeFilter($config['nativeQueryFilters'] ?? [], $_GET)) {
+        $method = self::application()->getRequest()->getRequestType();
+        if (($incoming !== null && $incoming !== $method)
+            || NativeRequestGuard::hasNativeFilter($config['nativeQueryFilters'] ?? [], $_GET)) {
             return true;
         }
         $bypass = $config['bypass'] ?? null;
@@ -143,10 +184,10 @@ final readonly class StranglerProxy
      */
     private static function payloadIsNative(
         CController $controller, array $config, string $actionKey, ?array $payload,
+        ?ControllerContract $contract = null,
     ): bool {
         $predicate = $config['bypassPayload'] ?? null;
         $guards = $config['requestGuards'] ?? [];
-        $contract = $config['controllerContract'] ?? null;
         if ($predicate === null && $guards === [] && $contract === null) {
             return false;
         }
@@ -163,7 +204,8 @@ final readonly class StranglerProxy
             }
         }
 
-        return self::hasNativeRelationWrite($controller, $config, $actionKey, $original);
+        return $contract !== null
+            && self::hasNativeRelationWrite($controller, $contract, $config, $actionKey, $original);
     }
 
     /**
@@ -173,11 +215,11 @@ final readonly class StranglerProxy
      * @param array<array-key, mixed> $payload
      */
     private static function hasNativeRelationWrite(
-        CController $controller, array $config, string $action, array $payload,
+        CController $controller, ControllerContract $contract, array $config,
+        string $action, array $payload,
     ): bool {
-        $contract = $config['controllerContract'] ?? null;
         $relations = in_array($action, ['create', 'edit'], true)
-            ? $contract?->nativeRelations($controller) ?? [] : [];
+            ? $contract->nativeRelations($controller) : [];
         if ($relations === []) {
             return false;
         }
@@ -204,42 +246,87 @@ final readonly class StranglerProxy
     public function handle(CController $controller, array $config, string $actionId): bool
     {
         $actionKey = self::normalizeActionKey($actionId);
-        $routes = $config['routes'] ?? [];
-        $route = $routes[$actionKey] ?? null;
-
+        $route = self::declaration($config, $actionKey);
         if ($route === null) {
             YiiRuntime::logDecision($config, $actionKey, 'route_unmapped');
 
             return false;
         }
 
-        if (self::queryIsNative($controller, $config, $actionKey)) {
+        if (self::queryIsNative($controller, $config, $actionKey, $route['incoming'] ?? null)) {
             YiiRuntime::logDecision($config, $actionKey, 'bypass_callback');
 
             return false;
         }
-        $bound = ControllerContract::resolveConfig($config, $controller);
+        $bound = isset($route['run']) ? ($config['actionOptions'] ?? [])
+            : ControllerContract::resolveConfig($config, $controller);
         unset($bound['bypass'], $bound['nativeQueryFilters']);
 
         $context = [
             'action'        => $actionKey, 'query' => $_GET, 'payload' => null,
-            'method'        => strtoupper($route['method']),
+            'method'        => $route['method'] ?? $route['incoming'],
             'requestMethod' => self::application()->getRequest()->getRequestType(),
         ];
+        if (isset($route['run'])) {
+            $context['plainJson'] = true;
+        }
         if (isset($bound['bodyIdentifier'])) {
             $context['identifier'] = $bound['bodyIdentifier'];
         }
         $inline = isset($bound['mappings'])
             ? new InlineMapping($bound['mappings'], $context) : null;
 
-        return $this->forward($controller, $bound, $actionKey, $route, $inline);
+        try {
+            $snapshot = self::readPayload($controller, $bound, $actionKey);
+        } catch (JsonException) {
+            $this->emitter->error(400, 'strangler_invalid_payload', $inline);
+
+            return true;
+        }
+        if (isset($route['run'])) {
+            return $this->runAction(
+                $controller, $bound, $actionKey, $route['run'], $snapshot['payload'],
+                $inline?->withPayload($snapshot['payload'], $snapshot['body']),
+            );
+        }
+
+        return $this->forward($controller, $bound, $actionKey, $route, $inline, $snapshot);
     }
 
     /**
-     * Prepare one payload snapshot and resolve the upstream route before sending.
+     * Run application requests only after native guards and mandatory checks have passed.
      *
-     * @param Config $config
-     * @param Route  $route
+     * @param Config                  $config
+     * @param ActionHandler           $requests
+     * @param array<array-key, mixed> $payload
+     */
+    private function runAction(
+        CController $controller, array $config, string $action,
+        callable $requests, array $payload, ?InlineMapping $inline,
+    ): bool {
+        if (self::payloadIsNative($controller, $config, $action, $payload)) {
+            YiiRuntime::logDecision($config, $action, 'bypass_payload');
+
+            return false;
+        }
+        $before = $config['beforeRequest'] ?? null;
+        if ($before !== null) {
+            $before($payload, $action, $controller);
+        }
+        $api = clone $this;
+        $api->requestConfig = $config;
+        $api->requestAction = $action;
+        $this->transport->sendAction($config, $action, $requests($api, $_GET, $payload), $inline);
+
+        return true;
+    }
+
+    /**
+     * Resolve the upstream route and prepare the native payload for transport.
+     *
+     * @param Config                                                     $config
+     * @param Route                                                      $route
+     * @param array{payload: array<array-key, mixed>, body: string|null} $snapshot
      */
     private function forward(
         CController $controller,
@@ -247,22 +334,17 @@ final readonly class StranglerProxy
         string $actionKey,
         array $route,
         ?InlineMapping $inline,
+        array $snapshot,
     ): bool {
-        try {
-            $snapshot = self::readPayload($controller, $config, $actionKey);
-            $payload = $snapshot['payload'];
-        } catch (JsonException) {
-            $this->emitter->error(400, 'strangler_invalid_payload', $inline);
-
-            return true;
-        }
-
-        $contract = $config['controllerContract'] ?? null;
+        $payload = $snapshot['payload'];
+        $contract = ControllerContract::forModel($config);
         $nativeBypass = $contract !== null
             && $contract->shouldBypass(
                 $controller, $actionKey, $_GET, $payload, $config['bodyIdentifier'] ?? null,
+                $route['incoming'] ?? null,
             );
-        if ($nativeBypass || self::shouldBypass($controller, $config, $actionKey, $payload)) {
+        if ($nativeBypass
+            || self::payloadIsNative($controller, $config, $actionKey, $payload, $contract)) {
             YiiRuntime::logDecision($config, $actionKey, 'bypass_payload');
 
             return false;
@@ -347,6 +429,11 @@ final readonly class StranglerProxy
         array $config,
         string $actionKey,
     ): array {
+        $plain = isset($config['mappings']['jsonFields']);
+        $method = $config['routes'][$actionKey]['method'] ?? null;
+        if ($plain && in_array($method, ['GET', 'HEAD'], true)) {
+            return ['payload' => [], 'body' => null];
+        }
         $reader = $config['payloadReader'] ?? null;
         if ($reader === null && isset($config['controllerContract'])) {
             return [
@@ -366,6 +453,16 @@ final readonly class StranglerProxy
         $body = self::application()->getRequest()->getRawBody();
         if (trim($body) === '') {
             return ['payload' => [], 'body' => $body];
+        }
+
+        if ($plain) {
+            $decoded = json_decode($body, flags: JSON_THROW_ON_ERROR);
+
+            return [
+                'payload' => is_array($decoded) || $decoded instanceof \stdClass
+                    ? (array) $decoded : [],
+                'body' => null,
+            ];
         }
 
         $decoded = json_decode($body, true, flags: JSON_THROW_ON_ERROR | JSON_BIGINT_AS_STRING);

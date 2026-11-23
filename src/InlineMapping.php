@@ -30,7 +30,7 @@ use UnexpectedValueException;
  *     action: string, query: array<array-key, mixed>, payload: array<array-key, mixed>|null,
  *     identifier?: string, responseFields?: array<string, string>,
  *     errorFields?: array<string, string>,
- *     method?: string, requestMethod?: string
+ *     method?: string, requestMethod?: string, plainJson?: true
  * }
  * @phpstan-type QueryMapper array<array-key, string>|callable(
  *     array<array-key, mixed>, Context
@@ -50,7 +50,7 @@ use UnexpectedValueException;
  *     query?: array<string, QueryMapper>, payload?: array<string, PayloadMapper>,
  *     response?: array<string, ResponseMapper>, errors?: array<string, ResponseMapper>,
  *     responseFields?: array<string, string>, errorFields?: array<string, string>,
- *     completeCollections?: array<string, int>, convention?: Convention
+ *     completeCollections?: array<string, int>, convention?: Convention, jsonFields?: JsonFields
  * }
  */
 final readonly class InlineMapping
@@ -171,6 +171,9 @@ final readonly class InlineMapping
     public function context(): array
     {
         $context = $this->context;
+        if (isset($this->mappings['jsonFields'])) {
+            $context['plainJson'] = true;
+        }
         if (isset($this->mappings['responseFields'])) {
             $context['responseFields'] = $this->mappings['responseFields'];
         }
@@ -275,12 +278,18 @@ final readonly class InlineMapping
             );
         }
         $mapper = $this->select($this->mappings['payload'] ?? []);
-        if ($mapper === null) {
+        $fields = $this->mappings['jsonFields'] ?? null;
+        if (in_array($this->context['method'] ?? null, ['GET', 'HEAD'], true)) {
+            $fields = null;
+        }
+        if ($mapper === null && $fields === null) {
             return ['payload' => $selectedPayload, 'body' => $selectedBody];
         }
-        $mapped = $this->mapPayload(
-            $mapper, $original, $remaining ?? $this->originalBody ?? $selectedPayload,
-        );
+        $source = $remaining ?? $this->originalBody ?? $selectedPayload;
+        $mapped = $mapper === null ? $source : $this->mapPayload($mapper, $original, $source);
+        if ($fields !== null) {
+            $mapped = $fields->payload($mapped);
+        }
         if ($mapped === false) {
             return false;
         }
@@ -321,13 +330,11 @@ final readonly class InlineMapping
     /**
      * Reuse configured naming and values after a route changes the body structure.
      *
-     * @param array<array-key, mixed>|stdClass|false $payload
-     *
      * @return array<array-key, mixed>|stdClass|false
      */
-    private function defaultPayload(array|stdClass|false $payload): array|stdClass|false
+    private function defaultPayload(mixed $payload): array|stdClass|false
     {
-        if ($payload === false) {
+        if (! is_array($payload) && ! $payload instanceof stdClass) {
             return false;
         }
         $convention = $this->mappings['convention'] ?? null;
@@ -380,7 +387,7 @@ final readonly class InlineMapping
 
         try {
             $json = $body === '' ? null : json_decode(
-                $body, flags: JSON_THROW_ON_ERROR | JSON_BIGINT_AS_STRING,
+                $body, flags: JSON_THROW_ON_ERROR | $this->decodeFlags(),
             );
         } catch (JsonException) {
             return $this->mapInvalidResponse($response);
@@ -414,6 +421,14 @@ final readonly class InlineMapping
         } catch (InvalidUpstreamResponse) {
             return $response;
         }
+    }
+
+    /**
+     * Typed fields distinguish out-of-range JSON numbers from strings.
+     */
+    private function decodeFlags(): int
+    {
+        return isset($this->mappings['jsonFields']) ? 0 : JSON_BIGINT_AS_STRING;
     }
 
     /**

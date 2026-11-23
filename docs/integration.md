@@ -212,7 +212,9 @@ Action names are lowercase.
 
 Request callbacks receive `($value, $request)`. The snapshot has original `action`,
 `query`, and `payload`; errors before body reading have `payload=null`. Query mapping
-receives query parameters without `r`. The default query mapper forwards additional parameters, including nested values, alongside translated filters and pagination. When both produce the same key, the translated value takes precedence. Query callbacks return an array or `false`.
+receives query parameters without `r`. The default query mapper forwards additional parameters,
+including nested values, alongside translated filters and pagination. When both produce
+the same key, the translated value takes precedence. Query callbacks return an array or `false`.
 Payload callbacks return an array, a `stdClass`, or `false`. A flat payload map creates
 an object, including `{}` when empty. `false` keeps Yii before any HTTP attempt.
 Exceptions do not select the old handler. Query bypass skips payload mapping.
@@ -251,7 +253,8 @@ correct string form. `Mapping::validationErrors()` collects unknown fields under
 
 `Mapping::legacyQuery()` takes explicit filter, sort, and include maps. Its defaults
 are `defaultLimit=20` and `maxLimit=100`. It returns `filter`, CSV `sort/include`, and
-`page/per_page`. A conventional GET collection reads both pages when a requested window crosses a page boundary. The low-level single-page mapper returns `false` for unaligned offsets.
+`page/per_page`. A conventional GET collection reads both pages when a requested window
+crosses a page boundary. The low-level single-page mapper returns `false` for unaligned offsets.
 It never rounds an offset into a different page.
 
 ## Independent read and write flags
@@ -377,9 +380,9 @@ To work on the package beside a Yii application, clone the repository and add a
 Composer path repository:
 
 ```shell
-git clone --branch 5.4.0 --depth 1 https://github.com/cosmira/yii1-strangler-proxy.git ../yii1-strangler-proxy
+git clone --branch 9.0.0 --depth 1 https://github.com/cosmira/yii1-strangler-proxy.git ../yii1-strangler-proxy
 composer config repositories.yii1-strangler-proxy path ../yii1-strangler-proxy
-composer require cosmira/yii1-strangler-proxy:5.4.0
+composer require cosmira/yii1-strangler-proxy:9.0.0
 ```
 
 A path repository is for development; deploy the tagged VCS dependency and the

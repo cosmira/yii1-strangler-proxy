@@ -13,6 +13,7 @@ use Cosmira\Strangler\StranglerFilter;
 use Cosmira\Strangler\StranglerProxy;
 use Cosmira\Strangler\Tests\Fixtures\ApplicationEnded;
 use Cosmira\Strangler\Tests\Fixtures\Controller;
+use Cosmira\Strangler\Tests\Fixtures\NativeControllerContract;
 use Cosmira\Strangler\Tests\Fixtures\Request;
 use Cosmira\Strangler\Tests\Fixtures\User;
 use Cosmira\Strangler\Tests\Fixtures\WebApplication;
@@ -155,6 +156,61 @@ final class StranglerProxyTest extends TestCase
             self::assertSame(502, http_response_code());
         }
         self::assertCount(4, $this->history);
+    }
+
+    /** @param 'get'|'post'|'put'|'patch'|'delete' $verb */
+    #[TestWith(['get'])]
+    #[TestWith(['post'])]
+    #[TestWith(['put'])]
+    #[TestWith(['patch'])]
+    #[TestWith(['delete'])]
+    public function testIncomingVerbSelectsTheExecutorBeforeReadingThePayload(string $verb): void
+    {
+        $this->request->body = 'invalid JSON';
+        $config = Strangler::proxy('catalog')->mapQuery([])
+            ->{$verb}('save', '/stores/{storeId}', incoming: 'post')->build()['config'];
+        $proxy = $this->proxy($this->client([new Response(200, [], 'saved')]));
+        $_GET = ['storeId' => 'store:42'];
+
+        self::assertTrue(StranglerProxy::shouldBypass($this->controller, $config, 'Save'));
+        self::assertFalse($proxy->handle($this->controller, $config, 'Save'));
+        self::assertCount(0, $this->history);
+
+        $_SERVER['REQUEST_METHOD'] = 'POST';
+        $this->request->body = '{}';
+        self::assertSame('saved', $this->capture(fn () => $proxy->handle($this->controller, $config, 'Save')));
+        self::assertCount(1, $this->history);
+        $request = $this->history[0]['request'];
+        self::assertSame(strtoupper($verb), $request->getMethod());
+        self::assertSame('/stores/store%3A42', $request->getUri()->getPath());
+        self::assertSame('', $request->getUri()->getQuery());
+    }
+
+    public function testExplicitIncomingVerbOverridesTheCrudDefaultAndPreservesItsQueryGuard(): void
+    {
+        $_SERVER['REQUEST_METHOD'] = 'POST';
+        $contract = new NativeControllerContract($this->createStub(\CActiveRecord::class));
+        $config = Strangler::proxy('example')->using($contract)->uppercase('ITEM_ID')
+            ->patch('edit', '/items/{id}', incoming: 'POST')->build()['config'];
+        $proxy = $this->proxy($this->client([new Response(200, [], '{"data":{"id":4}}')]));
+
+        $_GET = ['id' => '4', 'filter' => 'malformed'];
+        self::assertFalse($proxy->handle($this->controller, $config, 'edit'));
+        self::assertCount(0, $this->history);
+
+        $_GET = ['id' => '4'];
+        $this->capture(fn () => $proxy->handle($this->controller, $config, 'edit'));
+        self::assertCount(1, $this->history);
+        self::assertSame('PATCH', $this->history[0]['request']->getMethod());
+        self::assertSame('/items/4', $this->history[0]['request']->getUri()->getPath());
+    }
+
+    public function testIncomingVerbIsValidatedAtRegistration(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('Unsupported incoming HTTP method.');
+
+        Strangler::proxy('catalog')->put('save', '/settings', incoming: '');
     }
 
     #[TestWith([199])]

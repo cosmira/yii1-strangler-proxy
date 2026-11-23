@@ -5,6 +5,7 @@ Use inline mappings for request and response translations. Application callbacks
 complex contracts through the same mapping pipeline.
 
 - [One fluent proxy](#one-fluent-proxy)
+- [JSON object fields](#json-object-fields)
 - [Share a controller contract](#share-a-controller-contract)
 - [Advanced: adapt a different envelope](#advanced-adapt-a-different-envelope)
 - [Advanced: replace a mapping stage](#advanced-replace-a-mapping-stage)
@@ -51,6 +52,48 @@ for empty actions and custom envelopes. This convention maps successful response
 `response(fields: [...])` maps upstream to legacy names. `request(fields: [...])` maps legacy to
 upstream names. A hypothetical backend may return `label` while accepting `name`.
 A request-only alias does not change filter or sort names.
+
+### JSON object fields
+
+Use [`jsonFields()`](../README.md#read-and-save-a-json-object) when both sides exchange one
+object with a known set of fields. The keys declare the public JSON names. Every declared
+key must be present, including a key whose type permits null.
+
+| Type | Example JSON value |
+| --- | --- |
+| `string` | `"Desk"` |
+| `int` | `42` |
+| `bool` | `false` |
+| `list<string>` | `["office", "sale"]` or `[]` |
+
+Append `|null` to any of these types to allow a null value for a required key.
+Incoming names use ASCII case-insensitive matching. For boolean fields, a Yii form can also supply
+the integers `0` or `1`. Extra fields are omitted. A valid JSON submission with incompatible
+fields continues in Yii before any backend request. Invalid JSON syntax returns HTTP 400.
+Two spellings of a declared name must agree after
+normalization. When a route selects a nested object with `body:`, the same field
+checks apply to that object before sending. When the proxy reads raw JSON, the form
+is a PHP array and nested objects retain their `stdClass` shape. An application's
+payload reader supplies its own PHP representation. GET and HEAD skip the reader.
+
+For URL-encoded form submissions, configure a [form reader](#send-a-request-from-a-yii-filter)
+that supplies values with the declared types.
+
+A model-free group keeps the application payload reader on writes, the configured
+error mapper and final response validation. Use `bypassUsing()` or
+`request(bypass:, before:)` for application checks that must run here. Record
+hooks such as `ControllerContract::shouldBypass()`, `nativeRelations()` and
+`validationErrors()` apply to model-based declarations.
+
+Route placeholders bind from the original request. For example, `?catalogId=summer`
+fills `{catalogId}` even with `mapQuery([])`, which omits the outgoing query.
+
+A successful backend response supplies the object under `data`. Its field names
+and types are checked as JSON. The legacy client receives only the declared fields
+as `data` inside the Yii success envelope. An explicit `{"data":null}` returns
+`{"state":"data"}`. Malformed JSON, a missing `data` key or an incompatible
+field type produces a 502 error. A 204 or 205 retains its empty body.
+Backend errors follow the configured error mapping.
 
 ### Share field names across directions
 
@@ -228,8 +271,8 @@ body: static function (array $payload): array {
 },
 ```
 
-Without a naming convention, the returned structure is sent unchanged. As of 8.0, array body declarations pass their selected fields through the same
-convention and application adapter as closures.
+Without a naming convention, the returned structure is sent unchanged. As of 8.0,
+array body declarations pass their selected fields through the same convention and application adapter as closures.
 No callback causes retries or native fallback after an upstream attempt.
 
 If a legacy client submits a row or a list of rows, `route(request:)` can
@@ -1036,16 +1079,29 @@ receives the original payload. It runs once before transport; exceptions stop th
 request. Body and URL modifiers must prepare data without performing writes.
 No failure after HTTP starts repeats the native action.
 
-
 ### Send a request from a Yii filter
 
-When one form changes several resources, its Yii filter can send each request through the configured upstream client. Apply the feature flag and native access checks before the first write.
+Use [`action()`](../README.md#save-one-form-through-two-rest-endpoints) when one incoming
+action needs several existing REST endpoints. The callback receives the configured
+`StranglerProxy`, the original query and the parsed Yii payload. Each `request()`
+uses the configured upstream transport and returns a PSR-7 response. Yield each request
+before starting the next one. Use a request guard to keep unsupported forms in Yii
+before the first step. Each selected action must yield at least one response.
 
-```php
-$proxy = new StranglerProxy();
-$response = $proxy->request('POST', '/api/people/' . rawurlencode($personId) . '/groups', [], [
-    'group_id' => $groupId,
-]);
-```
+The default reader expects a JSON request body. For an action receiving an ordinary
+HTML form POST, use `->request(reader: static fn (): array => $_POST)` on its proxy
+or reuse your controller contract's form reader. HTML form scalar values arrive as
+strings. Validate and convert them when the REST endpoint expects numbers or booleans.
 
-Use `Cosmira\Strangler\StranglerProxy`. The method returns the upstream PSR-7 response, including HTTP errors. A transport failure returns 503. The filter checks each result, stops on the first failure and sends one response to the form. A write that timed out may already have committed.
+- A non-2xx result stops the sequence. Declare `expects: 200`, for example, when a step
+  must have completed synchronously. A different 2xx status then produces a 502 error.
+- The last successful response supplies the client response. Explicit response and error
+  mappings still apply. If the client expects an updated item
+  after a successful change, yield a GET of that item as the last step. The caller needs
+  permission to read it.
+- If readback fails after a confirmed write, return the read error. Subsequent recovery
+  can repeat the read. If a write times out, its outcome is unknown. Check backend state
+  before resubmission. Completed steps stay committed. Strangler never replays the form in Yii.
+
+Existing custom Yii filters can also call `StranglerProxy::request()` directly. Those filters
+must apply their feature and access checks and inspect each response before issuing the next call.

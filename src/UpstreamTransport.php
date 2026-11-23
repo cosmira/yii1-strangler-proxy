@@ -86,26 +86,31 @@ final readonly class UpstreamTransport
     /**
      * Resume the action only after a successful response. The last response goes to Yii.
      *
-     * @param Config                                                $config
-     * @param \Generator<array-key, ResponseInterface, mixed, void> $steps
+     * @param Config                                    $config
+     * @param \Generator<array-key, mixed, mixed, void> $steps
      */
     public function sendAction(
         array $config, string $action, \Generator $steps, ?InlineMapping $inline,
     ): void {
         $startedAt = ($this->clock)();
-        if (! $steps->valid()) {
-            throw new \LogicException(
-                'Strangler actions must yield at least one upstream response.',
-            );
-        }
-        do {
-            $response = $steps->current();
+        $response = null;
+        for ($step = $steps->current(); $steps->valid(); $step = $steps->send($step)) {
+            if (! $step instanceof ResponseInterface) {
+                throw new \LogicException(
+                    'Strangler actions must yield an HTTP response at each step.',
+                );
+            }
+            $response = $step;
             $status = $response->getStatusCode();
             if ($status < 200 || $status >= 300) {
                 break;
             }
-            $steps->send($response);
-        } while ($steps->valid());
+        }
+        if ($response === null) {
+            throw new \LogicException(
+                'Strangler actions must yield at least one upstream response.',
+            );
+        }
 
         $this->emitResponse(
             $config, $action, '', $this->elapsed($startedAt),

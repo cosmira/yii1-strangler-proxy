@@ -14,6 +14,7 @@ use Cosmira\Strangler\Tests\Fixtures\Controller;
 use Cosmira\Strangler\Tests\Fixtures\Request;
 use Cosmira\Strangler\Tests\Fixtures\User;
 use Cosmira\Strangler\Tests\Fixtures\WebApplication;
+use Cosmira\Strangler\UpstreamTransport;
 use Generator;
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\ConnectException;
@@ -303,6 +304,20 @@ final class ActionTest extends TestCase
 
         self::assertSame($file, $this->dispatch($builder, [new Response(200, [], $file)]));
         self::assertCount(1, $this->requests);
+    }
+
+    public function testAnInvalidYieldCannotSkipAheadToTheNextRequest(): void
+    {
+        $transport = new UpstreamTransport(null, new ResponseEmitter(), static fn (): float => 0.0);
+        $steps = static function (): Generator {
+            yield new Response(201);
+            yield null;
+            self::fail('An invalid step must stop the action.');
+        };
+
+        $this->expectException(\LogicException::class);
+        $this->expectExceptionMessage('yield an HTTP response at each step');
+        $transport->sendAction([], 'save', $steps(), null);
     }
 
     public function testEmptySequenceCannotDelegateToYii(): void

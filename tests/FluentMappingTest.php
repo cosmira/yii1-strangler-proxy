@@ -46,6 +46,21 @@ final class FluentMappingTest extends TestCase
         ], $mapped);
     }
 
+    public function testNestedModifiersKeepEachEarlierQueryReusable(): void
+    {
+        $base = Query::legacy()->filters(['term' => 'name']);
+        $search = $base->modify(static fn (array $query): array => [
+            'filter' => ['term' => $query['search']],
+        ]);
+        $preset = $search->modify(static fn (array $query): array => ['search' => 'desk'] + $query);
+        $input = ['search' => 'ink'];
+        $context = ['action' => 'view'];
+
+        self::assertSame($input, $base($input, $context));
+        self::assertSame(['filter' => ['name' => 'ink']], $search($input, $context));
+        self::assertSame(['filter' => ['name' => 'desk']], $preset($input, $context));
+    }
+
     public function testUnsupportedQueriesKeepLegacyExecution(): void
     {
         $mapper = Query::legacy()->pagination(default: 5, max: 10);

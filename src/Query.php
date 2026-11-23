@@ -236,11 +236,11 @@ final class Query
      */
     public function adapt(callable $adapter): self
     {
-        $copy = clone $this;
-        $copy->adapter = $adapter(...);
-        $copy->defaults = $this;
+        $adapted = new self($this->convention);
+        $adapted->adapter = $adapter(...);
+        $adapted->defaults = $this;
 
-        return $copy;
+        return $adapted;
     }
 
     /**

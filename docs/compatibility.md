@@ -1,7 +1,17 @@
 # Check a 9.x integration
 
 Keep the feature disabled until the application's contract tests pass with
-`cosmira/yii1-strangler-proxy` **9.2.0**.
+`cosmira/yii1-strangler-proxy` **9.3.0**.
+
+## Upgrade from 9.2
+
+Require `cosmira/yii1-strangler-proxy:^9.3` to use `action(..., checkNative: true)`.
+Declare the native relations the action handles through `request(relations: ..., actions: ...)`.
+The same application bypass and unhandled-relation checks apply before any write.
+See [a composed action with the controller contract](../README.md#apply-the-controller-contract-to-a-composed-action).
+
+A `request(bypass: ..., actions: [...])` callback now runs only for the listed
+actions. Omit `actions` for a callback shared by all actions.
 
 ## Upgrade from 9.1
 

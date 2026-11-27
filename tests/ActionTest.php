@@ -533,6 +533,109 @@ final class ActionTest extends TestCase
         self::assertSame([], $this->requests);
     }
 
+    public function testGuardedActionRequiresAModelBasedContractAtBuildTime(): void
+    {
+        $builder = Strangler::proxy('catalog')
+            ->action('edit', 'PUT', static function (StranglerProxy $api): Generator {
+                yield $api->write('PATCH', '/items/42');
+            }, checkNative: true);
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('Action edit uses checkNative. Register a model-based controller contract with using().');
+
+        $builder->build();
+    }
+
+    public function testGuardedActionUsesTheDeclaredIdentifierWithoutLoadingAModel(): void
+    {
+        $_SERVER['REQUEST_METHOD'] = 'PUT';
+        $_GET = ['id' => '42'];
+        $builder = Strangler::proxy('catalog')
+            ->uppercase('ITEM_ID')
+            ->action('edit', 'PUT', static function (StranglerProxy $api): Generator {
+                yield $api->write('PATCH', '/items/42');
+            }, checkNative: true)
+            ->using(new class extends ControllerContract
+            {
+                public function payload(CController $controller): array
+                {
+                    return ['ITEM_ID' => 'other'];
+                }
+            });
+
+        self::assertSame('', $this->dispatch($builder, [], 'edit'));
+        self::assertTrue($this->controller->ran);
+        self::assertSame([], $this->requests);
+    }
+
+    #[TestWith(['contract', true])]
+    #[TestWith(['native', true])]
+    #[TestWith(['adapted', false])]
+    public function testChosenActionCanUseTheNativeControllerContract(string $case, bool $bypass): void
+    {
+        $_SERVER['REQUEST_METHOD'] = 'PUT';
+        $_GET = [];
+        $contract = new class($case) extends ControllerContract
+        {
+            public function __construct(private readonly string $case) {}
+
+            public function payload(CController $controller): array
+            {
+                return [$this->case => []];
+            }
+
+            public function nativeRelations(CController $controller): array
+            {
+                return ['native', 'adapted'];
+            }
+
+            public function shouldBypass(
+                CController $controller, string $action, array $query, array $payload,
+                ?string $identifier = null, ?string $incoming = null,
+            ): bool {
+                return $this->case === 'contract'
+                    || parent::shouldBypass($controller, $action, $query, $payload, $identifier, $incoming);
+            }
+        };
+        $builder = Strangler::proxy('catalog')->using($contract)
+            ->request(relations: ['adapted'], actions: ['edit'])
+            ->choose('edit', 'PUT', static fn (Strangler $routes): Strangler => $routes->action('edit', 'PUT', static function (StranglerProxy $api): Generator {
+                yield $api->write('PATCH', '/items/42');
+            }, checkNative: true));
+
+        $response = $this->dispatch($builder, $bypass ? [] : [new Response(200, [], 'saved')], 'edit');
+
+        self::assertSame($bypass ? '' : 'saved', $response);
+        self::assertSame($bypass, $this->controller->ran);
+        self::assertCount($bypass ? 0 : 1, $this->requests);
+    }
+
+    #[TestWith(['get', true])]
+    #[TestWith(['get', false])]
+    #[TestWith(['edit', true])]
+    #[TestWith(['edit', false])]
+    public function testScopedBypassOnlyAppliesToItsAction(string $action, bool $choose): void
+    {
+        $builder = Strangler::proxy('catalog')
+            ->request(bypass: static fn (): bool => false)
+            ->request(bypass: static fn (): bool => true, actions: ['Edit']);
+        $run = static function (StranglerProxy $api): Generator {
+            yield $api->write('POST', '/items');
+        };
+        if ($choose) {
+            $builder->choose($action, 'POST', static fn (Strangler $routes): Strangler => $routes->action($action, 'POST', $run));
+        } else {
+            $builder->action($action, 'POST', $run);
+        }
+
+        $bypass = $action === 'edit';
+        $response = $this->dispatch($builder, $bypass ? [] : [new Response(200, [], 'saved')], $action);
+
+        self::assertSame($bypass ? '' : 'saved', $response);
+        self::assertSame($bypass, $this->controller->ran);
+        self::assertCount($bypass ? 0 : 1, $this->requests);
+    }
+
     #[TestWith([200])]
     #[TestWith([503])]
     public function testDebugTimingIncludesEveryAttempt(int $status): void
@@ -739,7 +842,7 @@ final class ActionTest extends TestCase
     }
 
     /** @param list<Response|ConnectException> $responses */
-    private function dispatch(Strangler $builder, array $responses): string
+    private function dispatch(Strangler $builder, array $responses, string $action = 'get'): string
     {
         $handler = HandlerStack::create(new MockHandler($responses));
         $handler->push(Middleware::tap(function (RequestInterface $request): void {
@@ -747,7 +850,7 @@ final class ActionTest extends TestCase
         }));
         $filter = $builder->build();
         $filter['client'] = new Client(['handler' => $handler]);
-        $chain = CFilterChain::create($this->controller, $this->controller->createAction('get'), [$filter]);
+        $chain = CFilterChain::create($this->controller, $this->controller->createAction($action), [$filter]);
         ob_start();
 
         try {

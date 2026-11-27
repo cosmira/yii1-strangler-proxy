@@ -170,6 +170,24 @@ If replacing the labels fails, the client receives that error and the
 title may already have changed. Choose this form of forwarding when the client can handle
 partial updates. See [HTML form input, failures and readback](docs/api-adaptation.md#send-a-request-from-a-yii-filter).
 
+## Apply the controller contract to a composed action
+
+If the controller has a model-based contract, add `checkNative: true` to give a
+composed action the same native bypass and nested-write checks as a regular route.
+Declare which nested fields the action handles.
+
+```php
+Strangler::proxy('catalog')
+    ->request(relations: ['labels'], actions: ['edit'])
+    ->action('edit', 'PUT', $this->saveItemAndLabels(...), checkNative: true)
+    ->build();
+```
+
+A form with another native relation stays in Yii before any backend call.
+Use `request(before: ...)` for application checks that must run before the first
+write. If a `choose()` selector selects this action, the contract checks run on
+the original form after selection. Keep selectors free of writes.
+
 ## When the APIs differ
 
 The catalog examples use `id` and `name` under `data`.
@@ -285,7 +303,7 @@ The [catalog example](examples/catalog/README.md) runs Yii and a backend against
 one SQLite dataset. It requires `pdo_sqlite`:
 
 ```shell
-git clone --branch 9.2.0 --depth 1 https://github.com/cosmira/yii1-strangler-proxy.git
+git clone --branch 9.3.0 --depth 1 https://github.com/cosmira/yii1-strangler-proxy.git
 cd yii1-strangler-proxy
 composer install
 composer example:verify

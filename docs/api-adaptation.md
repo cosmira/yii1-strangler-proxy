@@ -637,7 +637,8 @@ conflicting identities retain Yii. `methods` checks the incoming method, while
 the route method defines the outgoing request. `actions=[]` applies a registration
 to every mapped action. Repeated guard registrations compose. Action names are
 case-insensitive, like route declarations; configured method names are normalized
-to uppercase.
+to uppercase. A `bypass` callback registered with `actions` applies only to those
+actions and also runs alongside any global bypass callback.
 
 After structural guards pass, `before` receives the original payload, normalized
 action name and native controller. Use it for existing authorization checks, not
@@ -1120,7 +1121,12 @@ action needs several existing REST endpoints. The callback receives the configur
 `StranglerProxy`, the original query and the parsed Yii payload. Each `request()`
 uses the configured upstream transport and returns a PSR-7 response. Yield each request
 before starting the next one. Use a request guard to keep unsupported forms in Yii
-before the first step. Each selected action must yield at least one response.
+before the first step. For a model-based action, pass `checkNative: true` to
+`action()` to also use the controller contract’s bypass decision and nested-write
+guards. Declare consumed relations with `request(relations: ..., actions: ...)`.
+A guarded action requires a model-based controller contract. The builder reports
+a missing contract when you call `build()`.
+Each selected action must yield at least one response.
 
 Use `write()` for a POST, PUT, PATCH or DELETE that must be acknowledged before continuing.
 It expects HTTP 200 by default. Pass `expects: 201` for creation or `expects: 204`

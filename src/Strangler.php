@@ -62,7 +62,7 @@ use InvalidArgumentException;
  * @phpstan-type ActionHandler callable(
  *     StranglerProxy, array<array-key, mixed>, array<array-key, mixed>
  * ): \Generator<array-key, \Psr\Http\Message\ResponseInterface, mixed, void>
- * @phpstan-type Action array{incoming: string, run: ActionHandler}
+ * @phpstan-type Action array{incoming: string, run: ActionHandler, checkNative?: true}
  * @phpstan-type Selector callable(
  *     self, array<array-key, mixed>, array<array-key, mixed>
  * ): ?self
@@ -154,6 +154,13 @@ final class Strangler
      * @var list<array{actions: list<string>, check: RequestCheck}>
      */
     private array $requestChecks = [];
+
+    /**
+     * Bind payload predicates to normalized Yii action names.
+     *
+     * @var array<string, RequestBypass>
+     */
+    private array $scopedBypasses = [];
 
     /**
      * Upstream routes indexed by normalized legacy action names.
@@ -813,8 +820,9 @@ final class Strangler
      *
      * @param ActionHandler $requests
      */
-    public function action(string $action, string $incoming, callable $requests): self
-    {
+    public function action(
+        string $action, string $incoming, callable $requests, bool $checkNative = false,
+    ): self {
         $key = $this->actionKey($action);
         $run = $requests(...);
         if (! (new \ReflectionFunction($run))->isGenerator()) {
@@ -822,7 +830,8 @@ final class Strangler
                 'Strangler actions must yield each upstream response.',
             );
         }
-        $this->actions[$key] = ['incoming' => self::incomingMethod($incoming), 'run' => $run];
+        $this->actions[$key] = ['incoming' => self::incomingMethod($incoming), 'run' => $run]
+            + ($checkNative ? ['checkNative' => true] : []);
 
         return $this;
     }
@@ -862,10 +871,35 @@ final class Strangler
             $config['choices'] = $this->compiledChoices();
         }
         if ($this->actions !== [] || $this->choices !== []) {
-            $config['actionOptions'] = $this->withHooks($this->config);
+            $config['actionOptions'] = $this->actionOptions();
         }
 
         return [StranglerFilter::class, 'config' => $config];
+    }
+
+    /**
+     * Validate opt-in model guards before dispatch, without loading an Active Record.
+     *
+     * @return BoundConfig
+     */
+    private function actionOptions(): array
+    {
+        $action = array_key_first(array_filter(
+            $this->actions, static fn (array $route): bool => isset($route['checkNative']),
+        ));
+        if ($action === null) {
+            return $this->withHooks($this->config);
+        }
+        if (ControllerContract::forModel($this->config) === null) {
+            throw new InvalidArgumentException(
+                "Action {$action} uses checkNative. "
+                .'Register a model-based controller contract with using().',
+            );
+        }
+
+        $identifier = $this->identifier === null ? [] : ['bodyIdentifier' => $this->identifier];
+
+        return $this->withHooks($identifier + $this->config);
     }
 
     /**
@@ -879,7 +913,8 @@ final class Strangler
         $defaults->actions = [];
         $defaults->routes = [];
         $defaults->choices = [];
-        $bypass = $defaults->config['bypassPayload'] ?? null;
+        $bypass = $defaults->payloadBypass();
+        $defaults->scopedBypasses = [];
         unset(
             $defaults->config['bypass'],
             $defaults->config['nativeQueryFilters'],
@@ -967,6 +1002,10 @@ final class Strangler
      */
     private function withHooks(array $config): array
     {
+        $bypass = $this->payloadBypass();
+        if ($bypass !== null) {
+            $config['bypassPayload'] = $bypass;
+        }
         if ($this->requestChecks !== []) {
             $config['beforeRequest'] = InlineMapping::beforeRequest($this->requestChecks);
         }
@@ -1077,7 +1116,13 @@ final class Strangler
             $this->config['payloadReader'] = $reader;
         }
         if ($bypass !== null) {
-            $this->config['bypassPayload'] = $bypass;
+            if ($actions === []) {
+                $this->config['bypassPayload'] = $bypass;
+            } else {
+                foreach ($actions as $action) {
+                    $this->scopedBypasses[$action] = $bypass;
+                }
+            }
         }
         if ($parameters !== null) {
             $this->config['routeParameters'] = $parameters;
@@ -1086,6 +1131,29 @@ final class Strangler
         if ($using !== null) {
             $this->payloadAdapter = $using(...);
         }
+    }
+
+    /**
+     * Apply shared and action-specific predicates to the same original form.
+     *
+     * @return RequestBypass|null
+     */
+    private function payloadBypass(): ?callable
+    {
+        $global = $this->config['bypassPayload'] ?? null;
+        $scoped = $this->scopedBypasses;
+        if ($scoped === []) {
+            return $global;
+        }
+
+        return static function (
+            array $payload, string $action, array $query,
+        ) use ($global, $scoped): bool {
+            $predicate = $scoped[$action] ?? null;
+
+            return ($global !== null && $global($payload, $action, $query))
+                || ($predicate !== null && $predicate($payload, $action, $query));
+        };
     }
 
     /**

@@ -21,7 +21,6 @@ use Throwable;
  * @phpstan-import-type Config from Strangler
  * @phpstan-import-type Action from Strangler
  * @phpstan-import-type Choice from Strangler
- * @phpstan-import-type ActionHandler from Strangler
  * @phpstan-import-type Route from Strangler
  * @phpstan-import-type Context from InlineMapping
  * @phpstan-import-type RequestValues from InlineMapping
@@ -217,8 +216,8 @@ final class StranglerProxy
             return self::shouldBypass($controller, $destination, $actionKey, $form['payload']);
         }
         if (isset($route['run'])) {
-            return self::payloadIsNative(
-                $controller, $config['actionOptions'] ?? [], $actionKey, $payload,
+            return self::actionIsNative(
+                $controller, $config['actionOptions'] ?? [], $actionKey, $route, $payload,
             );
         }
         $bound = ControllerContract::resolveConfig($config, $controller);
@@ -381,7 +380,7 @@ final class StranglerProxy
         }
         if (isset($route['run'])) {
             return $this->runAction(
-                $controller, $bound, $actionKey, $route['run'], $original['payload'],
+                $controller, $bound, $actionKey, $route, $original['payload'],
                 $inline?->withPayload($original['payload'], $original['body']),
             );
         }
@@ -393,14 +392,14 @@ final class StranglerProxy
      * Run application requests only after native guards and mandatory checks have passed.
      *
      * @param Config                  $config
-     * @param ActionHandler           $requests
+     * @param Action                  $route
      * @param array<array-key, mixed> $payload
      */
     private function runAction(
         CController $controller, array $config, string $action,
-        callable $requests, array $payload, ?InlineMapping $inline,
+        array $route, array $payload, ?InlineMapping $inline,
     ): bool {
-        if (self::payloadIsNative($controller, $config, $action, $payload)) {
+        if (self::actionIsNative($controller, $config, $action, $route, $payload)) {
             YiiRuntime::logDecision($config, $action, 'bypass_payload');
 
             return false;
@@ -412,9 +411,36 @@ final class StranglerProxy
         $api = clone $this;
         $api->requestConfig = $config;
         $api->requestAction = $action;
-        $this->transport->sendAction($config, $action, $requests($api, $_GET, $payload), $inline);
+        $steps = $route['run']($api, $_GET, $payload);
+        $this->transport->sendAction($config, $action, $steps, $inline);
 
         return true;
+    }
+
+    /**
+     * Check action eligibility against the same original form used for dispatch.
+     *
+     * @param Config                       $config
+     * @param Action                       $route
+     * @param array<array-key, mixed>|null $payload
+     */
+    private static function actionIsNative(
+        CController $controller, array $config, string $action, array $route, ?array $payload,
+    ): bool {
+        $contract = isset($route['checkNative']) ? ControllerContract::forModel($config) : null;
+        $original = $payload;
+        if ($contract !== null) {
+            $incoming = $route['incoming'];
+            $original ??= self::readPayload($controller, $config, $action, $incoming)['payload'];
+            $identifier = $config['bodyIdentifier'] ?? null;
+            if ($contract->shouldBypass(
+                $controller, $action, $_GET, $original, $identifier, $incoming,
+            )) {
+                return true;
+            }
+        }
+
+        return self::payloadIsNative($controller, $config, $action, $original, $contract);
     }
 
     /**

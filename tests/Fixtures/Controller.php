@@ -14,4 +14,9 @@ final class Controller extends CController
     {
         $this->ran = true;
     }
+
+    public function actionEdit(): void
+    {
+        $this->ran = true;
+    }
 }

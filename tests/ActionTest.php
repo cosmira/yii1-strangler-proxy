@@ -7,7 +7,9 @@ namespace Cosmira\Strangler\Tests;
 use CController;
 use CFilterChain;
 use Cosmira\Strangler\ControllerContract;
+use Cosmira\Strangler\Forward;
 use Cosmira\Strangler\ResponseEmitter;
+use Cosmira\Strangler\RouteOptions;
 use Cosmira\Strangler\Strangler;
 use Cosmira\Strangler\StranglerProxy;
 use Cosmira\Strangler\Tests\Fixtures\Controller;
@@ -61,6 +63,58 @@ final class ActionTest extends TestCase
         ]);
         $this->app->shouldEnd = false;
         $this->controller = new Controller('catalog');
+    }
+
+    #[TestWith(['move', 'POST', '/groups/target/items/42/move'])]
+    #[TestWith(['edit', 'PUT', '/items/42'])]
+    #[TestWith(['legacy', null, null])]
+    public function testSelectInheritsOneIncomingMethodAndTheSharedMappings(
+        string $operation, ?string $method, ?string $path,
+    ): void {
+        $_SERVER['REQUEST_METHOD'] = 'PUT';
+        $builder = Strangler::proxy('catalog')->uppercase('ITEM_ID')
+            ->request(
+                reader: static fn (): array => ['OPERATION' => $operation],
+                fields: ['TITLE' => 'label'],
+            )
+            ->select('Edit', 'put', static fn (array $form): ?Forward => match ($form['OPERATION']) {
+                'move'  => Forward::post('/groups/{group_id}/items/42/move', ['TITLE' => 'prepared'], expects: 200, parameters: ['group_id' => 'target']),
+                'edit'  => Forward::put('/items/42', ['TITLE' => 'prepared'], expects: 200),
+                default => null,
+            });
+
+        $this->dispatch($builder, $method === null ? [] : [new Response(200, [], '{"data":{"item_id":"42"}}')], 'edit');
+
+        self::assertSame($method === null, $this->controller->ran);
+        if ($method === null) {
+            self::assertSame([], $this->requests);
+
+            return;
+        }
+        self::assertCount(1, $this->requests);
+        self::assertSame($method, $this->requests[0]->getMethod());
+        self::assertSame($path, $this->requests[0]->getUri()->getPath());
+        self::assertSame('{"label":"prepared"}', (string) $this->requests[0]->getBody());
+    }
+
+    public function testSelectedSequenceCanMapItsError(): void
+    {
+        $builder = Strangler::proxy('catalog')->select('get', 'POST', static fn (): Forward => Forward::sequence(static function (StranglerProxy $api): Generator {
+            yield $api->write('POST', '/items');
+        }, errors: static fn () => new Response(422, [], '{"invalid":true}')),
+        );
+
+        self::assertSame('{"invalid":true}', $this->dispatch($builder, [new Response(422, [], '{}')]));
+        self::assertCount(1, $this->requests);
+    }
+
+    public function testChosenRouteCannotReplaceTheReaderAfterSelection(): void
+    {
+        $builder = Strangler::proxy('catalog')->choose('get', 'POST', static fn (Strangler $routes): Strangler => $routes->post('get', '/items', configure: static fn (RouteOptions $route) => $route->reader(static fn (): array => ['NAME' => 'too late'])),
+        );
+
+        $this->expectExceptionMessage('The reader for get must run before choosing a destination.');
+        $this->dispatch($builder, []);
     }
 
     public function testWriteThenReadUsesTheCreatedResourceAndReturnsTheLastResponse(): void
@@ -599,7 +653,7 @@ final class ActionTest extends TestCase
         };
         $builder = Strangler::proxy('catalog')->using($contract)
             ->request(relations: ['adapted'], actions: ['edit'])
-            ->choose('edit', 'PUT', static fn (Strangler $routes): Strangler => $routes->action('edit', 'PUT', static function (StranglerProxy $api): Generator {
+            ->select('edit', 'PUT', static fn (): Forward => Forward::sequence(static function (StranglerProxy $api): Generator {
                 yield $api->write('PATCH', '/items/42');
             }, checkNative: true));
 

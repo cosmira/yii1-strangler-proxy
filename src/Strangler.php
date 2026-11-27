@@ -73,7 +73,7 @@ use InvalidArgumentException;
  * @phpstan-type Route array{
  *     method: string, path: string, incoming?: string,
  *     fromBody?: array<string, string|list<string>>, parameters?: RouteResolver,
- *     request?: RouteRequest, expects?: int, fallback?: Fallback
+ *     request?: RouteRequest, expects?: int, fallback?: Fallback, payloadReader?: PayloadReader
  * }
  * @phpstan-type BoundConfig array{
  *     feature?: string,
@@ -860,6 +860,20 @@ final class Strangler
     }
 
     /**
+     * Select one destination from the original Yii form. Return null to continue in Yii.
+     *
+     * @param callable(array<array-key, mixed>, array<array-key, mixed>): ?Forward $select
+     */
+    public function select(string $action, string $incoming, callable $select): self
+    {
+        $key = strtolower($action);
+        $method = self::incomingMethod($incoming);
+
+        return $this->choose($key, $method, static fn (self $routes, array $form, array $query): ?self => $select($form, $query)?->register($routes, $key, $method),
+        );
+    }
+
+    /**
      * Export the Yii filter definition with its routes and bypass fields.
      *
      * @return array{0: class-string<StranglerFilter>, config: Config}
@@ -955,6 +969,11 @@ final class Strangler
                         );
                     }
                     if (isset($branch->routes[$action])) {
+                        if (isset($branch->routes[$action]['payloadReader'])) {
+                            throw new InvalidArgumentException(
+                                "The reader for {$action} must run before choosing a destination. Use request(reader: ...).",
+                            );
+                        }
                         $branch->routes[$action]['incoming'] ??= $incoming;
                     }
 
@@ -1320,10 +1339,10 @@ final class Strangler
         if ($configure !== null) {
             $options = new RouteOptions($this, $key);
             $configure($options);
-            $fallback = $options->fallback();
-            if ($fallback !== null) {
-                $this->routes[$key]['fallback'] = $fallback;
-            }
+            $this->routes[$key] += array_filter([
+                'fallback'      => $options->fallback(),
+                'payloadReader' => $options->payloadReader(),
+            ]);
         }
 
         return $this;

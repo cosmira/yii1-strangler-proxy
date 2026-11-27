@@ -237,19 +237,18 @@ context, while the payload argument contains the remaining body.
 
 ### Reuse a prepared form
 
-`choose()` calls the selector once per matching dispatch with a request-local builder,
-the original parsed form and the original Yii query. Configure a custom payload reader on
-the outer proxy so it can supply that form. The selector may read stored values. Declare
-the write on the supplied builder and return it with a route or `action()` for the same
-Yii action name. Return `null` to continue the Yii filter chain. The selector sees the form before
-the selected route validates required fields and binds the model. Check any field you use to choose a route.
+`select()` receives the original parsed form and original Yii query once per matching
+dispatch. Its result is a `Forward` destination. Return `null` to continue in Yii.
+The selector may read stored values. Check the fields it uses before the selected
+route validates the request and binds the model. A shared payload reader supplies
+the form before selection.
 
 For example, a term form can remove a category and display the refreshed term. Here the controller's
 `removedCategory()` compares the form with the saved links. It returns the one removed category ID
 or `null` for forms that require other changes.
 
 ```php
-->choose('edit', 'PUT', function (Strangler $routes, array $form, array $query): ?Strangler {
+->select('edit', 'PUT', function (array $form, array $query): ?Forward {
     $category = $this->removedCategory($query['id'], $form);
     if ($category === null) {
         return null;
@@ -258,16 +257,23 @@ or `null` for forms that require other changes.
     $id = rawurlencode((string) $query['id']);
     $link = '/api/categories/' . rawurlencode((string) $category) . '/terms/' . $id;
 
-    return $routes->action('edit', 'PUT', static function (StranglerProxy $api) use ($link, $id): \Generator {
+    return Forward::sequence(static function (StranglerProxy $api) use ($link, $id): \Generator {
         yield $api->write('DELETE', $link, expects: 204);
         yield $api->request('GET', '/api/terms/' . $id, expects: 200);
     });
 })
 ```
 
-The generator captures the prepared link. A `mapJsonErrors()` callback on the same builder can
-capture it too, while its context still contains the original Yii payload. Once the first request
-is sent, an upstream failure is returned to the client. If the read fails, the unlink stays committed.
+The generator captures the prepared link. An `errors:` callback on the
+sequence can capture it too. Its context contains the original Yii payload.
+Once the first request is sent, an upstream failure is returned to the client.
+If the read fails, the unlink stays committed.
+
+For one upstream request, `Forward::post()` and `Forward::put()` accept
+prepared native fields through `payload:` and resolved URL values through
+`parameters:`. Shared request conventions map those fields. Native guards
+continue to inspect the original form. The builder-based `choose()` is also
+available for existing declarations.
 
 ### Compute parameters and bodies per route
 
@@ -1048,6 +1054,12 @@ model binding. A matching shared `bypassUsing()` or route fallback keeps the
 request in Yii. The mapping methods still accept action lists for rules shared
 across routes.
 
+Use `reader()` to read a custom form for just one route. Strangler gives this
+reader the Yii controller and action name. It runs once before payload guards
+and overrides a shared `request(reader: ...)` for that route. Selectors already
+receive the original form. Use the shared reader when a selector needs a custom
+input.
+
 ## File uploads
 
 Use `files()` to send a multipart request for a route:
@@ -1063,6 +1075,18 @@ Strangler::proxy('directory')
 ```
 
 Use `mapFiles()` to share the same upload mapping across actions.
+When a Yii controller reads fields from a custom form, declare the reader next
+to the file mapping:
+
+```php
+->post('importTerms', '/api/categories/{category_id}/terms/import',
+    configure: fn (RouteOptions $route) => $route
+        ->reader($this->readImportForm(...))
+        ->files(['file' => 'file'])
+        ->response($this->importReport(...)),
+)
+```
+
 Keys are Yii upload names, including bracket paths; values are upstream field names.
 Files are passed as read-only streams from PHP's temporary upload directory.
 Use the default Guzzle cURL handler to stream large multipart bodies; it may buffer

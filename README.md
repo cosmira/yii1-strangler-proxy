@@ -121,13 +121,16 @@ One Yii `PUT` action edits a term's text or moves the term to another category. 
 `id` and its `source_category_id`. Each supported form changes exactly one field.
 
 ```php
+use Cosmira\Strangler\Forward;
+
 Strangler::proxy('catalog')
-    ->choose('edit', 'PUT', static function (Strangler $routes, array $form): ?Strangler {
+    ->uppercase('TERM_ID')
+    ->select('edit', 'PUT', static function (array $form): ?Forward {
         $term = '/api/categories/{source_category_id}/terms/{id}';
 
         return match (array_keys($form)) {
-            ['TEXT'] => $routes->put('edit', $term, body: ['text' => 'TEXT']),
-            ['MOVE_TO'] => $routes->post('edit', $term . '/move', body: ['category_id' => 'MOVE_TO']),
+            ['TEXT'] => Forward::put($term, payload: ['TEXT' => $form['TEXT']]),
+            ['MOVE_TO'] => Forward::post($term . '/move', payload: ['CATEGORY_ID' => $form['MOVE_TO']]),
             default => null,
         };
     })
@@ -136,6 +139,8 @@ Strangler::proxy('catalog')
 
 Submitting `{"MOVE_TO":"legal"}` sends one `POST` with `{"category_id":"legal"}`.
 Submitting both fields returns `null` from the selector and lets Yii handle the whole form.
+The selected destination inherits the action's shared mappings. Its prepared
+payload still uses the configured Yii-to-upstream naming and value conventions.
 See [reusing a prepared form](docs/api-adaptation.md#reuse-a-prepared-form) when selection needs a database lookup.
 
 ## Save one form through two REST endpoints

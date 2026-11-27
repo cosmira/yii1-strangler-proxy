@@ -566,7 +566,7 @@ final class StranglerProxy
             return $plain && $snapshot['body'] !== null
                 ? self::plainJsonPayload($snapshot['body']) : $snapshot;
         }
-        $reader = $config['payloadReader'] ?? null;
+        $reader = $config['routes'][$actionKey]['payloadReader'] ?? $config['payloadReader'] ?? null;
         if ($reader === null && isset($config['controllerContract'])) {
             return [
                 'payload' => $config['controllerContract']->payload($controller),

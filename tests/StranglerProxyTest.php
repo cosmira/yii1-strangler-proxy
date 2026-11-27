@@ -572,7 +572,7 @@ final class StranglerProxyTest extends TestCase
         $file = tempnam(sys_get_temp_dir(), 'strangler-upload-');
         self::assertIsString($file);
         file_put_contents($file, "photo\x00bytes");
-        $_POST = ['caption' => 'Profile photo', 'enabled' => false];
+        $_POST = ['caption' => 'Ignored by the local reader'];
         $_FILES = ['files' => [
             'name'  => ['profile.png'], 'type' => ['image/png'], 'tmp_name' => [$file],
             'error' => [UPLOAD_ERR_OK], 'size' => [11],
@@ -580,13 +580,16 @@ final class StranglerProxyTest extends TestCase
         \CUploadedFile::reset();
         $config = Strangler::proxy('example')
             ->mapPayload(['caption' => 'note', 'enabled' => 'enabled'])
-            ->post('upload', '/photo', configure: static fn (RouteOptions $route) => $route->files(['files[0]' => 'photo']))
+            ->request(reader: static fn (): array => ['caption' => 'Shared reader'])
+            ->post('upload', '/photo', configure: static fn (RouteOptions $route) => $route
+                ->reader(static fn (): array => ['caption' => 'Profile photo', 'enabled' => false])
+                ->files(['files[0]' => 'photo']))
+            ->post('create', '/items')
             ->build()['config'];
-        $proxy = $this->proxy($this->client([new Response(200, [], 'uploaded')]));
+        $proxy = $this->proxy($this->client([new Response(200, [], 'uploaded'), new Response(201, [], 'created')]));
 
         try {
             self::assertSame('uploaded', $this->capture(fn () => $proxy->handle($this->controller, $config, 'upload')));
-            self::assertCount(1, $this->history);
             $request = $this->history[0]['request'];
             self::assertStringStartsWith('multipart/form-data; boundary=', $request->getHeaderLine('Content-Type'));
             $body = (string) $request->getBody();
@@ -596,6 +599,9 @@ final class StranglerProxyTest extends TestCase
             self::assertStringContainsString('Profile photo', $body);
             self::assertMatchesRegularExpression('/name="enabled"\r\n(?:[^\r\n]+\r\n)*\r\n0\r\n/', $body);
             self::assertSame('7', $request->getHeaderLine('X-User-Id'));
+            self::assertSame('created', $this->capture(fn () => $proxy->handle($this->controller, $config, 'create')));
+            self::assertCount(2, $this->history);
+            self::assertSame('{"note":"Shared reader"}', (string) $this->history[1]['request']->getBody());
         } finally {
             $_FILES = [];
             \CUploadedFile::reset();

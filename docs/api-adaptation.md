@@ -1023,17 +1023,46 @@ when it rejects upstream data. Other callback exceptions, including `TypeError`
 and `UnexpectedValueException`, propagate as application programming errors.
 Lower-level `Mapping` methods remain available for other response shapes.
 
-## File uploads
+## Configure a single route
 
-Use `mapFiles()` to send a multipart request for selected actions:
+Use `configure:` on a route to keep its mappings and fallback together. The
+callback runs when declaring the route. The callbacks it registers run on
+incoming requests for that action.
 
 ```php
+use Cosmira\Strangler\RouteOptions;
+
 Strangler::proxy('directory')
-    ->mapFiles(['files[0]' => 'photo'], ['uploadImage'])
-    ->post('uploadImage', '/api/people/{person_id}/photo')
+    ->get('search', '/api/groups/search', incoming: 'GET',
+        configure: fn (RouteOptions $route) => $route
+            ->fallbackWhen(fn (array $query) => ! isset($query['name']))
+            ->query($this->searchQuery(...))
+            ->response($this->searchResponse(...)),
+    )
     ->build();
 ```
 
+Use `errors()` for JSON error responses and `files()` for multipart uploads.
+`fallbackWhen()` receives the original Yii query and the controller before
+model binding. A matching shared `bypassUsing()` or route fallback keeps the
+request in Yii. The mapping methods still accept action lists for rules shared
+across routes.
+
+## File uploads
+
+Use `files()` to send a multipart request for a route:
+
+```php
+use Cosmira\Strangler\RouteOptions;
+
+Strangler::proxy('directory')
+    ->post('uploadImage', '/api/people/{person_id}/photo',
+        configure: fn (RouteOptions $route) => $route->files(['files[0]' => 'photo']),
+    )
+    ->build();
+```
+
+Use `mapFiles()` to share the same upload mapping across actions.
 Keys are Yii upload names, including bracket paths; values are upstream field names.
 Files are passed as read-only streams from PHP's temporary upload directory.
 Use the default Guzzle cURL handler to stream large multipart bodies; it may buffer

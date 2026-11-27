@@ -197,7 +197,7 @@ final class StranglerProxy
     ): bool {
         $actionKey = self::normalizeActionKey($actionId);
         $route = self::declaration($config, $actionKey);
-        if (self::queryIsNative($controller, $config, $actionKey, $route['incoming'] ?? null)) {
+        if (self::queryIsNative($controller, $config, $actionKey, $route)) {
             return true;
         }
         if (isset($route['choose'])) {
@@ -230,19 +230,22 @@ final class StranglerProxy
     /**
      * Resolve declared native searches and application bypasses before model binding.
      *
-     * @param Config $config
+     * @param Config                   $config
+     * @param Action|Choice|Route|null $route
      */
     private static function queryIsNative(
-        CController $controller, array $config, string $action, ?string $incoming,
+        CController $controller, array $config, string $action, ?array $route,
     ): bool {
         $method = self::application()->getRequest()->getRequestType();
+        $incoming = $route['incoming'] ?? null;
         if (($incoming !== null && $incoming !== $method)
             || NativeRequestGuard::hasNativeFilter($config['nativeQueryFilters'] ?? [], $_GET)) {
             return true;
         }
         $bypass = $config['bypass'] ?? null;
 
-        return $bypass !== null && $bypass($controller, $action, $_GET);
+        return ($bypass !== null && $bypass($controller, $action, $_GET))
+            || (isset($route['fallback']) && $route['fallback']($_GET, $controller));
     }
 
     /**
@@ -333,7 +336,7 @@ final class StranglerProxy
             return false;
         }
 
-        if (self::queryIsNative($controller, $config, $actionKey, $route['incoming'] ?? null)) {
+        if (self::queryIsNative($controller, $config, $actionKey, $route)) {
             YiiRuntime::logDecision($config, $actionKey, 'bypass_callback');
 
             return false;

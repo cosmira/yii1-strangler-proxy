@@ -8,6 +8,7 @@ use CController;
 use CFilterChain;
 use Cosmira\Strangler\InlineMapping;
 use Cosmira\Strangler\ResponseEmitter;
+use Cosmira\Strangler\RouteOptions;
 use Cosmira\Strangler\Strangler;
 use Cosmira\Strangler\StranglerFilter;
 use Cosmira\Strangler\StranglerProxy;
@@ -529,6 +530,40 @@ final class StranglerProxyTest extends TestCase
         ));
     }
 
+    public function testRouteConfigurationOnlyOverridesMappingsAndFallbackForItsAction(): void
+    {
+        $config = Strangler::proxy('example')
+            ->mapQuery(['value' => 'shared'])
+            ->bypassUsing(static fn (CController $controller, string $action, array $query): bool => isset($query['legacy']))
+            ->get('Search', '/search', configure: static fn (RouteOptions $route) => $route
+                ->query(['value' => 'term'])
+                ->response(static fn () => new Response(200, [], '{"matched":true}'))
+                ->errors(static fn () => new Response(404, [], '{"error":"search_failed"}'))
+                ->fallbackWhen(static fn (array $query): bool => isset($query['native_search'])))
+            ->get('get', '/items')->build()['config'];
+        $proxy = $this->proxy($this->client([
+            new Response(200, [], '{"data":[]}'),
+            new Response(200, [], '{"data":[]}'),
+            new Response(404, [], '{"message":"Missing"}'),
+        ]));
+
+        $_GET = ['legacy' => 'yes'];
+        self::assertFalse($proxy->handle($this->controller, $config, 'search'));
+
+        $_GET = ['native_search' => 'yes'];
+        self::assertTrue(StranglerProxy::shouldBypass($this->controller, $config, 'search'));
+        self::assertFalse(StranglerProxy::shouldBypass($this->controller, $config, 'get'));
+        self::assertFalse($proxy->handle($this->controller, $config, 'search'));
+
+        $_GET = ['value' => 'desk'];
+        self::assertSame('{"matched":true}', $this->capture(fn () => $proxy->handle($this->controller, $config, 'search')));
+        self::assertSame('{"data":[]}', $this->capture(fn () => $proxy->handle($this->controller, $config, 'get')));
+        self::assertSame('{"error":"search_failed"}', $this->capture(fn () => $proxy->handle($this->controller, $config, 'search')));
+        self::assertCount(3, $this->history);
+        self::assertSame('term=desk', $this->history[0]['request']->getUri()->getQuery());
+        self::assertSame('shared=desk', $this->history[1]['request']->getUri()->getQuery());
+    }
+
     public function testMappedUploadAndFormFieldsReachOneMultipartRequest(): void
     {
         $this->application->getParams()->add('strangler', [
@@ -543,8 +578,10 @@ final class StranglerProxyTest extends TestCase
             'error' => [UPLOAD_ERR_OK], 'size' => [11],
         ]];
         \CUploadedFile::reset();
-        $config = Strangler::proxy('example')->mapFiles(['files[0]' => 'photo'], ['upload'])
-            ->mapPayload(['caption' => 'note', 'enabled' => 'enabled'])->post('upload', '/photo')->build()['config'];
+        $config = Strangler::proxy('example')
+            ->mapPayload(['caption' => 'note', 'enabled' => 'enabled'])
+            ->post('upload', '/photo', configure: static fn (RouteOptions $route) => $route->files(['files[0]' => 'photo']))
+            ->build()['config'];
         $proxy = $this->proxy($this->client([new Response(200, [], 'uploaded')]));
 
         try {

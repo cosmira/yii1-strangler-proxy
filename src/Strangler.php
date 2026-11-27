@@ -30,6 +30,7 @@ use InvalidArgumentException;
  * @phpstan-import-type QueryMapper from InlineMapping
  * @phpstan-import-type CustomPayloadMapper from InlineMapping
  * @phpstan-import-type ResponseMapper from InlineMapping
+ * @phpstan-import-type Fallback from RouteOptions
  *
  * @phpstan-type QueryAdapter callable(
  *     array<array-key, mixed>, array{action: string}, Query
@@ -72,7 +73,7 @@ use InvalidArgumentException;
  * @phpstan-type Route array{
  *     method: string, path: string, incoming?: string,
  *     fromBody?: array<string, string|list<string>>, parameters?: RouteResolver,
- *     request?: RouteRequest, expects?: int
+ *     request?: RouteRequest, expects?: int, fallback?: Fallback
  * }
  * @phpstan-type BoundConfig array{
  *     feature?: string,
@@ -725,18 +726,19 @@ final class Strangler
     /**
      * Map a legacy action to an upstream GET route.
      *
-     * @param array<string, string|list<string>> $fromBody
-     * @param Body|RouteBody|null                $body
-     * @param RouteResolver|null                 $parameters
+     * @param array<string, string|list<string>>   $fromBody
+     * @param Body|RouteBody|null                  $body
+     * @param RouteResolver|null                   $parameters
+     * @param (callable(RouteOptions): mixed)|null $configure
      */
     public function get(
         string $action, string $path, array $fromBody = [], array|callable|null $body = null,
         ?callable $parameters = null, bool $binary = false, ?int $expects = null,
-        ?string $incoming = null,
+        ?string $incoming = null, ?callable $configure = null,
     ): self {
         $this->route(
             $action, 'GET', $path, $fromBody, $body, $parameters,
-            expects: $expects, incoming: $incoming,
+            expects: $expects, incoming: $incoming, configure: $configure,
         );
         if ($binary) {
             $this->binaryActions[] = strtolower($action);
@@ -748,70 +750,78 @@ final class Strangler
     /**
      * Map a legacy action to an upstream POST route.
      *
-     * @param array<string, string|list<string>> $fromBody
-     * @param Body|RouteBody|null                $body
-     * @param RouteResolver|null                 $parameters
+     * @param array<string, string|list<string>>   $fromBody
+     * @param Body|RouteBody|null                  $body
+     * @param RouteResolver|null                   $parameters
+     * @param (callable(RouteOptions): mixed)|null $configure
      */
     public function post(
         string $action, string $path, array $fromBody = [], array|callable|null $body = null,
         ?callable $parameters = null, ?int $expects = null, ?string $incoming = null,
+        ?callable $configure = null,
     ): self {
         return $this->route(
             $action, 'POST', $path, $fromBody, $body, $parameters,
-            expects: $expects, incoming: $incoming,
+            expects: $expects, incoming: $incoming, configure: $configure,
         );
     }
 
     /**
      * Map a legacy action to an upstream PUT route.
      *
-     * @param array<string, string|list<string>> $fromBody
-     * @param Body|RouteBody|null                $body
-     * @param RouteResolver|null                 $parameters
+     * @param array<string, string|list<string>>   $fromBody
+     * @param Body|RouteBody|null                  $body
+     * @param RouteResolver|null                   $parameters
+     * @param (callable(RouteOptions): mixed)|null $configure
      */
     public function put(
         string $action, string $path, array $fromBody = [], array|callable|null $body = null,
         ?callable $parameters = null, ?int $expects = null, ?string $incoming = null,
+        ?callable $configure = null,
     ): self {
         return $this->route(
             $action, 'PUT', $path, $fromBody, $body, $parameters,
-            expects: $expects, incoming: $incoming,
+            expects: $expects, incoming: $incoming, configure: $configure,
         );
     }
 
     /**
      * Forward a partial update with its request and response adaptations.
      *
-     * @param Body|RouteBody|null $body
-     * @param RouteResolver|null  $parameters
-     * @param RouteRequest|null   $request
-     * @param ResponseMapper|null $response
+     * @param Body|RouteBody|null                  $body
+     * @param RouteResolver|null                   $parameters
+     * @param RouteRequest|null                    $request
+     * @param ResponseMapper|null                  $response
+     * @param (callable(RouteOptions): mixed)|null $configure
      */
     public function patch(
         string $action, string $path, array|callable|null $body = null,
         ?callable $parameters = null, ?callable $request = null, ?callable $response = null,
-        ?int $expects = null, ?string $incoming = null,
+        ?int $expects = null, ?string $incoming = null, ?callable $configure = null,
     ): self {
         return $this->route(
             $action, 'PATCH', $path, body: $body, parameters: $parameters,
             request: $request, response: $response, expects: $expects, incoming: $incoming,
+            configure: $configure,
         );
     }
 
     /**
      * Map a legacy action to an upstream DELETE route.
      *
-     * @param array<string, string|list<string>> $fromBody
-     * @param Body|RouteBody|null                $body
-     * @param RouteResolver|null                 $parameters
+     * @param array<string, string|list<string>>   $fromBody
+     * @param Body|RouteBody|null                  $body
+     * @param RouteResolver|null                   $parameters
+     * @param (callable(RouteOptions): mixed)|null $configure
      */
     public function delete(
         string $action, string $path, array $fromBody = [], array|callable|null $body = null,
         ?callable $parameters = null, ?int $expects = null, ?string $incoming = null,
+        ?callable $configure = null,
     ): self {
         return $this->route(
             $action, 'DELETE', $path, $fromBody, $body, $parameters,
-            expects: $expects, incoming: $incoming,
+            expects: $expects, incoming: $incoming, configure: $configure,
         );
     }
 
@@ -1272,17 +1282,18 @@ final class Strangler
     /**
      * Register a route using a case-insensitive action key.
      *
-     * @param array<string, string|list<string>> $fromBody
-     * @param Body|RouteBody|null                $body
-     * @param RouteResolver|null                 $parameters
-     * @param RouteRequest|null                  $request
-     * @param ResponseMapper|null                $response
+     * @param array<string, string|list<string>>   $fromBody
+     * @param Body|RouteBody|null                  $body
+     * @param RouteResolver|null                   $parameters
+     * @param RouteRequest|null                    $request
+     * @param ResponseMapper|null                  $response
+     * @param (callable(RouteOptions): mixed)|null $configure
      */
     public function route(
         string $action, string $method, string $path, array $fromBody = [],
         array|callable|null $body = null,
         ?callable $parameters = null, ?callable $request = null, ?callable $response = null,
-        ?int $expects = null, ?string $incoming = null,
+        ?int $expects = null, ?string $incoming = null, ?callable $configure = null,
     ): self {
         $method = strtoupper($method);
         $key = $this->routeKey($action, $method, $path);
@@ -1306,6 +1317,14 @@ final class Strangler
             'fromBody' => $fromBody, 'parameters' => $parameters, 'request' => $request,
             'expects'  => $expects, 'incoming' => $incomingMethod,
         ]);
+        if ($configure !== null) {
+            $options = new RouteOptions($this, $key);
+            $configure($options);
+            $fallback = $options->fallback();
+            if ($fallback !== null) {
+                $this->routes[$key]['fallback'] = $fallback;
+            }
+        }
 
         return $this;
     }

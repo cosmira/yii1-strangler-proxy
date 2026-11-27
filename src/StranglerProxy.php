@@ -317,7 +317,25 @@ final class StranglerProxy
      */
     public function handle(CController $controller, array $config, string $actionId): bool
     {
-        return $this->dispatch($controller, $config, self::normalizeActionKey($actionId));
+        $action = self::normalizeActionKey($actionId);
+        if ($this->dispatch($controller, $config, $action)) {
+            return true;
+        }
+
+        $required = $config['requiredActions'] ?? [];
+        if (! in_array($action, $required, true) && ! in_array('*', $required, true)) {
+            return false;
+        }
+        $route = self::declaration($config, $action);
+        if ($route === null) {
+            return false;
+        }
+
+        $error = 'strangler_native_fallback';
+        YiiRuntime::logRejection($config, $action, $route['path'] ?? '', $error);
+        $this->emitter->error(500, $error);
+
+        return true;
     }
 
     /**

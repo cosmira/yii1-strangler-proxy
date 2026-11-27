@@ -922,6 +922,29 @@ final class StranglerProxyTest extends TestCase
         self::assertSame([], $this->history);
     }
 
+    public function testRequiredForwardingDistinguishesMappingRejectionFromAnUpstreamError(): void
+    {
+        $proxy = $this->proxy($this->client([new Response(422, [], '{"message":"upstream"}')]));
+        $config = Strangler::proxy('example')
+            ->requireForwarding()
+            ->get('get', '/items', configure: static fn (RouteOptions $route) => $route->query(
+                static fn (array $query): array|false => isset($query['unsupported']) ? false : $query,
+            ))
+            ->build()['config'];
+
+        self::assertFalse($proxy->handle($this->controller, $config, 'missing'));
+        $_GET = ['unsupported' => 1];
+        self::assertSame('{"state":"error","error":"strangler_native_fallback"}',
+            $this->capture(fn () => $proxy->handle($this->controller, $config, 'get')));
+        self::assertSame(500, http_response_code());
+
+        $_GET = [];
+        self::assertSame('{"message":"upstream"}',
+            $this->capture(fn () => $proxy->handle($this->controller, $config, 'get')));
+        self::assertSame(422, http_response_code());
+        self::assertCount(1, $this->history);
+    }
+
     #[TestWith([null])]
     #[TestWith(['unsupported://backend.test'])]
     public function testErrorGuardsReturnEvenIfAnApplicationOverrideDoesNotExit(?string $origin): void

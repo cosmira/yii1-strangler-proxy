@@ -1060,6 +1060,25 @@ and overrides a shared `request(reader: ...)` for that route. Selectors already
 receive the original form. Use the shared reader when a selector needs a custom
 input.
 
+## Require forwarding for migrated actions
+
+Use `requireForwarding()` when Laravel owns the action while its feature is
+enabled. Pass action names to apply it to specific declarations or omit the
+names to require forwarding for every route and action on that proxy.
+
+```php
+Strangler::proxy('directory')
+    ->get('image', '/api/people/{person_id}/photo', binary: true, incoming: 'GET')
+    ->requireForwarding('image')
+    ->build();
+```
+
+If a guard, mapper, or selector declines a required action before sending it
+upstream, Strangler logs the rejection and responds with HTTP 500 and
+`{"state":"error","error":"strangler_native_fallback"}`. Yii does not run
+the native action. Responses received from Laravel keep their existing error
+handling. Disabling the feature hands back every action on that feature to Yii.
+
 ## File uploads
 
 Use `files()` to send a multipart request for a route:

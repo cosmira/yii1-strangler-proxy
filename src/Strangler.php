@@ -77,6 +77,7 @@ use InvalidArgumentException;
  * }
  * @phpstan-type BoundConfig array{
  *     feature?: string,
+ *     requiredActions?: list<string>,
  *     nativeQueryFilters?: list<string>,
  *     routes?: array<string, Route>,
  *     mappings?: Settings,
@@ -101,6 +102,7 @@ use InvalidArgumentException;
  *     actionOptions?: BoundConfig,
  *     resolve?: callable(CController): BoundConfig,
  *     feature?: string,
+ *     requiredActions?: list<string>,
  *     nativeQueryFilters?: list<string>,
  *     routes?: array<string, Route>,
  *     mappings?: Settings,
@@ -874,6 +876,21 @@ final class Strangler
     }
 
     /**
+     * Require enabled routes to finish in Strangler, including unsupported requests.
+     *
+     * Pass no action names to cover every declaration on this proxy.
+     */
+    public function requireForwarding(string ...$actions): self
+    {
+        $this->config['requiredActions'] = [
+            ...($this->config['requiredActions'] ?? []),
+            ...array_map(strtolower(...), array_values($actions) ?: ['*']),
+        ];
+
+        return $this;
+    }
+
+    /**
      * Export the Yii filter definition with its routes and bypass fields.
      *
      * @return array{0: class-string<StranglerFilter>, config: Config}
@@ -1002,7 +1019,7 @@ final class Strangler
         $snapshot = clone $this;
 
         return array_intersect_key(
-            $this->config, array_fill_keys(['feature', 'bypass', 'nativeQueryFilters'], true),
+            $this->config, array_fill_keys(['feature', 'bypass', 'nativeQueryFilters', 'requiredActions'], true),
         ) + ['resolve' => static fn (CController $controller): array => $snapshot->bound(
             $controller, $contract,
         )];

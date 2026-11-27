@@ -312,8 +312,14 @@ final class ActionTest extends TestCase
     #[TestWith(['query', 0, 0])]
     #[TestWith(['unsupported', 1, 1])]
     #[TestWith(['selected-method', 1, 1])]
-    public function testIneligibleChoiceContinuesInYiiBeforeHttp(string $reason, int $reads, int $choices): void
-    {
+    #[TestWith(['feature', 0, 0, true])]
+    #[TestWith(['method', 0, 0, true])]
+    #[TestWith(['query', 0, 0, true])]
+    #[TestWith(['unsupported', 1, 1, true])]
+    #[TestWith(['selected-method', 1, 1, true])]
+    public function testIneligibleChoiceHonorsTheForwardingRequirement(
+        string $reason, int $reads, int $choices, bool $required = false,
+    ): void {
         if ($reason === 'feature') {
             $this->app->getParams()->add('strangler', ['features' => []]);
         }
@@ -330,11 +336,21 @@ final class ActionTest extends TestCase
 
                 return $reason === 'unsupported' ? null : $routes->patch('get', '/items', incoming: 'DELETE');
             });
+        if ($required) {
+            $builder->requireForwarding('GET');
+        }
 
-        self::assertSame('', $this->dispatch($builder, []));
+        $reject = $required && $reason !== 'feature';
+        self::assertSame(
+            $reject ? '{"state":"error","error":"strangler_native_fallback"}' : '',
+            $this->dispatch($builder, []),
+        );
+        if ($reject) {
+            self::assertSame(500, http_response_code());
+        }
         self::assertSame($reads, $read);
         self::assertSame($choices, $chosen);
-        self::assertTrue($this->controller->ran);
+        self::assertSame(! $reject, $this->controller->ran);
         self::assertSame([], $this->requests);
     }
 
